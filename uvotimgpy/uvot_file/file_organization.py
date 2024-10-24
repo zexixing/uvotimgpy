@@ -105,11 +105,13 @@ class AstroDataOrganizer:
         output_path (str, optional): Path for the output file if saving. Absolute path is recommended.
         format (str, optional): Output file format if saving. Default is 'csv'.
         """
+        self.organize_data()
         process_astropy_table(self.data_table, output_path, save_format)
+
 
 # Usage example
 if __name__ == "__main__":
-    organizer = AstroDataOrganizer('29P',data_root_path='/Volumes/ZexiWork/data/Swift')
-    organizer.organize_data()
+    organizer = AstroDataOrganizer('46P',data_root_path='/Volumes/ZexiWork/data/Swift')
+    #organizer.organize_data()
     #organizer.process_data(output_path='1p_uvot_data.csv')
     organizer.process_data()
