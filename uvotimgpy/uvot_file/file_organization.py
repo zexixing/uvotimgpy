@@ -4,18 +4,19 @@ import glob
 import re
 from astropy.table import Table
 from utils.file_io import process_astropy_table
+from query import StarCoordinateQuery
 
 class AstroDataOrganizer:
-    def __init__(self, source_name, data_root_path=None):
+    def __init__(self, target_name, data_root_path=None):
         """
         Initialize the AstroDataOrganizer.
 
         Parameters:
-        source_name (str): Name of the source (e.g., '29p').
+        target_name (str): Name of the target (e.g., '29P').
         data_root_path (str, optional): Absolute path to the root of the data directory.
         """
-        self.source_name = source_name
-        self.project_path = os.path.join(data_root_path, source_name)
+        self.target_name = target_name
+        self.project_path = os.path.join(data_root_path, target_name)
         self.data_table = Table(names=['obsid', 'exp_no.', 'filter', 'image_data'],
                                 dtype=['U11', 'i4', 'U3', 'U5'])
 
@@ -109,9 +110,136 @@ class AstroDataOrganizer:
         process_astropy_table(self.data_table, output_path, save_format)
 
 
+class ObservationLogger:
+    def __init__(self, target_name, data_root_path, is_motion=True):
+        """
+        Initialize observation log processor.
+
+        Parameters:
+        target_name (str): Name of target object
+        data_root_path (str): Root path of data directory
+        is_motion (bool, optional): Whether the target is moving. Default is True.
+                                  True: Moving target (e.g. comets)
+                                  False: Fixed target (e.g. stars)
+        """    
+        self.target_name = target_name
+        self.log_table = None
+        self.coordinates = None
+        
+        # Check if data path exists
+        self.project_path = os.path.join(data_root_path, target_name)
+        if not os.path.exists(self.project_path):
+            raise ValueError(f"Data path does not exist: {self.project_path}")
+    
+        # Initialize data organizer
+        self.organizer = AstroDataOrganizer(target_name, data_root_path)
+        self.data_table = self.organizer.organize_data()
+        
+        # Get coordinates for non-moving target
+        self.is_motion = is_motion
+        if not self.is_motion:
+            query = StarCoordinateQuery()
+            coords = query.get_coordinates(target_name)
+            if coords is None:
+                raise ValueError(f"Cannot find coordinates for target: {target_name}")
+            self.coordinates = coords
+            self.ra = coords.ra
+            self.dec = coords.dec
+
+    def read_fits_header(self, fits_file, extension=0):
+        """
+        读取单个fits文件的header信息
+        返回包含所需header信息的字典
+        """
+        pass
+
+    def process_all_files(self, file_list):
+        """
+        处理文件列表中的所有fits文件
+        创建初始观测日志表格
+        """
+        pass
+
+    def calculate_orbit_info(self):
+        """
+        使用sbpy计算轨道信息
+        仅在目标运动时使用
+        """
+        if not self.is_motion:
+            return
+        pass
+
+    def calculate_coordinates(self):
+        """
+        计算目标在图像中的像素坐标
+        如果目标运动，使用轨道信息
+        如果目标不运动，使用固定坐标
+        """
+        pass
+
+    def create_output_table(self, selected_columns):
+        """
+        根据选定的列创建输出表格
+        """
+        pass
+
+    def save_log(self, output_path):
+        """
+        将观测日志保存到文件
+        """
+        pass
+        
+    def create_observation_log(self, output_path, selected_columns=None):
+        """
+        创建完整的观测日志
+        
+        Parameters:
+        -----------
+        output_path : str
+            输出文件的路径
+        selected_columns : list, optional
+            要包含在输出中的列名列表。如果为None，将包含所有列。
+        
+        Returns:
+        --------
+        astropy.table.Table
+            生成的观测日志表格
+        """
+        # 获取文件列表
+        file_list = self.organizer.get_file_list()
+        
+        # 处理所有文件
+        self.process_all_files(file_list)
+        
+        # 根据目标类型计算位置信息
+        if self.is_motion:
+            self.calculate_orbit_info()
+        self.calculate_coordinates()
+        
+        # 创建并保存输出
+        self.create_output_table(selected_columns)
+        self.save_log(output_path)
+        
+        return self.log_table    
+
+def test_observation_logger():
+    # 只需要提供目标名称和数据路径
+    logger = ObservationLogger(
+        target_name="29P",
+        data_path="/path/to/data"
+    )
+    
+    # 创建日志
+    logger.create_observation_log(
+        output_path="output_log.csv",
+        selected_columns=['DATE-OBS', 'EXPOSURE', 'FILTER', ...]  # 可选
+    )
+    
 # Usage example
 if __name__ == "__main__":
-    organizer = AstroDataOrganizer('46P',data_root_path='/Volumes/ZexiWork/data/Swift')
+    #organizer = AstroDataOrganizer('46P',data_root_path='/Volumes/ZexiWork/data/Swift')
     #organizer.organize_data()
     #organizer.process_data(output_path='1p_uvot_data.csv')
-    organizer.process_data()
+    #organizer.process_data()
+    logger = ObservationLogger('1P', '/Volumes/ZexiWork/data/Swift')
+    print(logger.data_table)
