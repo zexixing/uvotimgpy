@@ -25,7 +25,7 @@ class AstroDataOrganizer:
         self.target_name = target_name
         self.project_path = os.path.join(data_root_path, target_name)
         self.data_table = Table(names=['obsid', 'exp_no.', 'filter', 'image_type'],
-                                dtype=['U11', 'i4', 'U8', 'U5'])
+                                dtype=[str, int, str, str])
 
     def organize_data(self):
         """
@@ -118,361 +118,322 @@ class AstroDataOrganizer:
         self.organize_data()
         process_astropy_table(self.data_table, output_path, save_format)
 
-
 class ObservationLogger:
-    def __init__(self, target_name, data_root_path, is_motion=True):
-        """
-        Initialize observation log processor.
-
-        Parameters:
-        target_name (str): Name of target object
-        data_root_path (str): Root path of data directory
-        is_motion (bool, optional): Whether the target is moving. Default is True.
-                                  True: Moving target (e.g. comets)
-                                  False: Fixed target (e.g. stars)
-        """    
+    """
+    A class for logging observations.
+    """
+    def __init__(self, target_name, data_root_path, is_motion=True, target_alternate=None, location='@Swift'):
         self.target_name = target_name
-        self.log_table = None
-        self.coordinates = None
+        self.target_alternate = target_alternate
+        self.location = location
+        self.is_motion = is_motion
         
-        # Check if data path exists
+        # Set project path
         self.project_path = os.path.join(data_root_path, target_name)
         if not os.path.exists(self.project_path):
             raise ValueError(f"Data path does not exist: {self.project_path}")
-    
-        # Initialize data organizer
+            
+        # Initialize parameters
         self.organizer = AstroDataOrganizer(target_name, data_root_path)
         self.data_table = self.organizer.organize_data()
         
-        # Get coordinates for non-moving target
-        self.is_motion = is_motion
-        if not self.is_motion:
-            query = StarCoordinateQuery()
-            coords = query.get_coordinates(target_name)
-            if coords is None:
-                raise ValueError(f"Cannot find coordinates for target: {target_name}")
-            self.coordinates = coords
-            self.ra = coords.ra
-            self.dec = coords.dec
+        # Obtain coordinates for fixed targets
+        if not is_motion:
+            self._set_fixed_coordinates()
 
-    def read_hdu_header(self, hdu):
+    def _read_hdu_header(self, hdu):
+        """
+        A function for processing FITS file header information.
+
+        Parameters
+        hdu: FITS HDU object containing header information.
+
+        Returns
+        dict: Processed header information.
+        """
+        header_keys = {
+            'DATE-OBS': {'dtype': str, 'unit': None},
+            'DATE-END': {'dtype': str, 'unit': None}, 
+            'MIDTIME': {'dtype': str, 'unit': None},
+            'EXPOSURE': {'dtype': float, 'unit': u.second},
+            'WHEELPOS': {'dtype': int, 'unit': None},
+            'RA_PNT': {'dtype': float, 'unit': u.degree},
+            'DEC_PNT': {'dtype': float, 'unit': u.degree}, 
+            'PA_PNT': {'dtype': float, 'unit': u.degree},
+            'ASPCORR': {'dtype': str, 'unit': None},
+            'MOD8CORR': {'dtype': bool, 'unit': None},
+            'FLATCORR': {'dtype': bool, 'unit': None},
+            'CLOCKAPP': {'dtype': bool, 'unit': None}
+        }
         header = hdu.header
-            
-        # Calculate MIDTIME if DATE-OBS and DATE-END exist
+        header_info = {'WCS': {'value': WCS(header), 'dtype': 'wcs', 'unit': None}}
+        
         start_time = Time(header.get('DATE-OBS', ''))
         end_time = Time(header.get('DATE-END', ''))
         mid_time = start_time + (end_time - start_time) / 2
-
-        # Convert T/F strings to boolean
-        def str_to_bool(value):
-            if isinstance(value, str):
-                return value.upper() == 'T'
-            return bool(value)
-        # Define header keys with their data types and units
-        header_info = {
-            'DATE-OBS': {'value': header.get('DATE-OBS', ''), 'dtype': 'U23', 'unit': None},
-            'DATE-END': {'value': header.get('DATE-END', ''), 'dtype': 'U23', 'unit': None},
-            'MIDTIME': {'value': mid_time.isot, 'dtype': 'U23', 'unit': None},
-            'EXPOSURE': {'value': header.get('EXPOSURE', 0.0), 'dtype': 'f8', 'unit': u.second},
-            'WHEELPOS': {'value': header.get('WHEELPOS', 0), 'dtype': 'i4', 'unit': None},
-            'RA_PNT': {'value': header.get('RA_PNT', 0.0), 'dtype': 'f8', 'unit': u.degree},
-            'DEC_PNT': {'value': header.get('DEC_PNT', 0.0), 'dtype': 'f8', 'unit': u.degree},
-            'PA_PNT': {'value': header.get('PA_PNT', 0.0), 'dtype': 'f8', 'unit': u.degree},
-            'ASPCORR': {'value': header.get('ASPCORR', 'None'), 'dtype': 'U6', 'unit': None},
-            'MOD8CORR': {'value': str_to_bool(header.get('MOD8CORR', False)), 'dtype': 'bool', 'unit': None},
-            'FLATCORR': {'value': str_to_bool(header.get('FLATCORR', False)), 'dtype': 'bool', 'unit': None},
-            'CLOCKAPP': {'value': str_to_bool(header.get('CLOCKAPP', False)), 'dtype': 'bool', 'unit': None},
-            'WCS': {'value': WCS(header), 'dtype': 'wcs', 'unit': None}
-        }
-
-        # Convert values to appropriate data types
-        for key, info in header_info.items():
-            try:
-                if key == 'WCS':
-                    continue
-                elif info['dtype'] == 'bool':
-                    continue  # Already converted by str_to_bool
-                elif info['dtype'].startswith('U'):
-                    header_info[key]['value'] = str(info['value'])
-                elif info['dtype'].startswith('f'):
-                    header_info[key]['value'] = float(info['value'])
-                elif info['dtype'].startswith('i'):
-                    header_info[key]['value'] = int(info['value'])
-            except (ValueError, TypeError):
-                header_info[key]['value'] = None
-
+        
+        for key, info in header_keys.items():
+            value = header.get(key, '')
+            if key == 'MIDTIME':
+                value = mid_time.isot
+            elif info['dtype'] == bool:
+                value = str(value).upper() == 'T'
+            else:
+                try:
+                    value = info['dtype'](value)
+                except (ValueError, TypeError):
+                    value = None
+                    
+            header_info[key] = {'value': value, 'dtype': info['dtype'], 'unit': info['unit']}
+            
         return header_info
 
-    def update_table_info(self):
+    def _set_fixed_coordinates(self):
         """
-        Add FITS header information to data_table and return a dictionary containing WCS information
+        Obtain coordinates for fixed target objects.
+        
+        Raises
+        ValueError: If coordinates cannot be found for the target.
         """
-        # Get the first file's path
-        obsid = self.data_table[0]['obsid']
-        filter_name = self.data_table[0]['filter']
-        normalized_filter = normalize_filter_name(filter_name)
+        query = StarCoordinateQuery()
+        target = self.target_alternate or self.target_name # TODO: or 是啥意思
+        coords = query.get_coordinates(target)
+        if coords is None:
+            raise ValueError(f"Cannot find coordinates for target: {target}")
+        self.coordinates = coords
+        self.ra = coords.ra
+        self.dec = coords.dec
+
+    def _get_fits_path(self, obsid, filter_name):
+        """
+        Get the path to a FITS file.
+
+        Parameters
+        obsid (str): Observation ID.
+        filter_name (str): Name of the filter.
+
+        Returns
+        str: Path to the FITS file.
+
+        Raises
+        FileNotFoundError: If FITS file cannot be found.
+        """
+        normalized_filter = normalize_filter_name(filter_name, output_format='filename')
         base_filename = f"sw{obsid}{normalized_filter}_sk.img"
+        
+        # Try file name ended in .gz and not .gz
+        for ext in ['.gz', '']:
+            path = f"{self.project_path}/{obsid}/uvot/image/{base_filename}{ext}"
+            if os.path.exists(path):
+                return path
+        raise FileNotFoundError(f"Cannot find FITS file for obsid {obsid} with filter {filter_name}")
 
-        # Try both .gz and non-gz versions
-        first_fits = f"{self.project_path}/{obsid}/uvot/image/{base_filename}.gz"
-        if not os.path.exists(first_fits):
-            first_fits = f"{self.project_path}/{obsid}/uvot/image/{base_filename}"
-            if not os.path.exists(first_fits):
-                raise FileNotFoundError(f"Cannot find FITS file for obsid {obsid} with filter {filter_name}")
+    def calculate_orbit_info(self, times,
+                             orbital_keywords):
+        """
+        Calculate orbital information for moving targets with sbpy.
 
-        header_info = None
-        hdul = None
+        Parameters
+        times: Time points for orbit calculation.
+        orbital_keywords (list, optional): Keywords for orbital parameters to calculate
+
+        Returns
+        Ephem: Orbital ephemeris data.
+
+        Raises
+        Exception: If target name is ambiguous or calculation fails.
+        """
         try:
-            hdul = fits.open(first_fits)
-            for ext_no in range(1, len(hdul)):
-                if isinstance(hdul[ext_no], fits.hdu.image.ImageHDU):
-                    header_info = self.read_hdu_header(hdul[ext_no])
-                    break
+            target = self.target_alternate or self.target_name
+            eph = Ephem.from_horizons(target, location=self.location, epochs=times)
+            return eph[orbital_keywords]
         except Exception as e:
-            print(f"Error reading first file {first_fits}: {str(e)}")
-            if hdul is not None:
-                hdul.close()
-            return {}
-        finally:
-            if hdul is not None:
-                hdul.close()
+            if "Ambiguous target name" in str(e):
+                print(f"Please provide exact target ID. Error: {str(e)}")
+            raise
 
-        if header_info is None:
-            print(f"No valid ImageHDU found in {first_fits}")
-            return {}
+    def process_data(self, output_path=None, save_format='csv', selected_columns=None, return_table=False,
+                     orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation']):
+        """
+        Process observation data and create output table.
 
-        # 获取基础列名和数据类型
+        Parameters
+        output_path (str, optional): Path to save processed data.
+        save_format (str, optional): Format to save data ('csv', etc.).
+        selected_columns (list, optional): Columns to include in output.
+        return_table (bool): Whether to return processed table.
+        orbital_keywords (list, optional): Keywords for orbital parameters to calculate
+
+        Returns
+        astropy.table.Table if return_table is True, None otherwise.
+        """
+        # Prepare empty table
+        column_names, dtypes = self._prepare_table_structure()
+        processed_table = Table(names=column_names, dtype=dtypes)
+        
+        # Process each observation
+        wcs_dict = {}
+        midtimes = []
+        
+        for row in self.data_table:
+            fits_path = self._get_fits_path(row['obsid'], row['filter'])
+            self._process_fits_file(fits_path, row, processed_table, wcs_dict, midtimes)
+            
+        # Add orbital data for moving targets
+        if self.is_motion and midtimes:
+            final_table = self._process_motion_target(processed_table, midtimes, wcs_dict, orbital_keywords)
+        else:
+            final_table = processed_table
+            
+        # Select columns and save
+        if isinstance(selected_columns, list):
+            final_table = final_table[selected_columns]
+        self.data_table = final_table
+        
+        if return_table:
+            return final_table
+        else:
+            process_astropy_table(final_table, output_path, save_format)
+
+    def _prepare_table_structure(self):
+        """
+        Create table structure based on FITS headers.
+
+        Returns
+        -------
+        tuple: Column names and data types
+        """
+        # Get sample header
+        first_row = self.data_table[0]
+        fits_path = self._get_fits_path(first_row['obsid'], first_row['filter'])
+        
+        with fits.open(fits_path) as hdul:
+            for ext in range(1, len(hdul)):
+                if isinstance(hdul[ext], fits.hdu.image.ImageHDU):
+                    header_info = self._read_hdu_header(hdul[ext])
+                    break
+        
+        # Build columns and data types
         column_names = list(self.data_table.colnames)
         dtypes = [self.data_table[col].dtype for col in column_names]
+        
+        # Add extra columns
+        extra_columns = [('ext_no', int)]
+        extra_columns.extend([(k, v['dtype']) for k, v in header_info.items() if k != 'WCS'])
+        extra_columns.extend([('x_pixel', float), ('y_pixel', float)])
+        
+        for col, dtype in extra_columns:
+            column_names.append(col)
+            dtypes.append(dtype)
+            
+        return column_names, dtypes
 
-        # 添加ext_no列
-        column_names.append('ext_no')
-        dtypes.append('i2')
-
-        # 添加header信息的列（排除WCS）
-        for key, info in header_info.items():
-            if key != 'WCS':
-                column_names.append(key)
-                if info['dtype'] == 'wcs':
-                    continue
-                dtypes.append(info['dtype'])
-
-        # 添加像素坐标列
-        pixel_columns = ['x_pixel', 'y_pixel']
-        column_names.extend(pixel_columns)
-        dtypes.extend(['f8'] * len(pixel_columns))
-
-        # 处理所有数据
-        final_table, wcs_dict = self.process_all_data(column_names, dtypes) # TODO: 去掉wcs_dict
-
-        # 更新data_table
-        self.data_table = final_table
-
-    def process_all_motion_data(self, column_names, dtypes):
+    def _process_fits_file(self, fits_path, row, processed_table, wcs_dict, midtimes):
         """
-        处理所有FITS文件数据，包括头文件信息、轨道信息和像素坐标
+        Extract data from one FITS file.
 
-        Parameters:
-        -----------
-        header_info_template : dict
-            header信息的模板，用于确定需要提取的键值
-        column_names : list
-            表格的列名列表
-        dtypes : list
-            对应的数据类型列表
-
-        Returns:
-        --------
-        tuple : (astropy.table.Table, dict)
-            返回最终合并后的数据表和WCS字典
+        Parameters
+        ----------
+        fits_path (str): Path to FITS file
+        row (Row): Data table row
+        processed_table (Table): Output table
+        wcs_dict (dict): WCS information storage
+        midtimes (list): Observation times
         """
-        new_table = Table(names=column_names, dtype=dtypes)
-        wcs_dict = {}
-        midtimes = []  # 存储所有的midtime
-
-        for row in self.data_table:
-            fits_path = row['image_type'] # TODO: 更改路径
-
-            fits_path = os.path.join(self.project_path, row['obsid'], 'uvot/image')
-            hdul = None
-            try:
-                hdul = fits.open(fits_path)
+        try:
+            with fits.open(fits_path) as hdul:
                 for ext_no in range(1, len(hdul)):
                     if isinstance(hdul[ext_no], fits.hdu.image.ImageHDU):
-                        # 读取header信息
-                        header_info = self.read_hdu_header(hdul[ext_no])
+                        # Obtain and process header information
+                        header_info = self._read_hdu_header(hdul[ext_no])
 
-                        # 创建新行
+                        # prepare empty row
                         new_row = []
 
-                        # 添加原data_table的列值
+                        # Add old data
                         for col in self.data_table.colnames:
                             new_row.append(row[col])
 
-                        # 添加ext_no
+                        # Add extension number
                         new_row.append(ext_no)
 
-                        # 添加header信息
-                        for key in header_info:
+                        # Add header information
+                        for key, info in header_info.items():
                             if key != 'WCS':
-                                new_row.append(header_info[key]['value'])
+                                new_row.append(info['value'])
 
-                        # 计算像素坐标
-                        try: # TODO: 检查计算像素坐标的方法
-                            x_pixel, y_pixel = self.calculate_pixel_coordinates(
-                                header_info['WCS']['value'],
-                                header_info['RA_PNT']['value'],
-                                header_info['DEC_PNT']['value']
-                            )
-                            new_row.extend([x_pixel, y_pixel])
-                        except Exception as e:
-                            print(f"Error calculating pixel coordinates for {fits_path}: {str(e)}")
+                        # Add pixel coordinates; Obtain observation time and wcs list for moving targets
+                        if self.is_motion:
                             new_row.extend([np.nan, np.nan])
+                            midtimes.append(header_info['MIDTIME']['value'])
+                            wcs_dict[f"{row['obsid']}_{row['filter']}_{ext_no}"] = header_info['WCS']['value']
+                        else:
+                            wcs = header_info['WCS']['value']
+                            x, y = wcs.all_world2pix(self.ra, self.dec, 1)
+                            new_row.extend([x, y])
 
-                        # 添加新行到表格
-                        new_table.add_row(new_row)
+                        # Add the new row to the table
+                        processed_table.add_row(new_row)
 
-                        # 存储WCS信息
-                        wcs_dict[f"{fits_path}_{ext_no}"] = header_info['WCS']['value']
-
-                        # 存储midtime用于后续计算轨道信息
-                        midtimes.append(header_info['MIDTIME']['value'])
-
-            except Exception as e:
-                print(f"Error processing file {fits_path}: {str(e)}")
-            finally:
-                if hdul is not None:
-                    hdul.close()
-
-        # 计算轨道信息并获取sbpy.ephem对象
-        try:
-            orbit_ephem = self.calculate_orbit_info(midtimes)
-            # 合并new_table和orbit_ephem
-            final_table = self.merge_tables(new_table, orbit_ephem)
         except Exception as e:
-            print(f"Error calculating orbit information: {str(e)}")
-            final_table = new_table
+            print(f"Error processing file {fits_path}: {str(e)}")
 
-        return final_table
-
-    def calculate_orbit_info(self, times, target_name):
+    def _process_motion_target(self, processed_table, midtimes, wcs_dict, orbital_keywords):
         """
-        根据时间列表和目标天体名称计算轨道信息
-        
-        Parameters:
-        -----------
-        times : astropy.Time
-            观测时间列表
-        target_name : str
-            目标天体的名称（如彗星或小行星的名字/编号）
-        
-        Returns:
-        --------
-        sbpy.data.Ephem
-            包含轨道信息的Ephem对象，包含ra、dec、rh、delta等信息
+        Add orbital data for moving targets.
+
+        Parameters
+        ----------
+        processed_table (Table): Based data table
+        midtimes (list):  
+            Observation times
+        wcs_dict (dict): WCS information
+        orbital_keywords (list, optional): Keywords for orbital parameters to calculate
+
+        Returns
+        -------
+        Table with added motion data
         """
         try:
-            # 直接从Horizons获取星历
-            eph = Ephem.from_horizons(
-                target_name,
-            epochs=times,
-                quantities=['ra', 'dec', 'delta', 'r', 'elongation', 'phase', 'V']
-            )
-        
-            return eph
-        
+            # Get orbital data
+            orbit_ephem = self.calculate_orbit_info(Time(midtimes),orbital_keywords)
+
+            # Merge table
+            orbit_table = orbit_ephem.table
+            merged_table = hstack([processed_table, orbit_table])
+
+            # Calculate pixel positions
+            x_pixels = []
+            y_pixels = []
+
+            for row in merged_table:
+                wcs_key = f"{row['obsid']}_{row['filter']}_{row['ext_no']}"
+                wcs = wcs_dict[wcs_key]
+                try:
+                    x, y = wcs.all_world2pix(row['RA'], row['DEC'], 1)
+                    x_pixels.append(x)
+                    y_pixels.append(y)
+                except Exception as e:
+                    print(f"Error calculating pixel coordinates for {wcs_key}: {str(e)}")
+                    x_pixels.append(np.nan)
+                    y_pixels.append(np.nan)
+
+            merged_table['x_pixel'] = x_pixels
+            merged_table['y_pixel'] = y_pixels
+
+            return merged_table
+
         except Exception as e:
-            print(f"Error calculating orbit information for {target_name}: {str(e)}")
-            raise
-
-    def merge_tables(self, fits_table, orbit_ephem):
-        """
-        合并fits信息表和轨道信息表
+            #print(f"Error processing motion target: {str(e)}")
+            return processed_table
         
-        Parameters:
-        -----------
-        fits_table : astropy.table.Table
-            包含fits信息的表格
-        orbit_ephem : sbpy.data.Ephem
-            包含轨道信息的Ephem对象
-        
-        Returns:
-        --------
-        astropy.table.Table
-            合并后的表格
-        """
-        # 将sbpy.ephem转换为QTable
-        orbit_table = orbit_ephem.table
-        
-        # 使用hstack合并表格
-        merged_table = hstack([fits_table, orbit_table])
-        
-        return merged_table
-
-    def create_output_table(self, selected_columns):
-        """
-        根据选定的列创建输出表格
-        """
-        pass
-
-    def save_log(self, output_path):
-        """
-        将观测日志保存到文件
-        """
-        pass
-        
-    def create_observation_log(self, output_path, selected_columns=None):
-        """
-        创建完整的观测日志
-        
-        Parameters:
-        -----------
-        output_path : str
-            输出文件的路径
-        selected_columns : list, optional
-            要包含在输出中的列名列表。如果为None，将包含所有列。
-        
-        Returns:
-        --------
-        astropy.table.Table
-            生成的观测日志表格
-        """
-        # 获取文件列表
-        file_list = self.organizer.get_file_list()
-        
-        # 处理所有文件
-        self.process_all_files(file_list)
-        
-        # 根据目标类型计算位置信息
-        if self.is_motion:
-            self.calculate_orbit_info()
-        self.calculate_coordinates()
-        
-        # 创建并保存输出
-        self.create_output_table(selected_columns)
-        self.save_log(output_path)
-        
-        return self.log_table    
-
-def test_observation_logger():
-    # 只需要提供目标名称和数据路径
-    logger = ObservationLogger(
-        target_name="29P",
-        data_path="/path/to/data"
-    )
-    
-    # 创建日志
-    logger.create_observation_log(
-        output_path="output_log.csv",
-        selected_columns=['DATE-OBS', 'EXPOSURE', 'FILTER', ...]  # 可选
-    )
-    
 # Usage example
 if __name__ == "__main__":
     #organizer = AstroDataOrganizer('46P',data_root_path='/Volumes/ZexiWork/data/Swift')
-    organizer = AstroDataOrganizer('1P',data_root_path='/Volumes/ZexiWork/data/Swift')
+    #organizer = AstroDataOrganizer('1P',data_root_path='/Volumes/ZexiWork/data/Swift')
     #organizer.organize_data()
     #organizer.process_data(output_path='1p_uvot_data.csv')
     #organizer.process_data()
-    #test_observation_logger()
     #print(logger.data_table)
+    logger = ObservationLogger('29P',data_root_path='/Volumes/ZexiWork/data/Swift',target_alternate='90000395')
+    logger.process_data(output_path='29p_log.csv')
