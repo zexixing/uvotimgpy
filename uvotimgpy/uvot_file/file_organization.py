@@ -138,47 +138,26 @@ class ObservationLogger:
         self.organizer = AstroDataOrganizer(target_name, data_root_path)
         self.data_table = self.organizer.organize_data()
         
+        # Initialize header info
+        self.header_keys = {
+            'DATE-OBS': {'dtype': str, 'unit': None},
+            'DATE-END': {'dtype': str, 'unit': None}, 
+            'MIDTIME': {'dtype': str, 'unit': None},
+            'EXPOSURE': {'dtype': float, 'unit': u.second},
+            'WHEELPOS': {'dtype': int, 'unit': None},
+            'RA_PNT': {'dtype': float, 'unit': u.degree},
+            'DEC_PNT': {'dtype': float, 'unit': u.degree}, 
+            'PA_PNT': {'dtype': float, 'unit': u.degree},
+            'ASPCORR': {'dtype': str, 'unit': None},
+            'MOD8CORR': {'dtype': bool, 'unit': None},
+            'FLATCORR': {'dtype': bool, 'unit': None},
+            'CLOCKAPP': {'dtype': bool, 'unit': None},
+            'WCS': {'dtype': bool, 'unit': None},
+        }
+
         # Obtain coordinates for fixed targets
         if not is_motion:
             self._set_fixed_coordinates()
-
-    def _read_hdu_header(self, hdu):
-        """
-        A function for processing FITS file header information.
-
-        Parameters
-        hdu: FITS HDU object containing header information.
-
-        Returns
-        dict: Processed header information.
-        """
-
-        # add values and change data types of the values
-        header = hdu.header
-        header_info = {}
-        
-        start_time = Time(header.get('DATE-OBS', ''))
-        end_time = Time(header.get('DATE-END', ''))
-        mid_time = start_time + (end_time - start_time) / 2
-        
-        for key, info in self.header_keys.items():
-            value = header.get(key, '')
-            if key == 'MIDTIME':
-                value = mid_time.isot
-            elif key == 'WCS':
-                value = WCS(header)
-            elif info['dtype'] == bool:
-                value = str(value).upper() == 'T'
-            else:
-                try:
-                    value = info['dtype'](value)
-                    if info['unit'] is not None:
-                        value = value * info['unit']
-                except (ValueError, TypeError):
-                    value = None
-                    
-            header_info[key] = {'value': value, 'dtype': info['dtype'], 'unit': info['unit']}
-        return header_info
 
     def _set_fixed_coordinates(self):
         """
@@ -219,6 +198,44 @@ class ObservationLogger:
             if os.path.exists(path):
                 return path
         raise FileNotFoundError(f"Cannot find FITS file for obsid {obsid} with filter {filter_name}")
+    
+    def _read_hdu_header(self, hdu):
+        """
+        A function for processing FITS file header information.
+
+        Parameters
+        hdu: FITS HDU object containing header information.
+
+        Returns
+        dict: Processed header information.
+        """
+
+        # add values and change data types of the values
+        header = hdu.header
+        header_info = {}
+        
+        start_time = Time(header.get('DATE-OBS', ''))
+        end_time = Time(header.get('DATE-END', ''))
+        mid_time = start_time + (end_time - start_time) / 2
+        
+        for key, info in self.header_keys.items():
+            value = header.get(key, '')
+            if key == 'MIDTIME':
+                value = mid_time.isot
+            elif key == 'WCS':
+                value = WCS(header)
+            elif info['dtype'] == bool:
+                value = str(value).upper() == 'T'
+            else:
+                try:
+                    value = info['dtype'](value)
+                    if info['unit'] is not None:
+                        value = value * info['unit']
+                except (ValueError, TypeError):
+                    value = None
+                    
+            header_info[key] = {'value': value, 'dtype': info['dtype'], 'unit': info['unit']}
+        return header_info
 
     def calculate_orbit_info(self, times,
                              orbital_keywords):
@@ -244,49 +261,6 @@ class ObservationLogger:
                 print(f"Please provide exact target ID. Error: {str(e)}")
             raise
 
-    def process_data(self, output_path=None, save_format='csv', selected_columns=None, return_table=False,
-                     orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation']):
-        """
-        Process observation data and create output table.
-
-        Parameters
-        output_path (str, optional): Path to save processed data.
-        save_format (str, optional): Format to save data ('csv', 'ascii.ecsv', 'fits', etc.).
-        selected_columns (list, optional): Columns to include in output.
-        return_table (bool): Whether to return processed table.
-        orbital_keywords (list, optional): Keywords for orbital parameters to calculate
-
-        Returns
-        astropy.table.Table if return_table is True, None otherwise.
-        """
-        # Prepare empty table
-        column_names, dtypes, units = self._prepare_table_structure()
-        processed_table = QTable(names=column_names, dtype=dtypes, units=units)
-        
-        # Process each observation
-        wcs_dict = {}
-        midtimes = []
-        
-        for row in self.data_table:
-            fits_path = self._get_fits_path(row['OBSID'], row['FILTER'])
-            self._process_fits_file(fits_path, row, processed_table, wcs_dict, midtimes)
-            
-        # Add orbital data for moving targets
-        if self.is_motion and midtimes:
-            final_table = self._process_motion_target(processed_table, midtimes, wcs_dict, orbital_keywords)
-        else:
-            final_table = processed_table
-            
-        # Select columns and save
-        if isinstance(selected_columns, list):
-            final_table = final_table[selected_columns]
-        self.data_table = final_table
-        
-        if return_table:
-            return final_table
-        else:
-            process_astropy_table(final_table, output_path, save_format)
-
     def _prepare_table_structure(self):
         """
         Create table structure based on FITS headers.
@@ -295,22 +269,6 @@ class ObservationLogger:
         -------
         tuple: Column names and data types
         """
-        # Get sample header
-        self.header_keys = {
-            'DATE-OBS': {'dtype': str, 'unit': None},
-            'DATE-END': {'dtype': str, 'unit': None}, 
-            'MIDTIME': {'dtype': str, 'unit': None},
-            'EXPOSURE': {'dtype': float, 'unit': u.second},
-            'WHEELPOS': {'dtype': int, 'unit': None},
-            'RA_PNT': {'dtype': float, 'unit': u.degree},
-            'DEC_PNT': {'dtype': float, 'unit': u.degree}, 
-            'PA_PNT': {'dtype': float, 'unit': u.degree},
-            'ASPCORR': {'dtype': str, 'unit': None},
-            'MOD8CORR': {'dtype': bool, 'unit': None},
-            'FLATCORR': {'dtype': bool, 'unit': None},
-            'CLOCKAPP': {'dtype': bool, 'unit': None},
-            'WCS': {'dtype': bool, 'unit': None},
-        }
         
         # Build columns and data types
         column_names = list(self.data_table.colnames)
@@ -426,6 +384,49 @@ class ObservationLogger:
         except Exception as e:
             #print(f"Error processing motion target: {str(e)}")
             return processed_table
+        
+    def process_data(self, output_path=None, save_format='csv', selected_columns=None, return_table=False,
+                     orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation']):
+        """
+        Process observation data and create output table.
+
+        Parameters
+        output_path (str, optional): Path to save processed data.
+        save_format (str, optional): Format to save data ('csv', 'ascii.ecsv', 'fits', etc.).
+        selected_columns (list, optional): Columns to include in output.
+        return_table (bool): Whether to return processed table.
+        orbital_keywords (list, optional): Keywords for orbital parameters to calculate
+
+        Returns
+        astropy.table.Table if return_table is True, None otherwise.
+        """
+        # Prepare empty table
+        column_names, dtypes, units = self._prepare_table_structure()
+        processed_table = QTable(names=column_names, dtype=dtypes, units=units)
+        
+        # Process each observation
+        wcs_dict = {}
+        midtimes = []
+        
+        for row in self.data_table:
+            fits_path = self._get_fits_path(row['OBSID'], row['FILTER'])
+            self._process_fits_file(fits_path, row, processed_table, wcs_dict, midtimes)
+            
+        # Add orbital data for moving targets
+        if self.is_motion and midtimes:
+            final_table = self._process_motion_target(processed_table, midtimes, wcs_dict, orbital_keywords)
+        else:
+            final_table = processed_table
+            
+        # Select columns and save
+        if isinstance(selected_columns, list):
+            final_table = final_table[selected_columns]
+        self.data_table = final_table
+        
+        if return_table:
+            return final_table
+        else:
+            process_astropy_table(final_table, output_path, save_format)
         
 # Usage example
 if __name__ == "__main__":
