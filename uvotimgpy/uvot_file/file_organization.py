@@ -3,7 +3,7 @@ import tarfile
 import glob
 import re
 import numpy as np
-from astropy.table import Table, hstack
+from astropy.table import hstack, QTable
 from astropy.wcs import WCS
 from astropy import units as u
 from astropy.time import Time
@@ -24,21 +24,22 @@ class AstroDataOrganizer:
         """
         self.target_name = target_name
         self.project_path = os.path.join(data_root_path, target_name)
-        self.data_table = Table(names=['obsid', 'exp_no.', 'filter', 'image_type'],
-                                dtype=[str, int, str, str])
+        self.data_table = QTable(names=['OBSID', 'PNT_NO', 'FILTER', 'DATATYPE'],
+                                dtype=[str, int, str, str],
+                                units=[None, None, None, None])
 
     def organize_data(self):
         """
         Organize the astronomical data.
 
         Returns:
-        astropy.table.Table: Organized data in an Astropy Table.
+        astropy.table.QTable: Organized data in an Astropy QTable.
         """
         self._extract_tars()
         obsid_folders = self._get_obsid_folders()
         for obsid_folder in obsid_folders:
             self._process_obsid_folder(obsid_folder)
-        self.data_table['filter'] = normalize_filter_name(self.data_table['filter'], output_format='display')
+        self.data_table['FILTER'] = normalize_filter_name(self.data_table['FILTER'], output_format='display')
         return self.data_table
 
     def _extract_tars(self, delete_extracted=False):
@@ -151,52 +152,43 @@ class ObservationLogger:
         Returns
         dict: Processed header information.
         """
-        header_keys = {
-            'DATE-OBS': {'dtype': str, 'unit': None},
-            'DATE-END': {'dtype': str, 'unit': None}, 
-            'MIDTIME': {'dtype': str, 'unit': None},
-            'EXPOSURE': {'dtype': float, 'unit': u.second},
-            'WHEELPOS': {'dtype': int, 'unit': None},
-            'RA_PNT': {'dtype': float, 'unit': u.degree},
-            'DEC_PNT': {'dtype': float, 'unit': u.degree}, 
-            'PA_PNT': {'dtype': float, 'unit': u.degree},
-            'ASPCORR': {'dtype': str, 'unit': None},
-            'MOD8CORR': {'dtype': bool, 'unit': None},
-            'FLATCORR': {'dtype': bool, 'unit': None},
-            'CLOCKAPP': {'dtype': bool, 'unit': None}
-        }
+
+        # add values and change data types of the values
         header = hdu.header
-        header_info = {'WCS': {'value': WCS(header), 'dtype': 'wcs', 'unit': None}}
+        header_info = {}
         
         start_time = Time(header.get('DATE-OBS', ''))
         end_time = Time(header.get('DATE-END', ''))
         mid_time = start_time + (end_time - start_time) / 2
         
-        for key, info in header_keys.items():
+        for key, info in self.header_keys.items():
             value = header.get(key, '')
             if key == 'MIDTIME':
                 value = mid_time.isot
+            elif key == 'WCS':
+                value = WCS(header)
             elif info['dtype'] == bool:
                 value = str(value).upper() == 'T'
             else:
                 try:
                     value = info['dtype'](value)
+                    if info['unit'] is not None:
+                        value = value * info['unit']
                 except (ValueError, TypeError):
                     value = None
                     
             header_info[key] = {'value': value, 'dtype': info['dtype'], 'unit': info['unit']}
-            
         return header_info
 
     def _set_fixed_coordinates(self):
         """
-        Obtain coordinates for fixed target objects.
+        Obtain coordinates for fixed target (star) objects.
         
         Raises
         ValueError: If coordinates cannot be found for the target.
         """
         query = StarCoordinateQuery()
-        target = self.target_alternate or self.target_name # TODO: or 是啥意思
+        target = self.target_alternate or self.target_name
         coords = query.get_coordinates(target)
         if coords is None:
             raise ValueError(f"Cannot find coordinates for target: {target}")
@@ -259,7 +251,7 @@ class ObservationLogger:
 
         Parameters
         output_path (str, optional): Path to save processed data.
-        save_format (str, optional): Format to save data ('csv', etc.).
+        save_format (str, optional): Format to save data ('csv', 'ascii.ecsv', 'fits', etc.).
         selected_columns (list, optional): Columns to include in output.
         return_table (bool): Whether to return processed table.
         orbital_keywords (list, optional): Keywords for orbital parameters to calculate
@@ -268,15 +260,15 @@ class ObservationLogger:
         astropy.table.Table if return_table is True, None otherwise.
         """
         # Prepare empty table
-        column_names, dtypes = self._prepare_table_structure()
-        processed_table = Table(names=column_names, dtype=dtypes)
+        column_names, dtypes, units = self._prepare_table_structure()
+        processed_table = QTable(names=column_names, dtype=dtypes, units=units)
         
         # Process each observation
         wcs_dict = {}
         midtimes = []
         
         for row in self.data_table:
-            fits_path = self._get_fits_path(row['obsid'], row['filter'])
+            fits_path = self._get_fits_path(row['OBSID'], row['FILTER'])
             self._process_fits_file(fits_path, row, processed_table, wcs_dict, midtimes)
             
         # Add orbital data for moving targets
@@ -304,29 +296,37 @@ class ObservationLogger:
         tuple: Column names and data types
         """
         # Get sample header
-        first_row = self.data_table[0]
-        fits_path = self._get_fits_path(first_row['obsid'], first_row['filter'])
-        
-        with fits.open(fits_path) as hdul:
-            for ext in range(1, len(hdul)):
-                if isinstance(hdul[ext], fits.hdu.image.ImageHDU):
-                    header_info = self._read_hdu_header(hdul[ext])
-                    break
+        self.header_keys = {
+            'DATE-OBS': {'dtype': str, 'unit': None},
+            'DATE-END': {'dtype': str, 'unit': None}, 
+            'MIDTIME': {'dtype': str, 'unit': None},
+            'EXPOSURE': {'dtype': float, 'unit': u.second},
+            'WHEELPOS': {'dtype': int, 'unit': None},
+            'RA_PNT': {'dtype': float, 'unit': u.degree},
+            'DEC_PNT': {'dtype': float, 'unit': u.degree}, 
+            'PA_PNT': {'dtype': float, 'unit': u.degree},
+            'ASPCORR': {'dtype': str, 'unit': None},
+            'MOD8CORR': {'dtype': bool, 'unit': None},
+            'FLATCORR': {'dtype': bool, 'unit': None},
+            'CLOCKAPP': {'dtype': bool, 'unit': None},
+            'WCS': {'dtype': bool, 'unit': None},
+        }
         
         # Build columns and data types
         column_names = list(self.data_table.colnames)
         dtypes = [self.data_table[col].dtype for col in column_names]
+        units = [self.data_table[col].unit for col in self.data_table.colnames]
         
         # Add extra columns
-        extra_columns = [('ext_no', int)]
-        extra_columns.extend([(k, v['dtype']) for k, v in header_info.items() if k != 'WCS'])
-        extra_columns.extend([('x_pixel', float), ('y_pixel', float)])
+        extra_columns = [('EXT_NO', int, None)]
+        extra_columns.extend([(k, v['dtype'], v['unit']) for k, v in self.header_keys.items() if k != 'WCS'])
+        extra_columns.extend([('x_pixel', float, None), ('y_pixel', float, None)])
         
-        for col, dtype in extra_columns:
+        for col, dtype, unit in extra_columns:
             column_names.append(col)
             dtypes.append(dtype)
-            
-        return column_names, dtypes
+            units.append(unit)
+        return column_names, dtypes, units
 
     def _process_fits_file(self, fits_path, row, processed_table, wcs_dict, midtimes):
         """
@@ -366,7 +366,7 @@ class ObservationLogger:
                         if self.is_motion:
                             new_row.extend([np.nan, np.nan])
                             midtimes.append(header_info['MIDTIME']['value'])
-                            wcs_dict[f"{row['obsid']}_{row['filter']}_{ext_no}"] = header_info['WCS']['value']
+                            wcs_dict[f"{row['OBSID']}_{row['FILTER']}_{ext_no}"] = header_info['WCS']['value']
                         else:
                             wcs = header_info['WCS']['value']
                             x, y = wcs.all_world2pix(self.ra, self.dec, 1)
@@ -407,7 +407,7 @@ class ObservationLogger:
             y_pixels = []
 
             for row in merged_table:
-                wcs_key = f"{row['obsid']}_{row['filter']}_{row['ext_no']}"
+                wcs_key = f"{row['OBSID']}_{row['FILTER']}_{row['EXT_NO']}"
                 wcs = wcs_dict[wcs_key]
                 try:
                     x, y = wcs.all_world2pix(row['RA'], row['DEC'], 1)
@@ -436,4 +436,4 @@ if __name__ == "__main__":
     #organizer.process_data()
     #print(logger.data_table)
     logger = ObservationLogger('29P',data_root_path='/Volumes/ZexiWork/data/Swift',target_alternate='90000395')
-    logger.process_data(output_path='29p_log.csv')
+    logger.process_data()

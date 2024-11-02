@@ -1,7 +1,8 @@
 import os
 import glob
 from astropy.io import fits
-from astropy.table import Table
+from astropy.wcs import WCS
+from astropy.table import Table, QTable
 import numpy as np
 from astropy.time import Time
 from astropy.coordinates import SkyCoord
@@ -20,8 +21,9 @@ class HstAstroDataOrganizer:
         """
         self.target_name = target_name
         self.project_path = os.path.join(data_root_path, target_name)
-        self.data_table = Table(names=['date', 'file_name', 'file_path'],
-                                dtype=[str, str, str])
+        self.data_table = QTable(names=['date', 'file_name', 'file_path'],
+                                dtype=[str, str, str],
+                                units=[None, None, None])
 
     def organize_data(self):
         """
@@ -44,7 +46,11 @@ class HstAstroDataOrganizer:
         """
         target_path = self.project_path
         return [f for f in os.listdir(target_path) if os.path.isdir(os.path.join(target_path, f))]
-
+    
+    def _sort_by_filename(self, path):
+        filename = os.path.basename(path)
+        return int(filename[:-5])
+    
     def _process_date_folder(self, date_folder):
         """
         Process a single date folder, adding each FITS file to the data table.
@@ -53,10 +59,11 @@ class HstAstroDataOrganizer:
         date_folder (str): Name of the date folder to process.
         """
         date_path = os.path.join(self.project_path, date_folder)
-        fits_files = glob.glob(os.path.join(date_path, '*.fits'))
-        for fits_file in fits_files:
-            file_name = os.path.basename(fits_file)
-            self.data_table.add_row([date_folder, file_name, fits_file])
+        fits_file_paths = glob.glob(os.path.join(date_path, '*.fits'))
+        fits_file_paths = sorted(fits_file_paths, key=self._sort_by_filename)
+        for fits_file_path in fits_file_paths:
+            file_name = os.path.basename(fits_file_path)
+            self.data_table.add_row([date_folder, file_name[:-5], fits_file_path])
 
 class HstObservationLogger:
     """
@@ -83,7 +90,7 @@ class HstObservationLogger:
         self.organizer = HstAstroDataOrganizer(target_name, data_root_path)
         self.data_table = self.organizer.organize_data()
 
-    def _read_fits_header(self, fits_file):
+    def _read_fits_header(self, fits_file_path):
         """
         Read the header of a FITS file and extract necessary information.
         
@@ -93,22 +100,37 @@ class HstObservationLogger:
         Returns:
         dict: Extracted header information.
         """
-        with fits.open(fits_file) as hdul:
-            header = hdul[0].header
-        header_info = {
-            'DATE-OBS': header.get('DATE-OBS', ''),
-            'EXPSTART': header.get('EXPSTART', np.nan),
-            'EXPEND': header.get('EXPEND', np.nan),
-            'EXPTIME': header.get('EXPTIME', 0.0),
-            'FILTER': header.get('FILTER', ''),
-            'INSTRUME': header.get('INSTRUME', ''),
-            'DETECTOR': header.get('DETECTOR', ''),
-            'RA_TARG': header.get('RA_TARG', np.nan),
-            'DEC_TARG': header.get('DEC_TARG', np.nan),
-            'PROPOSID': header.get('PROPOSID', ''),
-            'PROGRAM': header.get('PROGRAM', ''),
-            'OBSERVER': header.get('OBSERVER', ''),
-        }
+        with fits.open(fits_file_path) as hdul:
+            header_0ext = hdul.header[0]
+            header_1ext = hdul.header[1]
+            start_time = Time(header_0ext.get('EXPSTART', 0.0), format='mjd')
+            end_time = Time(header_0ext.get('EXPEND', 0.0), format='mjd')
+            mid_time = start_time + (end_time - start_time) / 2
+            header_info = {
+                'DATE-OBS': {'value': start_time.isot, 'dtype':str, 'unit': None},
+                'DATE-END': {'value': end_time.isot, 'dtype':str, 'unit': None},
+                'MIDTIME': {'value': mid_time.isot, 'dtype':str, 'unit': None},
+                'EXPTIME': {'value': header_0ext.get('EXPTIME', 0.0), 'dtype':float, 'unit': u.second},
+                'FILTER': {'value': header_0ext.get('FILTER', ''), 'dtype':str, 'unit': None},
+                'INSTRUME': {'value': header_0ext.get('INSTRUME', ''), 'dtype':str, 'unit': None},
+                'REFFRAME': {'value': header_0ext.get('REFFRAME', ''), 'dtype':str, 'unit': None},
+                'ORIENTAT': {'value': header_1ext.get('ORIENTAT', ''), 'dtype':float, 'unit': u.degree},
+                'WCS': {'value': WCS(header_1ext), 'dtype': 'wcs', 'unit': None},
+            }
+
+            # update data types
+            for key, info in header_info.items():
+                value = info['value']
+                if info['dtype'] == bool:
+                    value = str(value).upper() == 'T'
+                else:
+                    try:
+                        value = info['dtype'](value)
+                        if info['unit'] is not None:
+                            value = value * info['unit']
+                    except (ValueError, TypeError):
+                        value = None
+                header_info[key]['value'] = value
         return header_info
 
     def _calculate_ephemeris(self, times):
@@ -222,15 +244,19 @@ class HstObservationLogger:
 def main():
     data_root_path = '/Volumes/ZexiWork/data/HST'  # 替换为您的数据根目录路径
     target_name = '29P'  # 您的目标名称
+    organizer = HstAstroDataOrganizer(target_name, data_root_path)
+    data_table = organizer.organize_data()
+    print(data_table)
+
 
     # 创建 HstObservationLogger 实例
-    logger = HstObservationLogger(target_name, data_root_path)
+    #logger = HstObservationLogger(target_name, data_root_path)
 
     # 定义输出路径
-    output_path = None  # 替换为您想要保存输出的路径
+    #output_path = None  # 替换为您想要保存输出的路径
 
     # 处理数据并保存结果
-    logger.process_data(output_path=output_path, save_format='csv')
+    #logger.process_data(output_path=output_path, save_format='csv')
 
     # 如果需要，返回处理后的数据表
     # processed_table = logger.process_data(return_table=True)
