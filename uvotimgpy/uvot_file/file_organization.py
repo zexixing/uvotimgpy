@@ -152,7 +152,7 @@ class ObservationLogger:
             'MOD8CORR': {'dtype': bool, 'unit': None},
             'FLATCORR': {'dtype': bool, 'unit': None},
             'CLOCKAPP': {'dtype': bool, 'unit': None},
-            'WCS': {'dtype': bool, 'unit': None},
+            'WCS': {'dtype': WCS, 'unit': None},
         }
 
         # Obtain coordinates for fixed targets

@@ -2,13 +2,14 @@ import os
 import glob
 from astropy.io import fits
 from astropy.wcs import WCS
-from astropy.table import Table, QTable
+from astropy.table import hstack, QTable
 import numpy as np
 from astropy.time import Time
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 from sbpy.data import Ephem
 from utils.file_io import process_astropy_table
+
 
 class HstAstroDataOrganizer:
     def __init__(self, target_name, data_root_path=None):
@@ -69,7 +70,7 @@ class HstObservationLogger:
     """
     A class for logging observations from HST data.
     """
-    def __init__(self, target_name, data_root_path, target_alternate=None, location='@hst'):
+    def __init__(self, target_name, data_root_path, target_alternate=None, location='500'):
         """
         Initialize the HstObservationLogger.
         
@@ -90,6 +91,18 @@ class HstObservationLogger:
         self.organizer = HstAstroDataOrganizer(target_name, data_root_path)
         self.data_table = self.organizer.organize_data()
 
+        self.header_keys = {
+            'DATE-OBS': {'dtype':str, 'unit': None},
+            'DATE-END': {'dtype':str, 'unit': None},
+            'MIDTIME': {'dtype':str, 'unit': None},
+            'EXPTIME': {'dtype':float, 'unit': u.second},
+            'FILTER': {'dtype':str, 'unit': None},
+            'INSTRUME': {'dtype':str, 'unit': None},
+            'REFFRAME': {'dtype':str, 'unit': None},
+            'ORIENTAT': {'dtype':float, 'unit': u.degree},
+            'WCS': {'dtype': 'wcs', 'unit': None},
+        }
+
     def _read_fits_header(self, fits_file_path):
         """
         Read the header of a FITS file and extract necessary information.
@@ -101,165 +114,154 @@ class HstObservationLogger:
         dict: Extracted header information.
         """
         with fits.open(fits_file_path) as hdul:
-            header_0ext = hdul.header[0]
-            header_1ext = hdul.header[1]
+            header_0ext = hdul[0].header
+            header_1ext = hdul[1].header
+            header_info = {}
             start_time = Time(header_0ext.get('EXPSTART', 0.0), format='mjd')
             end_time = Time(header_0ext.get('EXPEND', 0.0), format='mjd')
             mid_time = start_time + (end_time - start_time) / 2
-            header_info = {
-                'DATE-OBS': {'value': start_time.isot, 'dtype':str, 'unit': None},
-                'DATE-END': {'value': end_time.isot, 'dtype':str, 'unit': None},
-                'MIDTIME': {'value': mid_time.isot, 'dtype':str, 'unit': None},
-                'EXPTIME': {'value': header_0ext.get('EXPTIME', 0.0), 'dtype':float, 'unit': u.second},
-                'FILTER': {'value': header_0ext.get('FILTER', ''), 'dtype':str, 'unit': None},
-                'INSTRUME': {'value': header_0ext.get('INSTRUME', ''), 'dtype':str, 'unit': None},
-                'REFFRAME': {'value': header_0ext.get('REFFRAME', ''), 'dtype':str, 'unit': None},
-                'ORIENTAT': {'value': header_1ext.get('ORIENTAT', ''), 'dtype':float, 'unit': u.degree},
-                'WCS': {'value': WCS(header_1ext), 'dtype': 'wcs', 'unit': None},
-            }
 
-            # update data types
-            for key, info in header_info.items():
-                value = info['value']
-                if info['dtype'] == bool:
-                    value = str(value).upper() == 'T'
-                else:
-                    try:
-                        value = info['dtype'](value)
-                        if info['unit'] is not None:
-                            value = value * info['unit']
-                    except (ValueError, TypeError):
-                        value = None
-                header_info[key]['value'] = value
+            for key, info in self.header_keys.items():
+                try:
+                    if key == 'DATE-OBS':
+                        value = start_time.isot
+                    elif key == 'DATE-END':
+                        value = end_time.isot
+                    elif key == 'MIDTIME':
+                        value = mid_time.isot
+                    elif key == 'WCS':
+                        value = WCS(header_1ext)
+                    elif key in ['ORIENTAT']:
+                        value = info['dtype'](header_1ext.get(key, ''))
+                    else:
+                        value = info['dtype'](header_0ext.get(key, ''))
+                    if info['unit'] is not None:
+                        value = value * info['unit']
+                except (ValueError, TypeError):
+                    value = None
+                header_info[key] = {'value': value, 'dtype': info['dtype'], 'unit': info['unit']}
+
         return header_info
 
-    def _calculate_ephemeris(self, times):
+    def calculate_orbit_info(self, times,
+                             orbital_keywords):
         """
-        Calculate ephemeris data for the moving target.
-        
-        Parameters:
-        times (list): List of observation times (as astropy Time objects).
-        
-        Returns:
-        sbpy.data.Ephem: Ephemeris data.
+        Calculate orbital information for moving targets with sbpy.
+
+        Parameters
+        times: Time points for orbit calculation.
+        orbital_keywords (list, optional): Keywords for orbital parameters to calculate
+
+        Returns
+        Ephem: Orbital ephemeris data.
+
+        Raises
+        Exception: If target name is ambiguous or calculation fails.
         """
         try:
             target = self.target_alternate or self.target_name
-            eph = Ephem.from_horizons(target, epochs=times, location=self.location)
-            return eph
+            eph = Ephem.from_horizons(target, location=self.location, epochs=times)
+            return eph[orbital_keywords]
         except Exception as e:
-            print(f"Error calculating ephemeris: {e}")
-            return None
+            if "Ambiguous target name" in str(e):
+                print(f"Please provide exact target ID. Error: {str(e)}")
+            raise
 
-    def process_data(self, output_path=None, save_format='csv', selected_columns=None, return_table=False):
+    def _process_fits_file(self):
         """
-        Process observation data and create output table.
-        
-        Parameters:
-        output_path (str, optional): Path to save processed data.
-        save_format (str, optional): Format to save data ('csv', 'ascii', etc.).
-        selected_columns (list, optional): Columns to include in output.
-        return_table (bool): Whether to return the processed table.
-        
-        Returns:
-        astropy.table.Table if return_table is True, None otherwise.
+        Process observation data and create output table with header info.
         """
         # Prepare empty table
-        column_names = ['date', 'file_name', 'DATE-OBS', 'EXPSTART', 'EXPEND', 'EXPTIME', 
-                        'FILTER', 'INSTRUME', 'DETECTOR', 'RA_TARG', 'DEC_TARG',
-                        'PROPOSID', 'PROGRAM', 'OBSERVER', 'RA', 'DEC', 'delta', 'r', 'elongation']
-        dtypes = [str, str, str, float, float, float, str, str, str, float, float, str, str, str, float, float, float, float, float]
-        processed_table = Table(names=column_names, dtype=dtypes)
-        
+        column_names = list(self.data_table.colnames[:-1])
+        column_names_old = list(self.data_table.colnames[:-1])
+        dtypes = [self.data_table[col].dtype for col in column_names]
+        units = [self.data_table[col].unit for col in column_names]
+
+        extra_columns = ([(k, v['dtype'], v['unit']) for k, v in self.header_keys.items() if k != 'WCS'])
+        extra_columns.extend([('x_pixel', float, None), ('y_pixel', float, None)])
+                    
+        for col, dtype, unit in extra_columns:
+            column_names.append(col)
+            dtypes.append(dtype)
+            units.append(unit)
+
+        processed_table = QTable(names=column_names, dtype=dtypes, units=units)
+        # ------------
         # Lists to store times for ephemeris calculation
-        times = []
-        indices = []  # To keep track of the row indices
+        targettimes = []
+        wcs_dict = {}
         
         # Process each FITS file
-        for idx, row in enumerate(self.data_table):
-            date_folder = row['date']
-            file_name = row['file_name']
+        for row in self.data_table:
             fits_path = row['file_path']
             try:
                 header_info = self._read_fits_header(fits_path)
                 # Parse observation time
-                date_obs = header_info['DATE-OBS']
-                time_obs = Time(date_obs, format='isot', scale='utc')
-                times.append(time_obs)
-                indices.append(idx)
+                date_obs = header_info['DATE-OBS']['value']
+                #time_obs = Time(date_obs, format='isot', scale='utc')
+                targettimes.append(date_obs)
                 # Prepare row data
-                new_row = [
-                    date_folder,
-                    file_name,
-                    header_info['DATE-OBS'],
-                    header_info['EXPSTART'],
-                    header_info['EXPEND'],
-                    header_info['EXPTIME'],
-                    header_info['FILTER'],
-                    header_info['INSTRUME'],
-                    header_info['DETECTOR'],
-                    header_info['RA_TARG'],
-                    header_info['DEC_TARG'],
-                    header_info['PROPOSID'],
-                    header_info['PROGRAM'],
-                    header_info['OBSERVER'],
-                    np.nan,  # Placeholder for RA
-                    np.nan,  # Placeholder for DEC
-                    np.nan,  # Placeholder for delta
-                    np.nan,  # Placeholder for r
-                    np.nan,  # Placeholder for elongation
-                ]
+                new_row = []
+                for col in column_names_old:
+                    new_row.append(row[col])
+                for key, info in header_info.items():
+                    if key != 'WCS':
+                        new_row.append(info['value'])
+                new_row.extend([np.nan, np.nan])
+                wcs_dict[f"{row['date']}_{row['file_name']}"] = header_info['WCS']['value']
                 processed_table.add_row(new_row)
             except Exception as e:
                 print(f"Error processing file {fits_path}: {str(e)}")
-        
-        # Calculate ephemeris data
-        if times:
-            eph = self._calculate_ephemeris(times)
-            if eph:
-                # Update processed_table with ephemeris data
-                for idx, eph_row in zip(indices, eph):
-                    processed_table['RA'][idx] = eph_row['RA'].value
-                    processed_table['DEC'][idx] = eph_row['DEC'].value
-                    processed_table['delta'][idx] = eph_row['delta'].to(u.au).value
-                    processed_table['r'][idx] = eph_row['r'].to(u.au).value
-                    processed_table['elongation'][idx] = eph_row['elongation'].value
-        
-        # Select columns if specified
+        return processed_table, targettimes, wcs_dict
+    
+    def _merge_ephem_table(self, processed_table, targettimes, wcs_dict, orbital_keywords):
+        orbit_ephem = self.calculate_orbit_info(Time(targettimes),orbital_keywords)
+        orbit_table = orbit_ephem.table
+        merged_table = hstack([processed_table, orbit_table])
+
+        x_pixels = []
+        y_pixels = []
+
+        for row in merged_table:
+            wcs_key = f"{row['date']}_{row['file_name']}"
+            wcs = wcs_dict[wcs_key]
+            try:
+                x, y = wcs.all_world2pix(row['RA'], row['DEC'], 1)
+                x_pixels.append(x)
+                y_pixels.append(y)
+            except Exception as e:
+                print(f"Error calculating pixel coordinates for {wcs_key}: {str(e)}")
+                x_pixels.append(np.nan)
+                y_pixels.append(np.nan)                
+
+        merged_table['x_pixel'] = x_pixels
+        merged_table['y_pixel'] = y_pixels
+
+        return merged_table
+    
+    def process_data(self, output_path=None, save_format='csv', selected_columns=None, return_table=False,
+                     orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation']):
+        processed_table, targettimes, wcs_dict = self._process_fits_file()
+        final_table = self._merge_ephem_table(processed_table, targettimes, wcs_dict, orbital_keywords)
+
         if isinstance(selected_columns, list):
-            final_table = processed_table[selected_columns]
-        else:
-            final_table = processed_table
-        
+            final_table = final_table[selected_columns]
         self.data_table = final_table
-        
-        # Save or return the table
+
         if return_table:
             return final_table
         else:
-            process_astropy_table(self.data_table, output_path, save_format)
-        
-# 假设上述类已经定义并导入
+            process_astropy_table(final_table, output_path, save_format)
 
 def main():
     data_root_path = '/Volumes/ZexiWork/data/HST'  # 替换为您的数据根目录路径
     target_name = '29P'  # 您的目标名称
-    organizer = HstAstroDataOrganizer(target_name, data_root_path)
-    data_table = organizer.organize_data()
-    print(data_table)
-
-
-    # 创建 HstObservationLogger 实例
-    #logger = HstObservationLogger(target_name, data_root_path)
-
-    # 定义输出路径
-    #output_path = None  # 替换为您想要保存输出的路径
-
-    # 处理数据并保存结果
-    #logger.process_data(output_path=output_path, save_format='csv')
-
-    # 如果需要，返回处理后的数据表
-    # processed_table = logger.process_data(return_table=True)
+    #organizer = HstAstroDataOrganizer(target_name, data_root_path)
+    #data_table = organizer.organize_data()
+    #print(data_table)
+    logger = HstObservationLogger(target_name, data_root_path, target_alternate='90000395')
+    output_path = None
+    logger.process_data(output_path=output_path, save_format='csv')
 
 if __name__ == '__main__':
     main()
