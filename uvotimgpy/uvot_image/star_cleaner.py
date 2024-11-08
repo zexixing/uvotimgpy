@@ -31,7 +31,7 @@ class StarIdentifier:
     def by_sigma_clip(self, image: np.ndarray, sigma: float = 3.,
                      maxiters: Optional[int] = None) -> np.ndarray:
         """用sigma-clip方法识别"""
-        clipped = sigma_clip(image, sigma=sigma, maxiters=maxiters)
+        clipped = sigma_clip(image, sigma=sigma, maxiters=maxiters, masked=True)
         self.last_mask = clipped.mask
         return clipped.mask
     

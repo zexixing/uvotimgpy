@@ -90,7 +90,7 @@ class DS9Converter:
 def rescale_images(images: Union[np.ndarray, List[np.ndarray]], 
                   current_scales: Union[float, List[float]], 
                   new_scale: Optional[float] = None,
-                  source_coords: Optional[List[Tuple[float, float]]] = None,
+                  target_coords: Optional[List[Tuple[float, float]]] = None,
                   headers: Optional[List[fits.Header]] = None) -> Tuple:
     """
     将图像重新缩放到新的像素尺度
@@ -100,7 +100,7 @@ def rescale_images(images: Union[np.ndarray, List[np.ndarray]],
     images : 单个图像数组或图像数组列表
     current_scales : 当前像素尺度或尺度列表
     new_scale : 新的像素尺度，如果为None则使用最大的尺度
-    source_coords : 源在各个图像中的坐标列表 [(x1,y1), (x2,y2),...]
+    target_coords : 源在各个图像中的坐标列表 [(x1,y1), (x2,y2),...]
     headers : FITS头文件列表
     
     Returns
@@ -111,7 +111,7 @@ def rescale_images(images: Union[np.ndarray, List[np.ndarray]],
     if not isinstance(images, list):
         images = [images]
         current_scales = [current_scales]
-        source_coords = [source_coords] if source_coords is not None else None
+        target_coords = [target_coords] if target_coords is not None else None
     
     # 如果未指定新尺度，使用最大的尺度
     if new_scale is None:
@@ -142,8 +142,8 @@ def rescale_images(images: Union[np.ndarray, List[np.ndarray]],
         rescaled_images.append(new_img)
         
         # 更新坐标
-        if source_coords:
-            x, y = source_coords[i]
+        if target_coords:
+            x, y = target_coords[i]
             new_coords.append((x/factor, y/factor))
             
         # 更新header
@@ -154,13 +154,13 @@ def rescale_images(images: Union[np.ndarray, List[np.ndarray]],
     
     if headers:
         return rescaled_images, new_coords, updated_headers
-    elif source_coords:
+    elif target_coords:
         return rescaled_images, new_coords
     else:
         return rescaled_images
 
 def rotate_image(img: np.ndarray, 
-                source_coord: Tuple[Union[float, int], Union[float, int]], 
+                target_coord: Tuple[Union[float, int], Union[float, int]], 
                 angle: float,
                 fill_value: Union[float, None] = np.nan) -> np.ndarray:
     """
@@ -169,7 +169,7 @@ def rotate_image(img: np.ndarray,
     Parameters
     ----------
     img : 输入图像
-    source_coord : (column, row)源的坐标
+    target_coord : (column, row)源的坐标
     angle : 旋转角度（度）
     fill_value : 填充值
     """
@@ -177,15 +177,15 @@ def rotate_image(img: np.ndarray,
         img = img.byteswap().newbyteorder()
     return rotate(img, 
                   -angle,
-                  center=source_coord,
+                  center=target_coord,
                   preserve_range=True,
                   mode='constant',
                   cval=fill_value,    # 指定填充值
                   clip=True)
 
 def crop_image(img: np.ndarray, 
-              source_coord: Tuple[Union[float, int], Union[float, int]], 
-              new_source_coord: Tuple[Union[float, int], Union[float, int]],
+              target_coord: Tuple[Union[float, int], Union[float, int]], 
+              new_target_coord: Tuple[Union[float, int], Union[float, int]],
               fill_value: Union[float, None] = np.nan) -> np.ndarray:
     """
     以源位置为中心裁剪图像
@@ -193,12 +193,12 @@ def crop_image(img: np.ndarray,
     Parameters
     ----------
     img : 输入图像
-    source_coord : (column, row)源在原图中的坐标
-    new_source_coord : (column, row)源在新图中的期望坐标
+    target_coord : (column, row)源在原图中的坐标
+    new_target_coord : (column, row)源在新图中的期望坐标
     fill_value : 填充值
     """
-    col, row = source_coord
-    new_col, new_row = new_source_coord
+    col, row = target_coord
+    new_col, new_row = new_target_coord
     
     # 计算新图像大小
     new_size = (2 * new_col + 1, 2 * new_row + 1)
@@ -222,14 +222,14 @@ def crop_image(img: np.ndarray,
     return new_img
 
 def align_images(images: List[np.ndarray], 
-                source_coords: List[Tuple[Union[float, int], Union[float, int]]],
-                new_source_coord: Tuple[Union[float, int], Union[float, int]],
+                target_coords: List[Tuple[Union[float, int], Union[float, int]]],
+                new_target_coord: Tuple[Union[float, int], Union[float, int]],
                 fill_value: Union[float, None] = np.nan) -> List[np.ndarray]:
     """
     对齐一系列图像
     """
-    return [crop_image(img, coord, new_source_coord, fill_value) 
-            for img, coord in zip(images, source_coords)]
+    return [crop_image(img, coord, new_target_coord, fill_value) 
+            for img, coord in zip(images, target_coords)]
 
 def stack_images(images: List[np.ndarray], 
                 method: str = 'median') -> np.ndarray:
@@ -266,11 +266,11 @@ if __name__ == '__main__':
         col, row = DS9Converter.ds9_to_coords(x, y)[2:]
         target_list.append((col, row))
 
-        img = rotate_image(img, source_coord=(col,row), angle=angle, fill_value=np.nan)
+        img = rotate_image(img, target_coord=(col,row), angle=angle, fill_value=np.nan)
         img_list.append(img)
 
-    new_source_coord_ds9 = (100,100)
-    col, row = DS9Converter.ds9_to_coords(new_source_coord_ds9[0], new_source_coord_ds9[1])[2:]
+    new_target_coord_ds9 = (100,100)
+    col, row = DS9Converter.ds9_to_coords(new_target_coord_ds9[0], new_target_coord_ds9[1])[2:]
     img_list = align_images(img_list, target_list, (col,row))
 
     img_a = img_list[0]

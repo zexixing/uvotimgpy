@@ -16,12 +16,12 @@ class StarCoordinateQuery:
         Coordinates stored in degrees, FK5 J2000 system
         """
         self.known_stars = {
-            'HD 12345': {'ra': 123.456, 'dec': 45.678},
-            'SAO 12345': {'ra': 234.567, 'dec': 56.789},
-            'TYC 1234-5678-1': {'ra': 345.678, 'dec': 67.890},
-            'P177D': {'ra':239.80666667, 'dec':47.61163889}, # 15 59 13.579 +47 36 41.91 13.49mag 
-            'P041C': {'ra':222.99166667, 'dec':71.7215}, # 14 51 57.980 +71 43 17.39 12.16mag
-            'P330E': {'ra':247.891042, 'dec':30.146417}, # 16 31 33.813 +30 08 46.40 12.92mag
+            'HD 12345': {'ra': 123.456*u.deg, 'dec': 45.678*u.deg},
+            'SAO 12345': {'ra': 234.567*u.deg, 'dec': 56.789*u.deg},
+            'TYC 1234-5678-1': {'ra': 345.678*u.deg, 'dec': 67.890*u.deg},
+            'P177D': {'ra':239.80666667*u.deg, 'dec':47.61163889*u.deg}, # 15 59 13.579 +47 36 41.91 13.49mag 
+            'P041C': {'ra':222.99166667*u.deg, 'dec':71.7215*u.deg}, # 14 51 57.980 +71 43 17.39 12.16mag
+            'P330E': {'ra':247.891042*u.deg, 'dec':30.146417*u.deg}, # 16 31 33.813 +30 08 46.40 12.92mag
         }
         self.name_lookup = {name.lower(): name for name in self.known_stars}
     
@@ -93,8 +93,8 @@ class StarCoordinateQuery:
         # 1. Try exact match in local database
         if target_name in self.known_stars:
             star_info = self.known_stars[target_name]
-            coords = SkyCoord(ra=star_info['ra']*u.deg, 
-                            dec=star_info['dec']*u.deg, 
+            coords = SkyCoord(ra=star_info['ra'], 
+                            dec=star_info['dec'], 
                             frame='fk5',
                             equinox='J2000')
             
@@ -104,8 +104,8 @@ class StarCoordinateQuery:
             if matched_name is not None:
                 star_info = self.known_stars[matched_name]
                 print(f"Found fuzzy match: {target_name} -> {matched_name}")
-                coords = SkyCoord(ra=star_info['ra']*u.deg, 
-                                dec=star_info['dec']*u.deg,
+                coords = SkyCoord(ra=star_info['ra'], 
+                                dec=star_info['dec'],
                                 frame='fk5',
                                 equinox='J2000')
         
