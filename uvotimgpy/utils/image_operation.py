@@ -265,27 +265,26 @@ if __name__ == '__main__':
         angle = float(hdul[1].header['ORIENTAT'])
         col, row = DS9Converter.ds9_to_coords(x, y)[2:]
         target_list.append((col, row))
-    
+
         img = rotate_image(img, source_coord=(col,row), angle=angle, fill_value=np.nan)
         img_list.append(img)
-    
+
     new_source_coord_ds9 = (100,100)
     col, row = DS9Converter.ds9_to_coords(new_source_coord_ds9[0], new_source_coord_ds9[1])[2:]
     img_list = align_images(img_list, target_list, (col,row))
-    
+
     img_a = img_list[0]
     img_b = img_list[1]
     diff = img_a - img_b
     mask_pos = diff > 0.05
     mask_neg = diff < -0.05
-    
+
     filled_a = img_a.copy()
     filled_b = img_b.copy()
-    
+
     filled_a[mask_pos] = img_b[mask_pos]
     filled_b[mask_neg] = img_a[mask_neg]
-    
-    plt.imshow(filled_a,vmin=0, vmax=2)
-    plt.show()
-    plt.imshow(filled_b,vmin=0, vmax=2)
-    plt.show()
+
+    from visualizer import MaskInspector
+    inspector = MaskInspector(img_a, mask_pos)
+    inspector.show_comparison(vmin=0,vmax=2)
