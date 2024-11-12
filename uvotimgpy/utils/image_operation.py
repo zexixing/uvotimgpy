@@ -454,9 +454,7 @@ class RadialProfile:
         if len(valid_data) == 0:
             return np.nan
             
-        # 使用sigma_clipped_stats可以去除异常值
-        mean, median, _ = sigma_clipped_stats(valid_data)
-        return median if self.method == 'median' else mean
+        return np.median(valid_data) if self.method == 'median' else np.mean(valid_data)
             
     def compute(self) -> Tuple[np.ndarray, np.ndarray]:
         """
