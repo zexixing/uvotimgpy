@@ -18,7 +18,7 @@ class StarIdentifier:
         mask_pos = diff > threshold
         mask_neg = diff < -threshold
         self.last_mask = mask_pos | mask_neg
-        return mask_pos, mask_neg
+        return mask_pos, mask_neg # mask是star
     
     def by_rings(self, image: np.ndarray, center: Tuple[int, int], 
                 radii: List[int], threshold: float = 3.) -> np.ndarray:
@@ -33,7 +33,7 @@ class StarIdentifier:
         """用sigma-clip方法识别"""
         clipped = sigma_clip(image, sigma=sigma, maxiters=maxiters, masked=True)
         self.last_mask = clipped.mask
-        return clipped.mask
+        return clipped.mask # mask是star
     
     def by_manual(self, image: np.ndarray, positions: List[Tuple[int, int]], 
                  radius: int) -> np.ndarray:

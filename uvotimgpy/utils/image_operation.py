@@ -3,6 +3,7 @@ import numpy as np
 #from scipy.ndimage import shift, rotate
 from skimage.transform import rotate
 from typing import List, Tuple, Union, Optional
+from photutils.aperture import ApertureMask, BoundingBox, CircularAnnulus
 
 class DS9Converter:
     def __init__(self):
@@ -52,7 +53,7 @@ class DS9Converter:
         return ds9_out_x, ds9_out_y, python_column, python_row
     
     @staticmethod
-    def coords_to_ds9(python_column: Union[float, int], 
+    def coords_to_ds9(python_column: Union[float, int],
                       python_row: Union[float, int], 
                       to_int: bool = True) -> Union[Tuple[int, int, int, int], 
                                                    Tuple[float, float, float, float]]:
@@ -169,7 +170,7 @@ def rotate_image(img: np.ndarray,
     Parameters
     ----------
     img : 输入图像
-    target_coord : (column, row)源的坐标
+    target_coord : (row, column)源的坐标
     angle : 旋转角度（度）
     fill_value : 填充值
     """
@@ -201,7 +202,7 @@ def crop_image(img: np.ndarray,
     new_col, new_row = new_target_coord
     
     # 计算新图像大小
-    new_size = (2 * new_col + 1, 2 * new_row + 1)
+    new_size = (2 * new_row + 1, 2 * new_col + 1)
     new_img = np.full(new_size, fill_value)
     
     # 计算裁剪范围
@@ -248,8 +249,265 @@ def stack_images(images: List[np.ndarray],
     else:
         raise ValueError("method must be 'median' or 'sum'")
     
+class DistanceMap:
+    """处理图像中像素到指定中心点距离的类"""
+    
+    def __init__(self, image: np.ndarray, center: tuple):
+        self.image = image
+        self.center_col, self.center_row = center
+        self._dist_map = None
+        
+    def get_distance_map(self) -> np.ndarray:
+        """计算每个像素到中心的距离"""
+        if self._dist_map is None:
+            rows, cols = np.indices(self.image.shape)
+            self._dist_map = np.sqrt(
+                (cols - self.center_col)**2 + 
+                (rows - self.center_row)**2
+            )
+        return self._dist_map
+    
+    def get_range_mask(self, inner_radius: float, outer_radius: float) -> np.ndarray:
+        """
+        获取不在指定距离范围内的像素掩膜
+        
+        Parameters
+        ----------
+        inner_radius : float
+            内半径
+        outer_radius : float
+            外半径
+            
+        Returns
+        -------
+        np.ndarray
+            布尔掩膜，在指定范围内的像素为True
+        """
+        dist_map = self.get_distance_map()
+        return (dist_map >= inner_radius) | (dist_map < outer_radius)
+    
+    def get_index_map(self, step) -> np.ndarray:
+        """获取距离的索引图"""            
+        dist_map = self.get_distance_map()
+        index_map = np.round(dist_map / step).astype(int) # -1
+        index_map = np.maximum(index_map, 1)
+        return index_map
 
-if __name__ == '__main__':
+class UnifiedMask:
+    def __init__(self, mask_data: Union[np.ndarray, ApertureMask], image_shape: Tuple[int, int] = None):
+        """
+        统一的掩膜类
+        
+        Parameters
+        ----------
+        mask_data : numpy.ndarray 或 ApertureMask
+            掩膜数据
+        image_shape : tuple, optional
+            原始图像的形状，当使用ApertureMask时必须提供
+        """
+        if isinstance(mask_data, ApertureMask):
+            if image_shape is None:
+                raise ValueError("image_shape must be provided when using ApertureMask")
+            self._mask = mask_data
+            self._image_shape = image_shape
+            self._is_aperture = True
+        else:
+            self._mask = np.asarray(mask_data, dtype=bool)
+            self._image_shape = mask_data.shape
+            self._is_aperture = False
+    
+    def to_bool_array(self) -> np.ndarray:
+        """
+        转换为布尔数组
+        
+        Returns
+        -------
+        numpy.ndarray
+            布尔数组形式的掩膜
+        """
+        if not self._is_aperture:
+            return self._mask
+        
+        full_mask = np.zeros(self._image_shape, dtype=bool)
+        bbox = self._mask.bbox
+        yslice = slice(bbox.iymin, bbox.iymax)
+        xslice = slice(bbox.ixmin, bbox.ixmax)
+        full_mask[yslice, xslice] = self._mask.data > 0
+        return full_mask
+    
+    def to_aperture_mask(self) -> ApertureMask:
+        """
+        转换为ApertureMask
+        
+        Returns
+        -------
+        ApertureMask
+            photutils的ApertureMask对象
+        """
+        if self._is_aperture:
+            return self._mask
+        
+        # 找到掩膜的边界框
+        rows, cols = np.where(self._mask)
+        if len(rows) == 0:  # 空掩膜
+            return ApertureMask(np.array([[False]]), bbox=BoundingBox(0, 1, 0, 1))
+        
+        # 计算边界框
+        ymin, ymax = rows.min(), rows.max() + 1
+        xmin, xmax = cols.min(), cols.max() + 1
+        
+        # 提取边界框内的数据
+        mask_data = self._mask[ymin:ymax, xmin:xmax]
+        bbox = BoundingBox(ixmin=xmin, ixmax=xmax, iymin=ymin, iymax=ymax)
+        
+        return ApertureMask(mask_data, bbox=bbox)
+    
+    def __array__(self) -> np.ndarray:
+        """使对象可以直接用作numpy数组"""
+        return self.to_bool_array()
+    
+    @property
+    def shape(self) -> Tuple[int, int]:
+        """返回掩膜形状"""
+        return self._image_shape
+
+class RadialProfile:
+    """使用photutils测量图像的径向profile"""
+    
+    def __init__(self, image: np.ndarray, center: tuple, step: float,
+                 bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask]] = None,
+                 start: Optional[float] = None,
+                 end: Optional[float] = None,
+                 method: str = 'median'):
+        """
+        Parameters
+        ----------
+        image : np.ndarray
+            输入图像
+        center : tuple
+            中心点坐标 (x, y)
+        step : float
+            环宽度
+        bad_pixel_mask : np.ndarray or ApertureMask, optional
+            坏像素掩模，True表示被mask的像素
+        start : float, optional
+            起始半径，默认为0
+        end : float, optional
+            结束半径，默认为图像中心到角落的距离
+        method : str
+            计算方法，'median'或'mean'
+        """
+        self.image = self._mask_image(image, bad_pixel_mask)
+        self.center = center
+        self.step = step
+        self.method = method
+        
+        # 设置起始和结束半径
+        self.start = start if start is not None else 0
+        if end is None:
+            rows, cols = image.shape
+            self.end = np.sqrt((rows/2)**2 + (cols/2)**2)
+        else:
+            self.end = end
+            
+    def _mask_image(self, image: np.ndarray,
+                    bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask]]) -> np.ndarray:
+        """
+        处理输入图像和掩模
+        
+        Parameters
+        ----------
+        image : np.ndarray
+            输入图像
+        bad_pixel_mask : np.ndarray or ApertureMask, optional
+            坏像素掩模，True表示被mask的像素
+            
+        Returns
+        -------
+        np.ndarray
+            处理后的图像，被mask的像素设为nan
+        """
+        if bad_pixel_mask is not None:
+            mask = UnifiedMask(bad_pixel_mask, image.shape)
+            masked_image = image.copy()
+            masked_image[mask.to_bool_array()] = np.nan
+            return masked_image
+        return image
+            
+    def _measure_ring_stats(self, annulus: CircularAnnulus) -> float:
+        """
+        计算环内像素的统计值
+        """
+        # 获取环内的像素掩膜
+        annulus_mask = annulus.to_mask(method='center')
+        
+        # 获取环内的像素值
+        annulus_data = annulus_mask.multiply(self.image)
+        
+        # 使用环形掩模来选择环内的像素
+        ring_mask = annulus_mask.data > 0
+        valid_data = annulus_data[ring_mask]
+        
+        # 移除nan值
+        valid_data = valid_data[~np.isnan(valid_data)]
+            
+        if len(valid_data) == 0:
+            return np.nan
+            
+        # 使用sigma_clipped_stats可以去除异常值
+        mean, median, _ = sigma_clipped_stats(valid_data)
+        return median if self.method == 'median' else mean
+            
+    def compute(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        计算径向profile
+        
+        Returns
+        -------
+        radii : np.ndarray
+            半径值数组
+        values : np.ndarray
+            对应的统计值数组
+        """
+        # 计算环的数量
+        n_rings = int(np.ceil((self.end - self.start) / self.step))
+        
+        radii = []
+        values = []
+        
+        for i in range(n_rings):
+            r_inner = self.start + i * self.step
+            r_outer = r_inner + self.step
+            
+            # 创建环形区域
+            annulus = CircularAnnulus(self.center, r_in=r_inner, r_out=r_outer)
+            
+            # 计算环的中心半径
+            center_radius = (r_inner + r_outer) / 2
+            
+            # 计算统计值
+            value = self._measure_ring_stats(annulus)
+            
+            radii.append(center_radius)
+            values.append(value)
+            
+        return np.array(radii), np.array(values)
+    
+    def plot(self) -> None:
+        """绘制径向profile"""
+        import matplotlib.pyplot as plt
+        
+        radii, values = self.compute()
+        
+        plt.figure(figsize=(10, 6))
+        plt.plot(radii, values, 'o-')
+        plt.xlabel('Radius (pixels)')
+        plt.ylabel(f'Value ({self.method})')
+        plt.title('Radial Profile')
+        plt.grid(True)
+        plt.show()
+
+def test_image_operation():
     import matplotlib.pyplot as plt
     img_dict = {'18':(760,872),
                 #'20':(773,884),
@@ -266,12 +524,12 @@ if __name__ == '__main__':
         col, row = DS9Converter.ds9_to_coords(x, y)[2:]
         target_list.append((col, row))
 
-        img = rotate_image(img, target_coord=(col,row), angle=angle, fill_value=np.nan)
+        img = rotate_image(img, target_coord=(col, row), angle=angle, fill_value=np.nan)
         img_list.append(img)
 
     new_target_coord_ds9 = (100,100)
     col, row = DS9Converter.ds9_to_coords(new_target_coord_ds9[0], new_target_coord_ds9[1])[2:]
-    img_list = align_images(img_list, target_list, (col,row))
+    img_list = align_images(img_list, target_list, (col, row))
 
     img_a = img_list[0]
     img_b = img_list[1]
@@ -288,3 +546,10 @@ if __name__ == '__main__':
     from visualizer import MaskInspector
     inspector = MaskInspector(img_a, mask_pos)
     inspector.show_comparison(vmin=0,vmax=2)
+
+if __name__ == '__main__':
+    # test_image_operation()
+    image = np.random.normal(0, 1, (100, 100))
+    bool_mask = image > 0.5
+    mask1 = UnifiedMask(bool_mask)
+    aperture_mask1 = mask1.to_aperture_mask()  # 转换为ApertureMask
