@@ -4,6 +4,7 @@ import numpy as np
 from skimage.transform import rotate
 from typing import List, Tuple, Union, Optional
 from photutils.aperture import ApertureMask, BoundingBox, CircularAnnulus
+from uvotimgpy.base.unit_conversion import QuantityConverter
 
 class DS9Converter:
     def __init__(self):
@@ -371,6 +372,30 @@ class UnifiedMask:
         """返回掩膜形状"""
         return self._image_shape
 
+def mask_image(image: np.ndarray,
+               bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask]]) -> np.ndarray:
+    """
+    处理输入图像和掩模
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        输入图像
+    bad_pixel_mask : np.ndarray or ApertureMask, optional
+        坏像素掩模，True表示被mask的像素
+        
+    Returns
+    -------
+    np.ndarray
+        处理后的图像，被mask的像素设为nan
+    """
+    if bad_pixel_mask is not None:
+        mask = UnifiedMask(bad_pixel_mask, image.shape)
+        masked_image = image.copy()
+        masked_image[mask.to_bool_array()] = np.nan
+        return masked_image
+    return image
+
 class RadialProfile:
     """使用photutils测量图像的径向profile"""
     
@@ -397,7 +422,7 @@ class RadialProfile:
         method : str
             计算方法，'median'或'mean'
         """
-        self.image = self._mask_image(image, bad_pixel_mask)
+        self.image = mask_image(image, bad_pixel_mask)
         self.center = center
         self.step = step
         self.method = method
@@ -406,33 +431,9 @@ class RadialProfile:
         self.start = start if start is not None else 0
         if end is None:
             rows, cols = image.shape
-            self.end = np.sqrt((rows/2)**2 + (cols/2)**2)
+            self.end = np.sqrt((rows/2)**2 + (cols/2)**2) # TODO: change the default end
         else:
             self.end = end
-            
-    def _mask_image(self, image: np.ndarray,
-                    bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask]]) -> np.ndarray:
-        """
-        处理输入图像和掩模
-        
-        Parameters
-        ----------
-        image : np.ndarray
-            输入图像
-        bad_pixel_mask : np.ndarray or ApertureMask, optional
-            坏像素掩模，True表示被mask的像素
-            
-        Returns
-        -------
-        np.ndarray
-            处理后的图像，被mask的像素设为nan
-        """
-        if bad_pixel_mask is not None:
-            mask = UnifiedMask(bad_pixel_mask, image.shape)
-            masked_image = image.copy()
-            masked_image[mask.to_bool_array()] = np.nan
-            return masked_image
-        return image
             
     def _measure_ring_stats(self, annulus: CircularAnnulus) -> float:
         """
@@ -488,14 +489,17 @@ class RadialProfile:
             
             radii.append(center_radius)
             values.append(value)
-            
-        return np.array(radii), np.array(values)
+        try:
+            return np.array(radii), np.array(values)
+        except TypeError:
+            return np.array(radii), QuantityConverter.list_to_array(values)
     
     def plot(self) -> None:
         """绘制径向profile"""
         import matplotlib.pyplot as plt
         
         radii, values = self.compute()
+        print(values)
         
         plt.figure(figsize=(10, 6))
         plt.plot(radii, values, 'o-')
@@ -541,7 +545,7 @@ def test_image_operation():
     filled_a[mask_pos] = img_b[mask_pos]
     filled_b[mask_neg] = img_a[mask_neg]
 
-    from visualizer import MaskInspector
+    from uvotimgpy.tools.visualizer import MaskInspector
     inspector = MaskInspector(img_a, mask_pos)
     inspector.show_comparison(vmin=0,vmax=2)
 

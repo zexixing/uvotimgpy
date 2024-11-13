@@ -9,9 +9,9 @@ from astropy import units as u
 from astropy.time import Time
 from astropy.io import fits
 from sbpy.data import Ephem
-from query import StarCoordinateQuery
-from utils.file_io import process_astropy_table
-from utils.filters import normalize_filter_name
+from uvotimgpy.query import StarCoordinateQuery
+from uvotimgpy.base.file_io import process_astropy_table
+from uvotimgpy.utils.filters import normalize_filter_name
 
 class AstroDataOrganizer:
     def __init__(self, target_name, data_root_path=None):

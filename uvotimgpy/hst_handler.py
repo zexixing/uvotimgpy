@@ -8,7 +8,7 @@ from astropy.time import Time
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 from sbpy.data import Ephem
-from utils.file_io import process_astropy_table
+from uvotimgpy.base.file_io import process_astropy_table
 
 
 class HstAstroDataOrganizer:
