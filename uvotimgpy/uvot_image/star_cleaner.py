@@ -2,10 +2,13 @@ from typing import Union, Tuple, List, Optional
 import numpy as np
 from astropy.io import fits
 from astropy.stats import sigma_clip
-from scipy import ndimage
-import matplotlib.pyplot as plt
 import astropy.units as u
+from astropy.wcs import WCS
+from astropy.coordinates import SkyCoord
+import matplotlib.pyplot as plt
+from photutils.aperture import CircularAperture
 from uvotimgpy.utils.image_operation import RadialProfile, DistanceMap
+from uvotimgpy.query import StarCatalogQuery
 
 class StarIdentifier:
     """识别图像中的stars, cosmic rays等需要移除的像素"""
@@ -45,11 +48,61 @@ class StarIdentifier:
         self.last_mask = mask
         return mask
     
-    def by_catalog(self, image: np.ndarray, catalog: str, 
-                  radius: int) -> np.ndarray:
-        """用星表自动识别"""
-        # TODO: 实现星表识别方法
-        mask = np.zeros_like(image, dtype=bool)
+    def by_catalog(self, image: np.ndarray, wcs: WCS, mag_limit: float = 15,
+                  catalog: str = 'GSC', aperture_radius: float = 5) -> np.ndarray:
+        """创建恒星掩膜"""
+
+        # 计算图像四个角的天球坐标
+        height, width = image.shape
+        center_pixel = np.array([width/2, height/2])
+        center_sky = wcs.pixel_to_world(center_pixel[0], center_pixel[1])
+
+        # 计算中心到边的最大距离（像素坐标）
+        distances_pixel = [
+            center_pixel[1],          # 到上边距离
+            height - center_pixel[1], # 到下边距离
+            center_pixel[0],          # 到左边距离
+            width - center_pixel[0]   # 到右边距离
+        ]
+        max_pixel_dist = max(distances_pixel)
+
+        # 转换为天球距离
+        edge_sky = wcs.pixel_to_world(center_pixel[0], center_pixel[1] + max_pixel_dist)
+        radius = 1.1 * center_sky.separation(edge_sky)
+
+        # 查询星表
+        catalog_query = StarCatalogQuery(center_sky, radius, mag_limit)
+        stars, ra_key, dec_key = catalog_query.query(catalog)
+
+        # 创建天球坐标对象，转换坐标并创建掩膜
+        coords = SkyCoord(ra=stars[ra_key], dec=stars[dec_key])
+        pixel_coords = wcs.world_to_pixel(coords)
+        positions = np.array(pixel_coords).T
+
+        # 筛选在图像范围内的星
+        valid_stars = (
+            (positions[:, 0] >= 0) & 
+            (positions[:, 0] < image.shape[1]) & 
+            (positions[:, 1] >= 0) & 
+            (positions[:, 1] < image.shape[0])
+        )
+        positions = positions[valid_stars]
+
+        # 创建圆形孔径
+        apertures = CircularAperture(positions, r=aperture_radius)
+
+        # 创建掩膜
+        mask = np.zeros(image.shape, dtype=bool)
+        masks = apertures.to_mask(method='center')
+
+        for mask_obj in masks:
+            # 获取掩膜的位置信息
+            slices = mask_obj.get_overlap_slices(image.shape)
+            if slices is not None:
+                data_slc, mask_slc = slices
+                mask[data_slc] |= mask_obj.data[mask_slc] > 0
+
+
         self.last_mask = mask
         return mask
 
@@ -184,3 +237,21 @@ class BackgroundCleaner:
         mask_pos, mask_neg = self.identifier.by_comparison(image1, image2, threshold)
         cleaned1, cleaned2 = self.filler.by_comparison(image1, image2, mask_pos, mask_neg)
         return cleaned1, cleaned2
+    
+identifier = StarIdentifier()
+hdulpath = '/Users/zexixing/Downloads/30.fits'
+hdul = fits.open(hdulpath)
+image = hdul[1].data
+wcs = WCS(hdul[1].header)
+star_mask = identifier.by_catalog(
+    image=image,
+    wcs=wcs,
+    mag_limit=19,
+    catalog='gsc',
+    aperture_radius=3
+)
+hdul.close()
+
+from uvotimgpy.base.visualizer import MaskInspector
+inspector = MaskInspector(image, star_mask)
+inspector.show_comparison(vmin=0,vmax=2)

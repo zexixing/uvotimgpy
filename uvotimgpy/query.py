@@ -1,6 +1,8 @@
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from difflib import get_close_matches
+from astroquery.vizier import Vizier
+from astroquery.simbad import Simbad
 import numpy as np
 import warnings
 warnings.filterwarnings('ignore')  # Suppress astropy warnings
@@ -8,6 +10,16 @@ warnings.filterwarnings('ignore')  # Suppress astropy warnings
 class StarCoordinateQuery:
     """
     A class to query star coordinates from local database and online services
+
+    Example:
+    # Test function demonstrating the usage of StarCoordinateQuery
+    query = StarCoordinateQuery()
+
+    # Test with various inputs and formats
+    print("Testing HD 12345:", query.get_coordinates('HD 12345'))
+    print("Testing HD12345:", query.get_coordinates('HD12345'))
+    print("Testing Vega:", query.get_coordinates('Vega'))
+    print("Testing nonexistent star:", query.get_coordinates('NonexistentStar123'))
     """
     
     def __init__(self):
@@ -128,16 +140,169 @@ class StarCoordinateQuery:
         #else:
         #    raise ValueError("output_format must be 'deg' or 'hmsdms'")
 
-
-def test_star_coordinate_query():
-    """Test function demonstrating the usage of StarCoordinateQuery"""
-    query = StarCoordinateQuery()
+class StarCatalogQuery:
+    """处理不同星表查询的类"""
     
-    # Test with various inputs and formats
-    print("Testing HD 12345:", query.get_coordinates('HD 12345'))
-    print("Testing HD12345:", query.get_coordinates('HD12345'))
-    print("Testing Vega:", query.get_coordinates('Vega'))
-    print("Testing nonexistent star:", query.get_coordinates('NonexistentStar123'))
+    def __init__(self, center_sky, radius, mag_limit, verbose=True):
+        """
+        Parameters
+        ----------
+        center_sky : SkyCoord
+            搜索中心的天球坐标
+        radius : Quantity
+            搜索半径
+        mag_limit : float
+            星等上限
+        verbose : bool, optional
+            是否显示查询状态提醒，默认为True
+        """
+        self.center_sky = center_sky
+        self.radius = radius
+        self.mag_limit = mag_limit
+        self.verbose = verbose
+        
+        # 预计算坐标范围
+        radius_deg = self.radius.to(u.deg).value
+        ra = self.center_sky.ra.deg
+        dec = self.center_sky.dec.deg
+        
+        self.ra_min = ra - radius_deg
+        self.ra_max = ra + radius_deg
+        self.dec_min = dec - radius_deg
+        self.dec_max = dec + radius_deg
+        
+    def _get_vizier_with_constraints(self, mag_column):
+        """创建带有标准约束的Vizier对象"""
+        vizier = Vizier(
+            column_filters={
+                "RAJ2000": f">{self.ra_min} & <{self.ra_max}",
+                "DEJ2000": f">{self.dec_min} & <{self.dec_max}",
+                mag_column: f"<{self.mag_limit}"
+            }
+        )
+        vizier.ROW_LIMIT = -1
+        return vizier
+    
+    def query_gsc(self):
+        """查询GSC 2.3星表"""
+        if self.verbose:
+            print("Querying GSC 2.3 catalog...")
+        vizier = self._get_vizier_with_constraints("Vmag")
+        catalogs = vizier.query_constraints(catalog="I/305/out")
+        if self.verbose:
+            print("GSC 2.3 query completed")
+        
+        if not catalogs:
+            raise ValueError("No objects found in GSC 2.3 for the specified region")
+        
+        return catalogs[0], 'RAJ2000', 'DEJ2000'
+    
+    def query_gaia(self):
+        """查询GAIA DR3星表"""
+        if self.verbose:
+            print("Querying Gaia DR3 catalog...")
+        vizier = self._get_vizier_with_constraints("Gmag")
+        catalogs = vizier.query_constraints(catalog="I/355/gaiadr3")
+        if self.verbose:
+            print("Gaia DR3 query completed")
+        
+        if not catalogs:
+            raise ValueError("No objects found in Gaia DR3 for the specified region")
+            
+        stars = catalogs[0]
+        stars.rename_column('RA_ICRS', 'ra')
+        stars.rename_column('DE_ICRS', 'dec')
+        stars.rename_column('Gmag', 'phot_g_mean_mag')
+        
+        return stars, 'ra', 'dec'
+    
+    def query_ucac4(self):
+        """查询UCAC4星表"""
+        if self.verbose:
+            print("Querying UCAC4 catalog...")
+        vizier = self._get_vizier_with_constraints("Vmag")
+        catalogs = vizier.query_constraints(catalog='I/322A/out')
+        if self.verbose:
+            print("UCAC4 query completed")
+        
+        if not catalogs:
+            raise ValueError("No objects found in UCAC4 for the specified region")
+            
+        return catalogs[0], 'RAJ2000', 'DEJ2000'
+    
+    def query_apass(self):
+        """查询APASS DR9星表"""
+        if self.verbose:
+            print("Querying APASS DR9 catalog...")
+        vizier = self._get_vizier_with_constraints("Vmag")
+        catalogs = vizier.query_constraints(catalog='II/336/apass9')
+        if self.verbose:
+            print("APASS DR9 query completed")
+        
+        if not catalogs:
+            raise ValueError("No objects found in APASS DR9 for the specified region")
+            
+        return catalogs[0], 'RAJ2000', 'DEJ2000'
+    
+    def query_usnob(self):
+        """查询USNO-B1.0星表"""
+        if self.verbose:
+            print("Querying USNO-B1.0 catalog...")
+        vizier = self._get_vizier_with_constraints("R1mag")
+        catalogs = vizier.query_constraints(catalog='I/284/out')
+        if self.verbose:
+            print("USNO-B1.0 query completed")
+        
+        if not catalogs:
+            raise ValueError("No objects found in USNO-B1.0 for the specified region")
+            
+        return catalogs[0], 'RAJ2000', 'DEJ2000'
 
-if __name__ == "__main__":
-    test_star_coordinate_query()
+    def query_simbad(self):
+        """查询SIMBAD数据库"""
+        if self.verbose:
+            print("Querying SIMBAD database...")
+        Simbad.add_votable_fields('flux(V)', 'ra(d)', 'dec(d)')
+        result = Simbad.query_region(self.center_sky, radius=self.radius)
+        if self.verbose:
+            print("SIMBAD query completed")
+            
+        mask = result['FLUX_V'] < self.mag_limit
+        stars = result[mask]
+        if not len(stars):
+            raise ValueError("No objects found in SIMBAD for the specified region")
+        stars.rename_column('RA_d', 'ra')
+        stars.rename_column('DEC_d', 'dec')
+        stars.rename_column('FLUX_V', 'vmag')
+        
+        return stars, 'ra', 'dec'
+    
+    def query(self, catalog):
+        """根据指定的星表名称进行查询"""
+        catalog = catalog.upper()
+        query_methods = {
+            'GSC': self.query_gsc,
+            'GAIA': self.query_gaia,
+            'UCAC4': self.query_ucac4,
+            'APASS': self.query_apass,
+            'USNOB': self.query_usnob,
+            'SIMBAD': self.query_simbad,
+        }
+        
+        if catalog not in query_methods:
+            raise ValueError(f"Unsupported catalog: {catalog}")
+        
+        return query_methods[catalog]()
+
+## 测试更小的区域
+#center = SkyCoord(ra=180, dec=0, unit='deg')
+#radius = 0.1 * u.deg  # 缩小搜索半径到0.1度
+#query = StarCatalogQuery(center, radius, mag_limit=15)
+#
+## 获取查询结果
+#stars, ra_key, dec_key = query.query('apass')
+## 使用结果
+#coords = SkyCoord(ra=stars[ra_key], dec=stars[dec_key])
+#print(coords)
+
+
