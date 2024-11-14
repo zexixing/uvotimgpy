@@ -3,6 +3,7 @@ import numpy as np
 #from scipy.ndimage import shift, rotate
 from skimage.transform import rotate
 from typing import List, Tuple, Union, Optional
+import astropy.units as u
 from photutils.aperture import ApertureMask, BoundingBox, CircularAnnulus
 from uvotimgpy.base.unit_conversion import QuantityConverter
 
@@ -256,21 +257,21 @@ class DistanceMap:
     def __init__(self, image: np.ndarray, center: tuple):
         self.image = image
         self.center_col, self.center_row = center
-        self._dist_map = None
+        
+        # 直接在初始化时计算距离图
+        rows, cols = np.indices(self.image.shape)
+        self.dist_map = np.sqrt(
+            (cols - self.center_col)**2 + 
+            (rows - self.center_row)**2
+        )
         
     def get_distance_map(self) -> np.ndarray:
         """计算每个像素到中心的距离"""
-        if self._dist_map is None:
-            rows, cols = np.indices(self.image.shape)
-            self._dist_map = np.sqrt(
-                (cols - self.center_col)**2 + 
-                (rows - self.center_row)**2
-            )
-        return self._dist_map
+        return self.dist_map
     
     def get_range_mask(self, inner_radius: float, outer_radius: float) -> np.ndarray:
         """
-        获取不在指定距离范围内的像素掩膜
+        获取指定距离范围内的像素掩膜
         
         Parameters
         ----------
@@ -284,13 +285,11 @@ class DistanceMap:
         np.ndarray
             布尔掩膜，在指定范围内的像素为True
         """
-        dist_map = self.get_distance_map()
-        return (dist_map >= inner_radius) | (dist_map < outer_radius)
+        return (self.dist_map >= inner_radius) & (self.dist_map < outer_radius)
     
     def get_index_map(self, step) -> np.ndarray:
         """获取距离的索引图"""            
-        dist_map = self.get_distance_map()
-        index_map = np.round(dist_map / step).astype(int) # -1
+        index_map = np.round(self.dist_map / step).astype(int)
         index_map = np.maximum(index_map, 1)
         return index_map
 
@@ -399,7 +398,7 @@ def mask_image(image: np.ndarray,
 class RadialProfile:
     """使用photutils测量图像的径向profile"""
     
-    def __init__(self, image: np.ndarray, center: tuple, step: float,
+    def __init__(self, image: Union[np.ndarray, u.Quantity], center: tuple, step: float,
                  bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask]] = None,
                  start: Optional[float] = None,
                  end: Optional[float] = None,
@@ -410,7 +409,7 @@ class RadialProfile:
         image : np.ndarray
             输入图像
         center : tuple
-            中心点坐标 (x, y)
+            中心点坐标 (col, row)
         step : float
             环宽度
         bad_pixel_mask : np.ndarray or ApertureMask, optional
@@ -443,20 +442,25 @@ class RadialProfile:
         annulus_mask = annulus.to_mask(method='center')
         
         # 获取环内的像素值
-        annulus_data = annulus_mask.multiply(self.image)
+        annulus_data = annulus_mask.multiply(self.image, fill_value=np.nan)
         
         # 使用环形掩模来选择环内的像素
         ring_mask = annulus_mask.data > 0
         valid_data = annulus_data[ring_mask]
-        
+
         # 移除nan值
         valid_data = valid_data[~np.isnan(valid_data)]
             
         if len(valid_data) == 0:
             return np.nan
-            
-        return np.median(valid_data) if self.method == 'median' else np.mean(valid_data)
-            
+        
+        if self.method == 'median':
+            return np.median(valid_data)
+        elif self.method == 'mean': 
+            return np.mean(valid_data)
+        else:
+            raise ValueError("method must be 'median' or 'mean'")
+
     def compute(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         计算径向profile
@@ -486,20 +490,16 @@ class RadialProfile:
             
             # 计算统计值
             value = self._measure_ring_stats(annulus)
-            
-            radii.append(center_radius)
-            values.append(value)
-        try:
-            return np.array(radii), np.array(values)
-        except TypeError:
-            return np.array(radii), QuantityConverter.list_to_array(values)
+            if not np.isnan(value):
+                radii.append(center_radius)
+                values.append(value)
+        return np.array(radii), QuantityConverter.list_to_array(values)
     
     def plot(self) -> None:
         """绘制径向profile"""
         import matplotlib.pyplot as plt
         
         radii, values = self.compute()
-        print(values)
         
         plt.figure(figsize=(10, 6))
         plt.plot(radii, values, 'o-')
@@ -545,7 +545,7 @@ def test_image_operation():
     filled_a[mask_pos] = img_b[mask_pos]
     filled_b[mask_neg] = img_a[mask_neg]
 
-    from uvotimgpy.tools.visualizer import MaskInspector
+    from uvotimgpy.base.visualizer import MaskInspector
     inspector = MaskInspector(img_a, mask_pos)
     inspector.show_comparison(vmin=0,vmax=2)
 

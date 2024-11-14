@@ -4,6 +4,8 @@ from astropy.io import fits
 from astropy.stats import sigma_clip
 from scipy import ndimage
 import matplotlib.pyplot as plt
+import astropy.units as u
+from uvotimgpy.utils.image_operation import RadialProfile, DistanceMap
 
 class StarIdentifier:
     """识别图像中的stars, cosmic rays等需要移除的像素"""
@@ -29,7 +31,7 @@ class StarIdentifier:
         return mask
     
     def by_sigma_clip(self, image: np.ndarray, sigma: float = 3.,
-                     maxiters: Optional[int] = None) -> np.ndarray:
+                     maxiters: Optional[int] = 3) -> np.ndarray:
         """用sigma-clip方法识别"""
         clipped = sigma_clip(image, sigma=sigma, maxiters=maxiters, masked=True)
         self.last_mask = clipped.mask
@@ -65,13 +67,68 @@ class PixelFiller:
         
         return filled1, filled2
     
-    def by_ring(self, image: np.ndarray, mask: np.ndarray,
-                center: Tuple[int, int], width: int = 2,
-                method: str = 'median') -> np.ndarray:
-        """用环形区域统计量填充"""
-        # TODO: 实现环形填充方法
-        filled = image.copy()
-        return filled
+    def by_rings(self, image: Union[np.ndarray, u.Quantity], mask: np.ndarray, 
+                 center: tuple, step: float, 
+                 method: str = 'median',
+                 start: Optional[float] = None,
+                 end: Optional[float] = None) -> np.ndarray:
+        """
+        按环形区域填充被mask的像素
+
+        Parameters
+        ----------
+        image : np.ndarray
+            输入图像
+        mask : np.ndarray
+            坏像素掩膜，True表示被mask的像素
+        center : tuple
+            圆环中心坐标 (col, row)
+        step : float
+            圆环步长
+        method : str
+            计算方法，'median'或'mean'
+        start, end : float, optional
+            圆环的起始和结束半径
+
+        Returns
+        -------
+        np.ndarray
+            填充后的图像
+        """
+        # 参数检查
+        if mask.shape != np.asarray(image).shape:
+            raise ValueError("image and mask must have the same shape")
+        if method not in ['median', 'mean']:
+            raise ValueError("method must be 'median' or 'mean'")
+        if step <= 0:
+            raise ValueError("step must be positive")
+
+        # 如果没有被mask的像素，直接返回原图
+        if not np.any(mask):
+            return image.copy()
+        
+        # 初始化
+        filled_image = image.copy()
+
+        # 使用RadialProfile计算每个环的值
+        profile = RadialProfile(image, center=center, step=step, bad_pixel_mask=mask,
+                                start=start, end=end, method=method)
+        radii, values = profile.compute()
+        dist_map = DistanceMap(image, center)
+
+        # 对每个有效的环进行处理
+        for r, v in zip(radii, values):
+            # 创建当前环的掩膜
+            ring_mask = dist_map.get_range_mask(r-step/2, r+step/2)
+
+            # 找到环内被mask的像素
+            masked_pixels = mask & ring_mask
+
+            # 如果环内有被mask的像素，用计算得到的值填充
+            if np.any(masked_pixels):
+                filled_image[masked_pixels] = v
+
+        return filled_image, radii, values
     
     def by_neighbors(self, image: np.ndarray, mask: np.ndarray,
                     kernel_size: int = 3) -> np.ndarray:
