@@ -7,7 +7,7 @@ from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
 import matplotlib.pyplot as plt
 from photutils.aperture import CircularAperture
-from uvotimgpy.utils.image_operation import RadialProfile, DistanceMap
+from uvotimgpy.utils.image_operation import RadialProfile, DistanceMap, ImageDistanceCalculator
 from uvotimgpy.query import StarCatalogQuery
 
 class StarIdentifier:
@@ -53,22 +53,14 @@ class StarIdentifier:
         """创建恒星掩膜"""
 
         # 计算图像四个角的天球坐标
-        height, width = image.shape
-        center_pixel = np.array([width/2, height/2])
-        center_sky = wcs.pixel_to_world(center_pixel[0], center_pixel[1])
+        n_rows, n_cols = image.shape
+        center = np.array([n_cols/2, n_rows/2])  # (col, row)
+        center_sky = wcs.pixel_to_world(center[0], center[1])
 
-        # 计算中心到边的最大距离（像素坐标）
-        distances_pixel = [
-            center_pixel[1],          # 到上边距离
-            height - center_pixel[1], # 到下边距离
-            center_pixel[0],          # 到左边距离
-            width - center_pixel[0]   # 到右边距离
-        ]
-        max_pixel_dist = max(distances_pixel)
+        # 计算中心到边的最大距离（像素坐标，假设row和col方向的）
+        max_dist = ImageDistanceCalculator.from_edges(image, center, distance_method='max', wcs=wcs)
 
-        # 转换为天球距离
-        edge_sky = wcs.pixel_to_world(center_pixel[0], center_pixel[1] + max_pixel_dist)
-        radius = 1.1 * center_sky.separation(edge_sky)
+        radius = 1.1 * max_dist
 
         # 查询星表
         catalog_query = StarCatalogQuery(center_sky, radius, mag_limit)
@@ -237,21 +229,3 @@ class BackgroundCleaner:
         mask_pos, mask_neg = self.identifier.by_comparison(image1, image2, threshold)
         cleaned1, cleaned2 = self.filler.by_comparison(image1, image2, mask_pos, mask_neg)
         return cleaned1, cleaned2
-    
-identifier = StarIdentifier()
-hdulpath = '/Users/zexixing/Downloads/30.fits'
-hdul = fits.open(hdulpath)
-image = hdul[1].data
-wcs = WCS(hdul[1].header)
-star_mask = identifier.by_catalog(
-    image=image,
-    wcs=wcs,
-    mag_limit=19,
-    catalog='gsc',
-    aperture_radius=3
-)
-hdul.close()
-
-from uvotimgpy.base.visualizer import MaskInspector
-inspector = MaskInspector(image, star_mask)
-inspector.show_comparison(vmin=0,vmax=2)

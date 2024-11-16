@@ -6,6 +6,9 @@ from typing import List, Tuple, Union, Optional
 import astropy.units as u
 from photutils.aperture import ApertureMask, BoundingBox, CircularAnnulus
 from uvotimgpy.base.unit_conversion import QuantityConverter
+import warnings
+from astropy.wcs import FITSFixedWarning
+warnings.filterwarnings('ignore', category=FITSFixedWarning)
 
 class DS9Converter:
     def __init__(self):
@@ -250,7 +253,109 @@ def stack_images(images: List[np.ndarray],
         return np.nansum(images, axis=0)
     else:
         raise ValueError("method must be 'median' or 'sum'")
+
+class ImageDistanceCalculator:
+    @staticmethod
+    def calc_distance(coords1, coords2, wcs=None, scale=None):
+        """计算两点间距离"""
+        # 直接计算像素距离
+        pixel_dist = np.sqrt((coords2[0] - coords1[0])**2 + 
+                           (coords2[1] - coords1[1])**2)
+        
+        if wcs is None:
+            if scale is None:
+                return pixel_dist
+            else:
+                if hasattr(pixel_dist, 'unit') and hasattr(scale, 'unit'):
+                    return pixel_dist*scale
+                else:
+                    warnings.warn("Ambiguous units for scale or distance.")
+                    return getattr(pixel_dist, 'value', pixel_dist)*getattr(scale, 'value', scale)
+            
+        # 对于WCS转换，需要float值
+        try:
+            col1, row1 = coords1[0].to('pixel').value, coords1[1].to('pixel').value
+            col2, row2 = coords2[0].to('pixel').value, coords2[1].to('pixel').value
+        except AttributeError:
+            col1, row1 = coords1
+            col2, row2 = coords2
+            
+        sky1 = wcs.pixel_to_world(col1, row1)
+        sky2 = wcs.pixel_to_world(col2, row2)
+        return sky1.separation(sky2)
+        
+    @staticmethod
+    def from_edges(image, coords, distance_method='max', return_coords=False, wcs=None, scale=None):
+        """计算到边的距离
+        
+        Args:
+            max_distance: True返回最大距离，False返回最小距离
+        """
+        n_rows, n_cols = image.shape
+        col, row = coords
+        has_units = hasattr(col, 'unit')
     
+        if has_units:
+            edges = [
+                (col, 0*row.unit),
+                (col, n_rows*row.unit),
+                (0*col.unit, row),
+                (n_cols*col.unit, row)
+            ]
+        else:
+            edges = [
+                (col, 0),
+                (col, n_rows),
+                (0, row),
+                (n_cols, row)
+            ]
+
+        distances = [(ImageDistanceCalculator.calc_distance(coords, edge), edge) for edge in edges]
+        if distance_method == 'max':
+            dist, edge = max(distances)
+        elif distance_method == 'min':
+            dist, edge = min(distances)
+
+        if return_coords:
+            return edge
+        return ImageDistanceCalculator.calc_distance(coords, edge, wcs, scale)
+        
+    @staticmethod
+    def from_corners(image, coords, distance_method='max', return_coords=False, scale=None, wcs=None):
+        """计算到角点的距离
+        
+        Args:
+            max_distance: True返回最大距离，False返回最小距离
+        """
+        n_rows, n_cols = image.shape
+        col, row = coords
+        has_units = hasattr(col, 'unit')
+
+        if has_units:
+            corners = [
+                (0*col.unit, 0*col.unit),
+                (0*col.unit, n_rows*row.unit),
+                (n_cols*col.unit, 0*row.unit),
+                (n_cols*col.unit, n_rows*row.unit)
+            ]
+        else:
+            corners = [
+                (0, 0),
+                (0, n_rows),
+                (n_cols, 0),
+                (n_cols, n_rows)
+            ]
+
+        distances = [(ImageDistanceCalculator.calc_distance(coords, corner), corner) for corner in corners]
+        if distance_method == 'max':
+            dist, corner = max(distances)
+        elif distance_method == 'min':
+            dist, corner = min(distances)
+
+        if return_coords:
+            return corner
+        return ImageDistanceCalculator.calc_distance(coords, corner, wcs, scale)
+
 class DistanceMap:
     """处理图像中像素到指定中心点距离的类"""
     
