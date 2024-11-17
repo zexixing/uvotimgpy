@@ -4,8 +4,12 @@ import numpy as np
 from skimage.transform import rotate
 from typing import List, Tuple, Union, Optional
 import astropy.units as u
-from photutils.aperture import ApertureMask, BoundingBox, CircularAnnulus
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
+from photutils.aperture import ApertureMask, CircularAnnulus
+from regions import CircleAnnulusPixelRegion, CirclePixelRegion, PixCoord
 from uvotimgpy.base.unit_conversion import QuantityConverter
+from uvotimgpy.base.region import mask_image
 import warnings
 from astropy.wcs import FITSFixedWarning
 warnings.filterwarnings('ignore', category=FITSFixedWarning)
@@ -398,110 +402,8 @@ class DistanceMap:
         index_map = np.maximum(index_map, 1)
         return index_map
 
-class UnifiedMask:
-    def __init__(self, mask_data: Union[np.ndarray, ApertureMask], image_shape: Tuple[int, int] = None):
-        """
-        统一的掩膜类
-        
-        Parameters
-        ----------
-        mask_data : numpy.ndarray 或 ApertureMask
-            掩膜数据
-        image_shape : tuple, optional
-            原始图像的形状，当使用ApertureMask时必须提供
-        """
-        if isinstance(mask_data, ApertureMask):
-            if image_shape is None:
-                raise ValueError("image_shape must be provided when using ApertureMask")
-            self._mask = mask_data
-            self._image_shape = image_shape
-            self._is_aperture = True
-        else:
-            self._mask = np.asarray(mask_data, dtype=bool)
-            self._image_shape = mask_data.shape
-            self._is_aperture = False
-    
-    def to_bool_array(self) -> np.ndarray:
-        """
-        转换为布尔数组
-        
-        Returns
-        -------
-        numpy.ndarray
-            布尔数组形式的掩膜
-        """
-        if not self._is_aperture:
-            return self._mask
-        
-        full_mask = np.zeros(self._image_shape, dtype=bool)
-        bbox = self._mask.bbox
-        yslice = slice(bbox.iymin, bbox.iymax)
-        xslice = slice(bbox.ixmin, bbox.ixmax)
-        full_mask[yslice, xslice] = self._mask.data > 0
-        return full_mask
-    
-    def to_aperture_mask(self) -> ApertureMask:
-        """
-        转换为ApertureMask
-        
-        Returns
-        -------
-        ApertureMask
-            photutils的ApertureMask对象
-        """
-        if self._is_aperture:
-            return self._mask
-        
-        # 找到掩膜的边界框
-        rows, cols = np.where(self._mask)
-        if len(rows) == 0:  # 空掩膜
-            return ApertureMask(np.array([[False]]), bbox=BoundingBox(0, 1, 0, 1))
-        
-        # 计算边界框
-        ymin, ymax = rows.min(), rows.max() + 1
-        xmin, xmax = cols.min(), cols.max() + 1
-        
-        # 提取边界框内的数据
-        mask_data = self._mask[ymin:ymax, xmin:xmax]
-        bbox = BoundingBox(ixmin=xmin, ixmax=xmax, iymin=ymin, iymax=ymax)
-        
-        return ApertureMask(mask_data, bbox=bbox)
-    
-    def __array__(self) -> np.ndarray:
-        """使对象可以直接用作numpy数组"""
-        return self.to_bool_array()
-    
-    @property
-    def shape(self) -> Tuple[int, int]:
-        """返回掩膜形状"""
-        return self._image_shape
-
-def mask_image(image: np.ndarray,
-               bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask]]) -> np.ndarray:
-    """
-    处理输入图像和掩模
-    
-    Parameters
-    ----------
-    image : np.ndarray
-        输入图像
-    bad_pixel_mask : np.ndarray or ApertureMask, optional
-        坏像素掩模，True表示被mask的像素
-        
-    Returns
-    -------
-    np.ndarray
-        处理后的图像，被mask的像素设为nan
-    """
-    if bad_pixel_mask is not None:
-        mask = UnifiedMask(bad_pixel_mask, image.shape)
-        masked_image = image.copy()
-        masked_image[mask.to_bool_array()] = np.nan
-        return masked_image
-    return image
-
-class RadialProfile:
-    """使用photutils测量图像的径向profile"""
+class RadialProfile_old:
+    """使用astropy.regions测量图像的径向profile"""
     
     def __init__(self, image: Union[np.ndarray, u.Quantity], center: tuple, step: float,
                  bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask]] = None,
@@ -527,7 +429,8 @@ class RadialProfile:
             计算方法，'median'或'mean'
         """
         self.image = mask_image(image, bad_pixel_mask)
-        self.center = center
+        # 转换中心点为PixCoord对象
+        self.center = PixCoord(x=center[0], y=center[1])
         self.step = step
         self.method = method
         
@@ -535,24 +438,25 @@ class RadialProfile:
         self.start = start if start is not None else 0
         if end is None:
             rows, cols = image.shape
-            self.end = np.sqrt((rows/2)**2 + (cols/2)**2) # TODO: change the default end
+            self.end = np.sqrt((rows/2)**2 + (cols/2)**2)
         else:
             self.end = end
             
-    def _measure_ring_stats(self, annulus: CircularAnnulus) -> float:
+    def _measure_ring_stats(self, annulus: CircleAnnulusPixelRegion) -> float:
         """
         计算环内像素的统计值
         """
         # 获取环内的像素掩膜
-        annulus_mask = annulus.to_mask(method='center')
+        annulus_mask = annulus.to_mask()
         
         # 获取环内的像素值
-        annulus_data = annulus_mask.multiply(self.image, fill_value=np.nan)
+        # regions的mask已经是boolean数组,直接使用
+        data_cutout = annulus_mask.cutout(self.image, fill_value=np.nan)
+        if data_cutout is None:
+            return np.nan
+            
+        valid_data = data_cutout[annulus_mask.data.astype(bool)]
         
-        # 使用环形掩模来选择环内的像素
-        ring_mask = annulus_mask.data > 0
-        valid_data = annulus_data[ring_mask]
-
         # 移除nan值
         valid_data = valid_data[~np.isnan(valid_data)]
             
@@ -588,7 +492,11 @@ class RadialProfile:
             r_outer = r_inner + self.step
             
             # 创建环形区域
-            annulus = CircularAnnulus(self.center, r_in=r_inner, r_out=r_outer)
+            annulus = CircleAnnulusPixelRegion(
+                center=self.center,
+                inner_radius=r_inner,
+                outer_radius=r_outer
+            )
             
             # 计算环的中心半径
             center_radius = (r_inner + r_outer) / 2
@@ -598,22 +506,289 @@ class RadialProfile:
             if not np.isnan(value):
                 radii.append(center_radius)
                 values.append(value)
+                
         return np.array(radii), QuantityConverter.list_to_array(values)
     
-    def plot(self) -> None:
-        """绘制径向profile"""
+    def plot(self, show_regions: bool = False) -> None:
+        """
+        绘制径向profile
+        
+        Parameters
+        ----------
+        show_regions : bool, optional
+            是否显示环形区域,默认为False
+        """
         import matplotlib.pyplot as plt
         
         radii, values = self.compute()
         
-        plt.figure(figsize=(10, 6))
-        plt.plot(radii, values, 'o-')
-        plt.xlabel('Radius (pixels)')
-        plt.ylabel(f'Value ({self.method})')
-        plt.title('Radial Profile')
-        plt.grid(True)
+        if show_regions:
+            # 创建子图来同时显示图像和profile
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+            
+            # 显示图像
+            ax1.imshow(self.image, origin='lower')
+            
+            # 绘制所有环形区域
+            for i in range(len(radii)):
+                r = radii[i]
+                annulus = CircleAnnulusPixelRegion(
+                    center=self.center,
+                    inner_radius=r - self.step/2,
+                    outer_radius=r + self.step/2
+                )
+                annulus.plot(ax=ax1, color='red', alpha=0.3)
+            
+            # 绘制profile
+            ax2.plot(radii, values, 'o-')
+            ax2.set_xlabel('Radius (pixels)')
+            ax2.set_ylabel(f'Value ({self.method})')
+            ax2.set_title('Radial Profile')
+            ax2.grid(True)
+        else:
+            # 只绘制profile
+            plt.figure(figsize=(10, 6))
+            plt.plot(radii, values, 'o-')
+            plt.xlabel('Radius (pixels)')
+            plt.ylabel(f'Value ({self.method})')
+            plt.title('Radial Profile')
+            plt.grid(True)
+        
         plt.show()
 
+class RadialProfile:
+    """使用astropy.regions测量图像的径向profile"""
+    
+    def __init__(self, image: Union[np.ndarray, u.Quantity], center: tuple, step: float,
+                 bad_pixel_mask: Optional[np.ndarray] = None,
+                 start: Optional[float] = None,
+                 end: Optional[float] = None,
+                 method: str = 'median'):
+        """
+        Parameters
+        ----------
+        image : np.ndarray
+            输入图像
+        center : tuple
+            中心点坐标 (col, row)
+        step : float
+            环宽度
+        bad_pixel_mask : np.ndarray, optional
+            坏像素掩模，True表示被mask的像素
+        start : float, optional
+            起始半径，默认为0
+        end : float, optional
+            结束半径，默认为图像中心到角落的距离
+        method : str
+            计算方法，'median'或'mean'
+        """
+        self.image = mask_image(image, bad_pixel_mask)
+        self.center = PixCoord(x=center[0], y=center[1])
+        self.step = step
+        self.method = method
+        
+        # 设置起始和结束半径
+        self.start = start if start is not None else 0
+        if end is None:
+            rows, cols = image.shape
+            self.end = np.sqrt((rows/2)**2 + (cols/2)**2)
+        else:
+            self.end = end
+            
+    def get_radial_profile(self) -> Tuple[np.ndarray, np.ndarray]:
+        """计算径向profile
+        
+        Returns
+        -------
+        radii : np.ndarray
+            半径数组
+        values : np.ndarray
+            对应的profile值
+        """
+        # 生成半径数组
+        radii_range = np.arange(self.start, self.end, self.step)
+        radii = []
+        values = []
+        
+        # 对每个半径计算统计量
+        for r in radii_range:
+            if r == 0:
+                # 使用CirclePixelRegion处理中心区域
+                region = CirclePixelRegion(
+                    center=self.center,
+                    radius=self.step
+                )
+            else:
+                # 使用CircleAnnulusPixelRegion处理环形区域
+                region = CircleAnnulusPixelRegion(
+                    center=self.center,
+                    inner_radius=r,
+                    outer_radius=r + self.step
+                )
+                
+            mask = region.to_mask()
+            data = mask.multiply(self.image)
+            
+            # 去除被mask的像素
+            valid_data = data[data != 0]
+            if len(valid_data) > 0:
+                radii.append(r)
+                if self.method == 'median':
+                    values.append(np.nanmedian(valid_data))
+                else:
+                    values.append(np.nanmean(valid_data))
+                
+        return np.array(radii), QuantityConverter.list_to_array(values)
+
+class ApertureSelector:
+    def __init__(self, image_data, vmin=0, vmax=None):
+        self.image = image_data
+        self.fig, self.ax = plt.subplots()
+        self.apertures = []
+        self.circles = []
+        self.current_radius = 10
+        
+        # Display parameters
+        self.vmin = vmin
+        self.vmax = vmax if vmax is not None else np.percentile(image_data, 99)
+        
+        # Display image and cursor
+        self.display = self.ax.imshow(self.image, origin='lower', cmap='viridis',
+                                    vmin=self.vmin, vmax=self.vmax)
+        self.colorbar = plt.colorbar(self.display)
+        
+        # Preview circle (initially invisible)
+        center = (image_data.shape[1]/2, image_data.shape[0]/2)
+        self.preview_circle = Circle(center, self.current_radius, 
+                                   fill=False, color='red', linestyle='--', 
+                                   alpha=0, visible=False)
+        self.ax.add_patch(self.preview_circle)
+        
+        # Set title with instructions
+        self.ax.set_title(
+            'Left Click: Select Aperture\n'
+            'W/E: Decrease/Increase Radius  V/B: Decrease/Increase Min  N/M: Decrease/Increase Max\n'
+            'Z: Undo  R: Reset View  Enter: Finish\n'
+            'Arrow Keys: Pan View  I/O: Zoom In/Out'
+        )
+        
+        # Connect events
+        self.fig.canvas.mpl_connect('key_press_event', self._onkey)
+        self.fig.canvas.mpl_connect('button_press_event', self._onclick)
+        
+    def _update_display(self):
+        self.display.set_clim(vmin=self.vmin, vmax=self.vmax)
+        self.fig.canvas.draw()
+        
+    def _show_preview(self):
+        # Get current view center
+        xlim = self.ax.get_xlim()
+        ylim = self.ax.get_ylim()
+        center_x = (xlim[1] + xlim[0]) / 2
+        center_y = (ylim[1] + ylim[0]) / 2
+        
+        # Update preview circle
+        self.preview_circle.center = (center_x, center_y)
+        self.preview_circle.radius = self.current_radius
+        self.preview_circle.set_visible(True)
+        self.preview_circle.set_alpha(0.8)
+        self.fig.canvas.draw()
+        
+        # Flash effect (fade out)
+        import time
+        plt.pause(0.1)  # Show for 0.1 seconds
+        self.preview_circle.set_visible(False)
+        self.fig.canvas.draw()
+        
+    def _onclick(self, event):
+        if event.inaxes != self.ax:
+            return
+            
+        if event.button == 1:  # Left click
+            x, y = event.xdata, event.ydata
+            aperture = CircularAperture((x, y), r=self.current_radius)
+            self.apertures.append(aperture)
+            
+            circle = Circle((x, y), self.current_radius, 
+                          fill=False, color='red', alpha=0.5)
+            self.circles.append(circle)
+            self.ax.add_patch(circle)
+            self.fig.canvas.draw()
+            
+    def _onkey(self, event):
+        if event.key == 'z':  # Undo
+            if self.circles:
+                self.circles[-1].remove()
+                self.circles.pop()
+                self.apertures.pop()
+                self.fig.canvas.draw()
+                
+        elif event.key == 'enter':  # Finish
+            plt.close()
+            
+        elif event.key == 'r':  # Reset view
+            self.ax.set_xlim(0, self.image.shape[1])
+            self.ax.set_ylim(0, self.image.shape[0])
+            self.fig.canvas.draw()
+            
+        elif event.key in ['left', 'right', 'up', 'down']:  # Pan view
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+            move = (xlim[1] - xlim[0]) * 0.1
+            
+            if event.key == 'left':
+                self.ax.set_xlim(xlim[0] + move, xlim[1] + move)
+            elif event.key == 'right':
+                self.ax.set_xlim(xlim[0] - move, xlim[1] - move)
+            elif event.key == 'up':
+                self.ax.set_ylim(ylim[0] - move, ylim[1] - move)
+            elif event.key == 'down':
+                self.ax.set_ylim(ylim[0] + move, ylim[1] + move)
+            self.fig.canvas.draw()
+            
+        elif event.key in ['i', 'o']:  # Zoom
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+            center_x = (xlim[1] + xlim[0]) / 2
+            center_y = (ylim[1] + ylim[0]) / 2
+            width = xlim[1] - xlim[0]
+            height = ylim[1] - ylim[0]
+            
+            if event.key == 'i':  # Zoom in
+                factor = 0.8
+            else:  # Zoom out
+                factor = 1.25
+                
+            self.ax.set_xlim(center_x - width/2 * factor, 
+                            center_x + width/2 * factor)
+            self.ax.set_ylim(center_y - height/2 * factor, 
+                            center_y + height/2 * factor)
+            self.fig.canvas.draw()
+            
+        elif event.key in ['v', 'b', 'n', 'm']:  # Adjust display range
+            if event.key == 'v':
+                self.vmin -= self.vmax * 0.05  # Allow negative values
+            elif event.key == 'b':
+                self.vmin = min(self.vmax, self.vmin + self.vmax * 0.05)
+            elif event.key == 'n':
+                self.vmax = max(self.vmin, self.vmax - self.vmax * 0.05)
+            elif event.key == 'm':
+                self.vmax += self.vmax * 0.05
+            self._update_display()
+            #print(f"Display range: vmin={self.vmin:.1f}, vmax={self.vmax:.1f}")
+            
+        elif event.key in ['w', 'e']:  # Adjust radius
+            if event.key == 'w':
+                self.current_radius = max(1, self.current_radius - 0.5)
+            elif event.key == 'e':
+                self.current_radius += 0.5
+            print(f"Current radius: {self.current_radius:.1f}")
+            self._show_preview()
+            
+    def get_apertures(self):
+        plt.show()
+        return self.apertures
+    
 def test_image_operation():
     import matplotlib.pyplot as plt
     img_dict = {'18':(760,872),
@@ -655,8 +830,5 @@ def test_image_operation():
     inspector.show_comparison(vmin=0,vmax=2)
 
 if __name__ == '__main__':
+    pass
     # test_image_operation()
-    image = np.random.normal(0, 1, (100, 100))
-    bool_mask = image > 0.5
-    mask1 = UnifiedMask(bool_mask)
-    aperture_mask1 = mask1.to_aperture_mask()  # 转换为ApertureMask
