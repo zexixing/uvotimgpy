@@ -141,11 +141,11 @@ if __name__ == "__main__":
 
     print(QuantityConverter.list_to_array([]))
 
-result = quantity_wrap(
-    np.arange,
-    1, 2,
-    step=0.1,
-    output_unit=u.meter,
-    only_use_number=False
-)
-print(result)
+    result = quantity_wrap(
+        np.arange,
+        1, 2,
+        step=0.1,
+        output_unit=u.meter,
+        only_use_number=False
+    )
+    #print(result)

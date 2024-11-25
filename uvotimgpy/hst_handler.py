@@ -9,6 +9,12 @@ from astropy.coordinates import SkyCoord
 from astropy import units as u
 from sbpy.data import Ephem
 from uvotimgpy.base.file_io import process_astropy_table
+from uvotimgpy.utils.math import GaussianFitter2D
+from uvotimgpy.base.region import ApertureSelector
+import matplotlib.pyplot as plt
+from IPython import get_ipython
+
+
 
 
 class HstAstroDataOrganizer:
@@ -70,7 +76,7 @@ class HstObservationLogger:
     """
     A class for logging observations from HST data.
     """
-    def __init__(self, target_name, data_root_path, target_alternate=None, location='500'):
+    def __init__(self, target_name, data_root_path, target_alternate=None, location='@hst'):
         """
         Initialize the HstObservationLogger.
         
@@ -197,9 +203,9 @@ class HstObservationLogger:
             try:
                 header_info = self._read_fits_header(fits_path)
                 # Parse observation time
-                date_obs = header_info['DATE-OBS']['value']
-                #time_obs = Time(date_obs, format='isot', scale='utc')
-                targettimes.append(date_obs)
+                date_obs = header_info['MIDTIME']['value']
+                time_obs = Time(date_obs, format='isot', scale='utc')
+                targettimes.append(time_obs)
                 # Prepare row data
                 new_row = []
                 for col in column_names_old:
@@ -253,15 +259,144 @@ class HstObservationLogger:
         else:
             process_astropy_table(final_table, output_path, save_format)
 
-def main():
-    data_root_path = '/Volumes/ZexiWork/data/HST'  # 替换为您的数据根目录路径
-    target_name = '29P'  # 您的目标名称
-    #organizer = HstAstroDataOrganizer(target_name, data_root_path)
-    #data_table = organizer.organize_data()
-    #print(data_table)
-    logger = HstObservationLogger(target_name, data_root_path, target_alternate='90000395')
-    output_path = None
-    logger.process_data(output_path=output_path, save_format='csv')
+def fit_peak_in_region(image, region):
+    """
+    在给定region内拟合带旋转角度的高斯函数并返回峰值位置在原始图像中的坐标
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        输入的2D图像
+    region : regions.PixelRegion
+        要分析的区域
+        
+    Returns
+    -------
+    tuple
+        峰值在原始图像中的坐标和旋转角度 (col, row, theta)
+    """
+    # 获取region的mask和cutout
+    mask = region.to_mask()
+    cutout = mask.cutout(image)
+    mask_data = mask.data
+    
+    # 创建有效数据掩模
+    valid_mask = mask_data > 0
+    
+    # 获取有效像素的信息
+    rows, cols = np.where(valid_mask)
+    values = cutout[valid_mask]
+    
+
+    # 获取bounding_box信息用于坐标转换
+    bbox = region.bounding_box
+    row_min, row_max, col_min, col_max = bbox.iymin, bbox.iymax, bbox.ixmin, bbox.ixmax
+
+    # 计算更合理的初始参数
+    height, width = cutout.shape
+    max_value = np.max(values)
+    background = np.percentile(values, 10)  # 使用较低百分位数作为背景估计
+    
+    # 使用最大值位置作为中心的初始猜测
+    max_pos = np.unravel_index(np.argmax(cutout), cutout.shape)
+    initial_row, initial_col = max_pos
+    
+    # 估计初始sigma（使用区域大小的1/4到1/6）
+    initial_sigma = min(width, height) / 5
+    
+    # 确保sigma不会太小
+    initial_sigma = max(initial_sigma, 1.0)
+    
+    # 初始旋转角度设为0
+    initial_theta = 0.0
+    
+    # 创建旋转高斯拟合器
+    gaussian_fitter = GaussianFitter2D()
+    
+    try:
+        # 设置更合理的初始参数
+        fitted_model, _ = gaussian_fitter.fit(
+            cutout,
+            n_gaussians=1,
+            threshold=background,  # 使用估计的背景值作为阈值
+            position_list=[(initial_col, initial_row)],
+            amplitude_list=[max_value - background],  # 减去背景值
+            sigma_list=[initial_sigma],
+            theta_list=[initial_theta],  # 添加初始旋转角度
+        )
+        
+    except Exception as e:
+        print("\n拟合出错:", str(e))
+        print("\n详细诊断信息:")
+        print("初始参数:")
+        print(f"- 中心位置 (col, row): ({initial_col}, {initial_row})")
+        print(f"- 振幅: {max_value - background}")
+        print(f"- Sigma: {initial_sigma}")
+        print(f"- Theta: {initial_theta}")
+        print(f"- 背景: {background}")
+        print("\n数据统计:")
+        print(f"- 最大值: {max_value}")
+        print(f"- 最小值: {np.min(values)}")
+        print(f"- 平均值: {np.mean(values)}")
+        print(f"- 中位数: {np.median(values)}")
+        print(f"- 标准差: {np.std(values)}")
+        raise
+
+    # 获取拟合后的高斯函数参数（在cutout坐标系中）
+    g = fitted_model[0]  # 第一个高斯分量
+    col_cutout = g.x_mean.value  # 在cutout中的col坐标
+    row_cutout = g.y_mean.value  # 在cutout中的row坐标
+    theta = g.theta.value  # 旋转角度（弧度）
+    
+    # 转换到原始图像坐标系
+    col_orig = col_cutout + col_min
+    row_orig = row_cutout + row_min
+
+    fig = gaussian_fitter.plot_results(cutout, fitted_model)
+    plt.show()
+    
+    return (col_orig, row_orig, theta)
+
+def obtain_real_position(obs_table, i):
+    data_root_path = '/Volumes/ZexiWork/data/HST'
+    target_name = '29P'
+    obs_info = obs_table[i]
+    date = obs_info['date']
+    file_name = obs_info['file_name']
+    filepath = os.path.join(data_root_path, target_name, date, f'{file_name}.fits')
+    x_pixel = obs_info['x_pixel']
+    y_pixel = obs_info['y_pixel']
+    col_pixel = x_pixel - 1 
+    row_pixel = y_pixel - 1
+    row_range = (row_pixel-100, row_pixel+100)
+    col_range = (col_pixel-100, col_pixel+100)
+
+    # 读取图像
+    with fits.open(filepath) as hdul:
+        image = hdul[1].data
+        
+    # 获取regions
+    selector = ApertureSelector(image, vmin=0, vmax=2, row_range=row_range, col_range=col_range, shape='square')
+    plt.pause(0.1)
+    aperture = selector.get_apertures()[0]
+
+    col_py, row_py, theta = fit_peak_in_region(image, aperture)
+    x_ds9 = col_py + 1
+    y_ds9 = row_py + 1
+    
+    plt.imshow(image, vmin=0, vmax=2, origin='lower')
+    plt.xlim(col_pixel-100, col_pixel+100)
+    plt.ylim(row_pixel-100, row_pixel+100)
+    plt.plot(col_py, row_py, color = 'r', marker='x', markersize=5)
+    plt.plot(col_pixel, row_pixel, color = 'w', marker='x', markersize=5)
+    plt.show()
+
+    print(date, file_name, theta, x_pixel, y_pixel, x_ds9, y_ds9)
 
 if __name__ == '__main__':
-    main()
+    data_root_path = '/Volumes/ZexiWork/data/HST'
+    target_name = '29P'
+    logger = HstObservationLogger(target_name, data_root_path, target_alternate='90000395')
+    obs_table = logger.process_data()
+    #obtain_real_position(obs_table, 1)
+    #print(obs_table)
