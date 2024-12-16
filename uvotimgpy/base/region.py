@@ -1,89 +1,203 @@
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union, Optional, List
 import numpy as np
 from photutils.aperture import ApertureMask, BoundingBox
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
-from regions import PixCoord, CirclePixelRegion, RectanglePixelRegion
+from regions import PixelRegion, PixCoord, CirclePixelRegion, RectanglePixelRegion
+from functools import reduce
+from operator import or_, and_
 
-
-class UnifiedMask:
-    def __init__(self, mask_data: Union[np.ndarray, ApertureMask], image_shape: Tuple[int, int] = None):
+class MaskConverter:
+    @staticmethod
+    def region_to_bool_array(region: PixelRegion, 
+                             image_shape: Tuple[int, int]) -> np.ndarray:
         """
-        统一的掩膜类
-        
+        Region转换为布尔数组
+
         Parameters
         ----------
-        mask_data : numpy.ndarray 或 ApertureMask
-            掩膜数据
-        image_shape : tuple, optional
-            原始图像的形状，当使用ApertureMask时必须提供
-        """
-        if isinstance(mask_data, ApertureMask):
-            if image_shape is None:
-                raise ValueError("image_shape must be provided when using ApertureMask")
-            self._mask = mask_data
-            self._image_shape = image_shape
-            self._is_aperture = True
-        else:
-            self._mask = np.asarray(mask_data, dtype=bool)
-            self._image_shape = mask_data.shape
-            self._is_aperture = False
-    
-    def to_bool_array(self) -> np.ndarray:
-        """
-        转换为布尔数组
-        
+        region : PixelRegion
+            regions包的Region对象
+
         Returns
         -------
         numpy.ndarray
             布尔数组形式的掩膜
         """
-        if not self._is_aperture:
-            return self._mask
-        
-        full_mask = np.zeros(self._image_shape, dtype=bool)
-        bbox = self._mask.bbox
+        mask = region.to_mask(mode='center').to_image(image_shape)
+        return mask.astype(bool)
+
+    @staticmethod
+    def aperture_to_bool_array(aperture_mask: ApertureMask, 
+                               image_shape: Tuple[int, int]) -> np.ndarray:
+        """
+        ApertureMask转换为布尔数组
+
+        Parameters
+        ----------
+        aperture_mask : ApertureMask
+            photutils的ApertureMask对象
+        image_shape : tuple
+            目标图像形状
+
+        Returns
+        -------
+        numpy.ndarray
+            布尔数组形式的掩膜
+        """
+        full_mask = np.zeros(image_shape, dtype=bool)
+        bbox = aperture_mask.bbox
         yslice = slice(bbox.iymin, bbox.iymax)
         xslice = slice(bbox.ixmin, bbox.ixmax)
-        full_mask[yslice, xslice] = self._mask.data > 0
+        full_mask[yslice, xslice] = aperture_mask.data > 0
         return full_mask
-    
-    def to_aperture_mask(self) -> ApertureMask:
+
+    @staticmethod
+    def bool_array_to_aperture(bool_array: np.ndarray) -> ApertureMask:
         """
-        转换为ApertureMask
-        
+        布尔数组转换为ApertureMask
+
+        Parameters
+        ----------
+        bool_array : numpy.ndarray
+            布尔数组掩膜
+
         Returns
         -------
         ApertureMask
             photutils的ApertureMask对象
         """
-        if self._is_aperture:
-            return self._mask
-        
-        # 找到掩膜的边界框
-        rows, cols = np.where(self._mask)
+        rows, cols = np.where(bool_array)
         if len(rows) == 0:  # 空掩膜
             return ApertureMask(np.array([[False]]), bbox=BoundingBox(0, 1, 0, 1))
         
-        # 计算边界框
         ymin, ymax = rows.min(), rows.max() + 1
         xmin, xmax = cols.min(), cols.max() + 1
         
-        # 提取边界框内的数据
-        mask_data = self._mask[ymin:ymax, xmin:xmax]
+        mask_data = bool_array[ymin:ymax, xmin:xmax]
         bbox = BoundingBox(ixmin=xmin, ixmax=xmax, iymin=ymin, iymax=ymax)
         
         return ApertureMask(mask_data, bbox=bbox)
+
+    @staticmethod
+    def region_to_aperture(region: PixelRegion,
+                           image_shape: Tuple[int, int]) -> ApertureMask:
+        """
+        Region转换为ApertureMask
+
+        Parameters
+        ----------
+        region : PixelRegion
+            regions包的Region对象
+        image_shape : tuple
+            图像形状
+
+        Returns
+        -------
+        ApertureMask
+            photutils的ApertureMask对象
+        """
+        bool_array = MaskConverter.region_to_bool_array(region, image_shape)
+        return MaskConverter.bool_array_to_aperture(bool_array)
     
-    def __array__(self) -> np.ndarray:
-        """使对象可以直接用作numpy数组"""
-        return self.to_bool_array()
+    @staticmethod
+    def to_bool_array(region: Union[np.ndarray, ApertureMask, PixelRegion], 
+                      image_shape: Tuple[int, int]) -> np.ndarray:
+        if isinstance(region, ApertureMask):
+            return MaskConverter.aperture_to_bool_array(region, image_shape)
+        elif isinstance(region, PixelRegion):
+            return MaskConverter.region_to_bool_array(region, image_shape)
+        else:
+            return region
+
+class MaskCombiner:
+    """处理掩膜列表的合并操作"""
     
-    @property
-    def shape(self) -> Tuple[int, int]:
-        """返回掩膜形状"""
-        return self._image_shape
+    @staticmethod
+    def _check_masks_type(masks: List[Union[np.ndarray, PixelRegion]]) -> str:
+        """
+        检查掩膜列表中的数据类型是否一致
+        
+        Parameters
+        ----------
+        masks : List[Union[np.ndarray, PixelRegion]]
+            掩膜列表
+            
+        Returns
+        -------
+        str
+            'array' 或 'region'
+        """
+        if not masks:
+            raise TypeError("掩膜列表不能为空")
+            
+        first_type = type(masks[0])
+        if not all(isinstance(mask, first_type) for mask in masks):
+            raise TypeError("掩膜列表中的元素类型必须一致")
+            
+        if isinstance(masks[0], np.ndarray):
+            if not all(mask.dtype == bool for mask in masks):
+                raise TypeError("NumPy数组掩膜必须是布尔类型")
+            return 'array'
+        elif isinstance(masks[0], PixelRegion):
+            return 'region'
+        else:
+            raise TypeError("不支持的掩膜类型")
     
+    @staticmethod
+    def _check_array_shapes(masks: List[np.ndarray]) -> None:
+        """检查数组掩膜的形状是否一致"""
+        if not all(mask.shape == masks[0].shape for mask in masks):
+            raise ValueError("所有数组掩膜的形状必须相同")
+    
+    @classmethod
+    def union(cls, 
+             masks: List[Union[np.ndarray, PixelRegion]]) -> Union[np.ndarray, PixelRegion]:
+        """
+        计算掩膜列表的并集
+        
+        Parameters
+        ----------
+        masks : List[Union[np.ndarray, PixelRegion]]
+            要合并的掩膜列表
+            
+        Returns
+        -------
+        Union[np.ndarray, PixelRegion]
+            合并后的掩膜
+        """
+        mask_type = cls._check_masks_type(masks)
+        
+        if mask_type == 'array':
+            cls._check_array_shapes(masks)
+            return reduce(or_, masks)
+        else:  # region
+            return reduce(or_, masks)
+    
+    @classmethod
+    def intersection(cls, 
+                    masks: List[Union[np.ndarray, PixelRegion]]) -> Union[np.ndarray, PixelRegion]:
+        """
+        计算掩膜列表的交集
+        
+        Parameters
+        ----------
+        masks : List[Union[np.ndarray, PixelRegion]]
+            要合并的掩膜列表
+            
+        Returns
+        -------
+        Union[np.ndarray, PixelRegion]
+            合并后的掩膜
+        """
+        mask_type = cls._check_masks_type(masks)
+        
+        if mask_type == 'array':
+            cls._check_array_shapes(masks)
+            return reduce(and_, masks)
+        else:  # region
+            return reduce(and_, masks)
+
 def mask_image(image: np.ndarray,
                bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask]]) -> np.ndarray:
     """
@@ -102,9 +216,9 @@ def mask_image(image: np.ndarray,
         处理后的图像，被mask的像素设为nan
     """
     if bad_pixel_mask is not None:
-        mask = UnifiedMask(bad_pixel_mask, image.shape)
+        mask = MaskConverter.to_bool_array(bad_pixel_mask, image.shape)
         masked_image = image.copy()
-        masked_image[mask.to_bool_array()] = np.nan
+        masked_image[mask] = np.nan
         return masked_image
     return image
 
@@ -336,8 +450,4 @@ class ApertureSelector:
         plt.show()
         return self.regions
 
-if __name__ == '__main__':
-    image = np.random.normal(0, 1, (100, 100))
-    bool_mask = image > 0.5
-    mask1 = UnifiedMask(bool_mask)
-    aperture_mask1 = mask1.to_aperture_mask()  # 转换为ApertureMask
+

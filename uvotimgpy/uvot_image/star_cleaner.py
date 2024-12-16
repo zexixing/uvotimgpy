@@ -6,9 +6,11 @@ import astropy.units as u
 from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
 import matplotlib.pyplot as plt
-from photutils.aperture import CircularAperture
+from regions import CirclePixelRegion, PixCoord, PixelRegion
+from photutils.aperture import ApertureMask
 from uvotimgpy.utils.image_operation import RadialProfile, DistanceMap, ImageDistanceCalculator
 from uvotimgpy.query import StarCatalogQuery
+from uvotimgpy.base.region import MaskConverter, MaskCombiner, ApertureSelector
 
 class StarIdentifier:
     """识别图像中的stars, cosmic rays等需要移除的像素"""
@@ -25,28 +27,29 @@ class StarIdentifier:
         self.last_mask = mask_pos | mask_neg
         return mask_pos, mask_neg # mask是star
     
-    def by_rings(self, image: np.ndarray, center: Tuple[int, int], 
-                radii: List[int], threshold: float = 3.) -> np.ndarray:
-        """用同心圆环统计识别"""
-        # TODO: 实现同心圆环方法
-        mask = np.zeros_like(image, dtype=bool)
-        self.last_mask = mask
-        return mask
-    
     def by_sigma_clip(self, image: np.ndarray, sigma: float = 3.,
-                     maxiters: Optional[int] = 3) -> np.ndarray:
+                     maxiters: Optional[int] = 3,
+                     exclude_region: Optional[Union[np.ndarray, ApertureMask, PixelRegion]] = None) -> np.ndarray:
         """用sigma-clip方法识别"""
-        clipped = sigma_clip(image, sigma=sigma, maxiters=maxiters, masked=True)
-        self.last_mask = clipped.mask
-        return clipped.mask # mask是star
+        mask = np.zeros_like(image, dtype=bool)
+        if exclude_region is not None:
+            region_mask = MaskConverter.to_bool_array(exclude_region, image.shape)
+            valid_pixels = ~region_mask
+            clipped = sigma_clip(image[valid_pixels], sigma=sigma, maxiters=maxiters, masked=True)
+            mask[valid_pixels] = clipped.mask
+        else:
+            clipped = sigma_clip(image, sigma=sigma, maxiters=maxiters, masked=True)
+            mask = clipped.mask
+        self.last_mask = mask
+        return mask # mask是star
     
     def by_manual(self, image: np.ndarray, positions: List[Tuple[int, int]], 
                  radius: int) -> np.ndarray:
         """手动输入位置识别"""
-        # TODO: 实现手动标记方法
-        mask = np.zeros_like(image, dtype=bool)
-        self.last_mask = mask
-        return mask
+        selector = ApertureSelector(image, vmin=0, vmax=2, row_range=row_range, col_range=col_range, shape='square')
+        apertures = selector.get_apertures()
+        #self.last_mask = mask
+        #return mask
     
     def by_catalog(self, image: np.ndarray, wcs: WCS, mag_limit: float = 15,
                   catalog: str = 'GSC', aperture_radius: float = 5) -> np.ndarray:
@@ -81,19 +84,23 @@ class StarIdentifier:
         positions = positions[valid_stars]
 
         # 创建圆形孔径
-        apertures = CircularAperture(positions, r=aperture_radius)
-
+        #apertures = CircularAperture(positions, r=aperture_radius)
         # 创建掩膜
+        #mask = np.zeros(image.shape, dtype=bool)
+        #masks = apertures.to_mask(method='center')
+
+        #for mask_obj in masks:
+        #    # 获取掩膜的位置信息
+        #    slices = mask_obj.get_overlap_slices(image.shape)
+        #    if slices is not None:
+        #        data_slc, mask_slc = slices
+        #        mask[data_slc] |= mask_obj.data[mask_slc] > 0
         mask = np.zeros(image.shape, dtype=bool)
-        masks = apertures.to_mask(method='center')
 
-        for mask_obj in masks:
-            # 获取掩膜的位置信息
-            slices = mask_obj.get_overlap_slices(image.shape)
-            if slices is not None:
-                data_slc, mask_slc = slices
-                mask[data_slc] |= mask_obj.data[mask_slc] > 0
-
+        centers = PixCoord(positions[:, 0], positions[:, 1])
+        circles = [CirclePixelRegion(center=center, radius=aperture_radius) for center in centers]
+        combined_regions = MaskCombiner.union(circles)
+        mask = MaskConverter.region_to_bool_array(combined_regions, image_shape=image.shape)
 
         self.last_mask = mask
         return mask
@@ -204,8 +211,6 @@ class BackgroundCleaner:
         # 选择识别方法
         if identify_method == 'sigma_clip':
             mask = self.identifier.by_sigma_clip(image, **kwargs)
-        elif identify_method == 'rings':
-            mask = self.identifier.by_rings(image, **kwargs)
         elif identify_method == 'manual':
             mask = self.identifier.by_manual(image, **kwargs)
         else:

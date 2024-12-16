@@ -237,28 +237,95 @@ class ObservationLogger:
             header_info[key] = {'value': value, 'dtype': info['dtype'], 'unit': info['unit']}
         return header_info
 
-    def calculate_orbit_info(self, times,
-                             orbital_keywords):
+    def _get_ephemeris_batch(self, times, orbital_keywords, batch_size):
+        """
+        分批获取历表数据的辅助函数
+
+        Parameters
+        ----------
+        times : array-like
+            时间点列表
+        orbital_keywords : list
+            需要获取的轨道参数关键字列表
+        batch_size : int
+            每批处理的时间点数量
+
+        Returns
+        -------
+        Ephem 
+            合并后的历表数据，格式与直接调用eph[orbital_keywords]相同
+        """
+        results = []  # 存储所有批次的结果
+
+        # 分批处理
+        for i in range(0, len(times), batch_size):
+            try:
+                batch_times = times[i:min(i + batch_size, len(times))]
+                target = self.target_alternate or self.target_name
+                eph = Ephem.from_horizons(target, location=self.location, epochs=batch_times)
+                results.append(eph)
+            except Exception as e:
+                if "Ambiguous target name" in str(e):
+                    print(f"请提供准确的目标ID。错误: {str(e)}")
+                else:
+                    print(f"错误: {str(e)}")
+                raise
+
+        # 如果只有一批数据，直接返回
+        if len(results) == 1:
+            return results[0][orbital_keywords]
+
+        # 使用sbpy的vstack合并结果
+        final_eph = results[0]
+        for eph in results[1:]:
+            final_eph.vstack(eph)
+
+        return final_eph[orbital_keywords]
+
+    def calculate_orbit_info(self, times, orbital_keywords):
         """
         Calculate orbital information for moving targets with sbpy.
 
         Parameters
-        times: Time points for orbit calculation.
-        orbital_keywords (list, optional): Keywords for orbital parameters to calculate
+        ----------
+        times : array-like
+            Time points for orbit calculation.
+        orbital_keywords : list
+            Keywords for orbital parameters to calculate
 
         Returns
-        Ephem: Orbital ephemeris data.
+        -------
+        dict
+            Orbital ephemeris data.
 
         Raises
-        Exception: If target name is ambiguous or calculation fails.
+        ------
+        Exception
+            If target name is ambiguous, or batch calculation fails, or other unexpected errors happen.
         """
         try:
-            target = self.target_alternate or self.target_name
-            eph = Ephem.from_horizons(target, location=self.location, epochs=times)
-            return eph[orbital_keywords]
+            # 如果时间点数量大于阈值，使用批处理
+            batch_size = 50
+            if len(times) > batch_size:
+                return self._get_ephemeris_batch(times, orbital_keywords, batch_size)
+            else:
+                # 原始的单批次处理
+                target = self.target_alternate or self.target_name
+                eph = Ephem.from_horizons(target, location=self.location, epochs=times)
+                return eph[orbital_keywords]
+
         except Exception as e:
             if "Ambiguous target name" in str(e):
-                print(f"Please provide exact target ID. Error: {str(e)}")
+                print(f"请提供准确的目标ID。错误: {str(e)}")
+            elif "414 Request-URI Too Large" in str(e):
+                # 如果URL过长，自动切换到批处理模式
+                try:
+                    return self._get_ephemeris_batch(times, orbital_keywords)
+                except Exception as batch_e:
+                    print(f"批处理模式也失败: {str(batch_e)}")
+                    raise
+            else:
+                print(f"错误: {str(e)}")
             raise
 
     def _prepare_table_structure(self):
@@ -429,12 +496,15 @@ class ObservationLogger:
             process_astropy_table(final_table, output_path, save_format)
         
 # Usage example
+
 if __name__ == "__main__":
-    #organizer = AstroDataOrganizer('46P',data_root_path='/Volumes/ZexiWork/data/Swift')
+    #organizer = AstroDataOrganizer('C_2017K2',data_root_path='/Volumes/ZexiWork/data/Swift')
     #organizer = AstroDataOrganizer('1P',data_root_path='/Volumes/ZexiWork/data/Swift')
-    #organizer.organize_data()
+    #organizer.process_data()
     #organizer.process_data(output_path='1p_uvot_data.csv')
     #organizer.process_data()
     #print(logger.data_table)
-    logger = ObservationLogger('29P',data_root_path='/Volumes/ZexiWork/data/Swift',target_alternate='90000395')
-    logger.process_data()
+    logger = ObservationLogger('46p',data_root_path='/Volumes/ZexiWork/data/Swift', target_alternate='90000549')
+    output_path = '/Users/zexixing//Downloads/46p_uvot_data.csv'
+    logger.process_data(output_path=output_path,
+                        orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation'])

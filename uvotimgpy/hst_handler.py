@@ -220,6 +220,17 @@ class HstObservationLogger:
                 print(f"Error processing file {fits_path}: {str(e)}")
         return processed_table, targettimes, wcs_dict
     
+    def _add_fitted_center_pixel(self, processed_table):
+        center_pixel_path = '/Volumes/ZexiWork/projects/29p/HST/comet_position_hst.csv'
+        data = np.genfromtxt(center_pixel_path, delimiter=', ', skip_header=1)
+        fitted_col_pixel = data[:,2]
+        fitted_row_pixel = data[:,3]
+        fitted_x_pixel = fitted_col_pixel + 1
+        fitted_y_pixel = fitted_row_pixel + 1
+        processed_table['fitted_x_pixel'] = fitted_x_pixel
+        processed_table['fitted_y_pixel'] = fitted_y_pixel
+        return processed_table
+    
     def _merge_ephem_table(self, processed_table, targettimes, wcs_dict, orbital_keywords):
         orbit_ephem = self.calculate_orbit_info(Time(targettimes),orbital_keywords)
         orbit_table = orbit_ephem.table
@@ -244,10 +255,11 @@ class HstObservationLogger:
         merged_table['y_pixel'] = y_pixels
 
         return merged_table
-    
+
     def process_data(self, output_path=None, save_format='csv', selected_columns=None, return_table=False,
                      orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation']):
         processed_table, targettimes, wcs_dict = self._process_fits_file()
+        processed_table = self._add_fitted_center_pixel(processed_table)
         final_table = self._merge_ephem_table(processed_table, targettimes, wcs_dict, orbital_keywords)
 
         if isinstance(selected_columns, list):
