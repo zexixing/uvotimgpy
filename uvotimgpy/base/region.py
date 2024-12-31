@@ -7,7 +7,7 @@ from regions import PixelRegion, PixCoord, CirclePixelRegion, RectanglePixelRegi
 from functools import reduce
 from operator import or_, and_
 
-class MaskConverter:
+class RegionConverter:
     @staticmethod
     def region_to_bool_array(region: PixelRegion, 
                              image_shape: Tuple[int, int]) -> np.ndarray:
@@ -97,20 +97,20 @@ class MaskConverter:
         ApertureMask
             photutils的ApertureMask对象
         """
-        bool_array = MaskConverter.region_to_bool_array(region, image_shape)
-        return MaskConverter.bool_array_to_aperture(bool_array)
+        bool_array = RegionConverter.region_to_bool_array(region, image_shape)
+        return RegionConverter.bool_array_to_aperture(bool_array)
     
     @staticmethod
     def to_bool_array(region: Union[np.ndarray, ApertureMask, PixelRegion], 
                       image_shape: Tuple[int, int]) -> np.ndarray:
         if isinstance(region, ApertureMask):
-            return MaskConverter.aperture_to_bool_array(region, image_shape)
+            return RegionConverter.aperture_to_bool_array(region, image_shape)
         elif isinstance(region, PixelRegion):
-            return MaskConverter.region_to_bool_array(region, image_shape)
+            return RegionConverter.region_to_bool_array(region, image_shape)
         else:
             return region
 
-class MaskCombiner:
+class RegionCombiner:
     """处理掩膜列表的合并操作"""
     
     @staticmethod
@@ -199,7 +199,7 @@ class MaskCombiner:
             return reduce(and_, masks)
 
 def mask_image(image: np.ndarray,
-               bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask]]) -> np.ndarray:
+               bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask, PixelRegion]]) -> np.ndarray:
     """
     处理输入图像和掩模
     
@@ -207,7 +207,7 @@ def mask_image(image: np.ndarray,
     ----------
     image : np.ndarray
         输入图像
-    bad_pixel_mask : np.ndarray or ApertureMask, optional
+    bad_pixel_mask : np.ndarray or ApertureMask or PixelRegion, optional
         坏像素掩模，True表示被mask的像素
         
     Returns
@@ -216,13 +216,13 @@ def mask_image(image: np.ndarray,
         处理后的图像，被mask的像素设为nan
     """
     if bad_pixel_mask is not None:
-        mask = MaskConverter.to_bool_array(bad_pixel_mask, image.shape)
+        mask = RegionConverter.to_bool_array(bad_pixel_mask, image.shape)
         masked_image = image.copy()
         masked_image[mask] = np.nan
         return masked_image
     return image
 
-class ApertureSelector:
+class RegionSelector:
     def __init__(self, image_data, vmin=0, vmax=None, 
                  row_range=None, col_range=None, shape='circle'):
         """
@@ -280,7 +280,7 @@ class ApertureSelector:
         
         # Set title with instructions
         self.instruction_text = (
-            'Left Click: Select Aperture  A: Toggle Circle/Square\n'
+            'Left Click: Select Region  A: Toggle Circle/Square\n'
             'W/E: Decrease/Increase Size  V/B: Decrease/Increase Min  N/M: Decrease/Increase Max\n'
             'Z: Undo  R: Reset View  Enter: Finish\n'
             'Arrow Keys: Pan View  I/O: Zoom In/Out'
@@ -446,7 +446,7 @@ class ApertureSelector:
             self._update_title()
             self._show_preview()
             
-    def get_apertures(self):
+    def get_regions(self):
         plt.show()
         return self.regions
 

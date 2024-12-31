@@ -9,8 +9,8 @@ from astropy.coordinates import SkyCoord
 from astropy import units as u
 from sbpy.data import Ephem
 from uvotimgpy.base.file_io import process_astropy_table
-from uvotimgpy.utils.math import GaussianFitter2D
-from uvotimgpy.base.region import ApertureSelector
+from uvotimgpy.utils.math_tools import GaussianFitter2D
+from uvotimgpy.base.region import RegionSelector
 import matplotlib.pyplot as plt
 from IPython import get_ipython
 
@@ -388,7 +388,7 @@ def obtain_real_position(obs_table, i):
         image = hdul[1].data
         
     # 获取regions
-    selector = ApertureSelector(image, vmin=0, vmax=2, row_range=row_range, col_range=col_range, shape='square')
+    selector = RegionSelector(image, vmin=0, vmax=2, row_range=row_range, col_range=col_range, shape='square')
     plt.pause(0.1)
     aperture = selector.get_apertures()[0]
 
