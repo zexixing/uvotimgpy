@@ -6,7 +6,7 @@ from typing import Union, List, Optional, Tuple
 from numbers import Number
 from scipy import stats
 from uncertainties import ufloat
-from uvotimgpy.base.unit_tools import process_sequence
+from uvotimgpy.base.unit_tools import convert_sequence_to_array
 
 class GaussianFitter2D:
     def __init__(self):
@@ -274,7 +274,7 @@ class ErrorPropagation:
         
         # 处理值
         for arg in args:
-            processed_arg = process_sequence(arg)
+            processed_arg = convert_sequence_to_array(arg)
             
             if isinstance(processed_arg, u.Quantity):
                 processed_args.append(processed_arg.value)
@@ -284,7 +284,7 @@ class ErrorPropagation:
                 args_units.append(u.dimensionless_unscaled)
         # 处理误差
         for err in errors:
-            processed_err = process_sequence(err)
+            processed_err = convert_sequence_to_array(err)
                 
             if isinstance(processed_err, u.Quantity):
                 processed_errors.append(processed_err.value)
@@ -545,3 +545,4 @@ def test_multiply():
             print(f"{' '*len(str(values1[i,j]))}  ×  {' '*len(str(values2[i,j]))}    = ", end="")
             print(f"{result_val2[i,j]:.2f}±{result_err2[i,j]:.2f} (方法2)")
 
+test_multiply()

@@ -7,7 +7,7 @@ import astropy.units as u
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from regions import CircleAnnulusPixelRegion, CirclePixelRegion, PixCoord
-from uvotimgpy.base.unit_tools import list_to_array_quantity
+from uvotimgpy.base.unit_tools import convert_sequence_to_array
 from uvotimgpy.base.region import mask_image
 import warnings
 from astropy.wcs import FITSFixedWarning
@@ -483,7 +483,7 @@ class RadialProfile:
                 else:
                     values.append(np.nanmean(valid_data))
                 
-        return np.array(radii), list_to_array_quantity(values)
+        return np.array(radii), convert_sequence_to_array(values)
     
 def test_image_operation():
     import matplotlib.pyplot as plt
