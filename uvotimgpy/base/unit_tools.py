@@ -42,15 +42,21 @@ class UnitPropagator:
         source = inspect.getsource(func)
         source = textwrap.dedent(source)
         
-        tree = ast.parse(source)
-        func_body = tree.body[0].body
+        # 获取函数参数数量
+        n_args = len([key for key in unit_dict.keys() if key.startswith('arg_')])
         
-        if isinstance(func_body[-1], ast.Return):
-            return_expr = func_body[-1].value
+        # 构建包装函数来处理可变参数
+        wrapper_source = f"""def wrapper_func({', '.join(f'arg_{i}' for i in range(n_args))}):return func({', '.join(f'arg_{i}' for i in range(n_args))})"""
+        # 解析包装函数
+        wrapper_tree = ast.parse(wrapper_source)
+        wrapper_body = wrapper_tree.body[0].body
+        
+        if isinstance(wrapper_body[-1], ast.Return):
+            return_expr = wrapper_body[-1].value
             result_unit = cls._eval_node(return_expr, unit_dict)
             
             if result_unit is not None and (simplify_units or simplify_units is None):
-                return simplify_unit(result_unit)  # 直接使用独立的simplify_unit函数
+                return simplify_unit(result_unit)
             return result_unit
         return None
 
@@ -76,7 +82,7 @@ class UnitPropagator:
         'sqrt': lambda x: x**0.5 if x is not None else None,
         'abs': lambda x: x,
         'multiply': lambda x, y: x * y if x is not None and y is not None else None,
-        'prod': lambda x, y: x * y if x is not None and y is not None else None,
+        'prod': lambda *units: np.prod([u for u in units if u is not None]),
         'divide': lambda x, y: x / y if x is not None and y is not None else None,
         
         # 4. 统计函数：保持或修改单位
@@ -134,88 +140,47 @@ class UnitPropagator:
         return False
 
     @staticmethod
-    def _eval_binary_op(node, units):
-        """
-        评估二元运算符的单位传播
-        
-        参数：
-        node (ast.BinOp): AST二元运算节点
-        units (dict): 当前的单位字典
-        
-        返回：
-        astropy.units.Unit: 运算结果的单位
-        """
-        left = UnitPropagator._eval_node(node.left, units)
-        right = UnitPropagator._eval_node(node.right, units)
-        
-        # 处理加法和减法：需要相同单位
-        if isinstance(node.op, (ast.Add, ast.Sub)):
-            if left is None or right is None:
-                return None
-            # 检查单位是否兼容
-            if left.is_equivalent(right):
-                return left
-            else:
-                raise ValueError(f"Cannot add/subtract incompatible units {left} and {right}")
-        
-        # 处理乘法：单位相乘
-        elif isinstance(node.op, ast.Mult):
-            if left is None:
-                return right
-            if right is None:
-                return left
-            return left * right
-        
-        # 处理除法：单位相除    
-        elif isinstance(node.op, ast.Div):
-            if left is None:
-                return 1/right if right is not None else None
-            if right is None:
-                return left
-            return left / right
-        
-        # 处理幂运算：指数必须无单位    
-        elif isinstance(node.op, ast.Pow):
-            if right is None:
-                if left is not None:
-                    # 获取指数的数值
-                    if isinstance(node.right, ast.Num):
-                        return left ** node.right.n
-                    else:
-                        raise ValueError("Cannot evaluate non-numeric exponent")
-                return None
-            else:
-                raise ValueError("Exponent cannot have units")
-                
-        return None
-
-    @staticmethod
     def _eval_node(node, units):
         """
         递归评估AST节点的单位
-        
+
         参数：
         node (ast.AST): AST节点
         units (dict): 当前的单位字典
-        
+
         返回：
         astropy.units.Unit: 节点表达式的单位
         """
+        print(f"Node type: {type(node)}")
+        print(f"Node content: {ast.dump(node, indent=2)}")
+
         # 处理变量名
         if isinstance(node, ast.Name):
             return units.get(node.id)
-        
+
         # 处理数字字面量    
         elif isinstance(node, ast.Num):
             return None
-        
+
         # 处理二元运算    
         elif isinstance(node, ast.BinOp):
             return UnitPropagator._eval_binary_op(node, units)
-        
+
         # 处理函数调用    
         elif isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name):
+            # 如果是原始函数调用
+            if isinstance(node.func, ast.Name) and node.func.id == 'func':
+                # 收集所有参数的单位
+                arg_units = [units[f'arg_{i}'] for i in range(len(units)) if f'arg_{i}' in units]
+                # 对于 prod 函数，将所有单位相乘
+                result = arg_units[0]
+                for unit in arg_units[1:]:
+                    if unit is not None:
+                        result = result * unit
+                return result
+
+            # 其他函数调用
+            elif isinstance(node.func, ast.Name):
                 # 直接函数调用 (如 exp(x))
                 func_name = node.func.id
                 return UnitPropagator._handle_function_call(func_name, node.args, units)
@@ -225,50 +190,88 @@ class UnitPropagator:
                     if node.func.value.id in ['np', 'numpy']:
                         func_name = node.func.attr
                         return UnitPropagator._handle_function_call(func_name, node.args, units)
-        
+
+        # 处理 *args 形式的参数
+        elif isinstance(node, ast.Starred):
+            value_units = UnitPropagator._eval_node(node.value, units)
+            if isinstance(value_units, list):
+                return value_units
+            return [value_units]
+
+        # 处理元组
+        elif isinstance(node, ast.Tuple):
+            # 收集所有元素的单位
+            tuple_units = [UnitPropagator._eval_node(elt, units) for elt in node.elts]
+            # 如果元组中只包含单位，返回单位列表
+            if all(u is None or isinstance(u, (u.Unit, u.CompositeUnit)) for u in tuple_units):
+                return tuple_units
+            return None
+
         return None
 
     @staticmethod
     def _handle_function_call(func_name, args, units):
-        """处理函数调用的单位传播"""
-        rule = UnitPropagator._get_unit_rule(func_name)
-        if rule is None:
-            return None
-            
-        args_units = [UnitPropagator._eval_node(arg, units) for arg in args]
-        
-        # 处理无参数的情况
-        if not args_units:
-            return None
-            
-        # 处理特殊函数
-        if func_name == 'average':
-            # 检查权重是否无量纲
-            if len(args_units) > 1 and args_units[1] is not None:
-                raise ValueError("Weights in average function should be dimensionless")
-            return rule(args_units[0])
-            
-        # 处理单参数函数
-        if len(args_units) == 1:
-            return rule(args_units[0])
-            
-        # 处理二元运算
-        if len(args_units) == 2:
-            return rule(args_units[0], args_units[1])
-            
-        # 处理多参数情况
-        result_unit = args_units[0]
-        for unit in args_units[1:]:
-            if func_name in ['multiply', 'prod']:
-                result_unit = result_unit * unit if unit is not None else result_unit
-            elif func_name == 'divide':
-                result_unit = result_unit / unit if unit is not None else result_unit
-            elif UnitPropagator._is_unit_preserving_func(func_name):
-                # 对于保持单位的函数，确保所有参数单位相同
-                if unit is not None and not unit.is_equivalent(result_unit):
-                    raise ValueError(f"All arguments to {func_name} must have compatible units")
-        
-        return result_unit
+        """
+        处理函数调用的单位传播
+
+        参数：
+        func_name (str): 函数名
+        args (list): 函数参数的AST节点列表
+        units (dict): 当前的单位字典
+
+        返回：
+        astropy.units.Unit: 函数调用结果的单位
+        """
+        print(f"Handling function call: {func_name}")
+        print(f"Args: {[ast.dump(arg) for arg in args]}")
+
+        # 处理其他函数
+        if func_name in UnitPropagator._np_unit_rules:
+            args_units = [UnitPropagator._eval_node(arg, units) for arg in args]
+
+            # 处理无参数的情况
+            if not args_units:
+                return None
+
+            # 处理 average 函数
+            if func_name == 'average':
+                # 检查权重是否无量纲
+                if len(args_units) > 1 and args_units[1] is not None:
+                    raise ValueError("Weights in average function should be dimensionless")
+                return UnitPropagator._np_unit_rules[func_name](args_units[0])
+
+            # 处理矩阵运算函数
+            elif func_name in ['dot', 'matmul']:
+                if len(args_units) == 2:
+                    return UnitPropagator._np_unit_rules[func_name](args_units[0], args_units[1])
+
+            # 处理单参数函数
+            elif len(args_units) == 1:
+                if isinstance(args_units[0], list):
+                    # 如果参数是列表，处理列表中的所有单位
+                    result = args_units[0][0]
+                    for unit in args_units[0][1:]:
+                        if unit is not None:
+                            result = result * unit
+                    return result
+                return UnitPropagator._np_unit_rules[func_name](args_units[0])
+
+            # 处理多参数函数
+            else:
+                result_unit = args_units[0]
+                for unit in args_units[1:]:
+                    if unit is not None:
+                        if func_name in ['multiply', 'prod']:
+                            result_unit = result_unit * unit
+                        if func_name == 'divide':
+                            result_unit = result_unit / unit
+                        elif UnitPropagator._is_unit_preserving_func(func_name):
+                            # 对于保持单位的函数，确保所有参数单位相同
+                            if not unit.is_equivalent(result_unit):
+                                raise ValueError(f"All arguments to {func_name} must have compatible units")
+                return result_unit
+
+        return None
 
     
 def get_common_unit(*args):
@@ -405,6 +408,126 @@ def convert_sequence_to_array(sequence: Union[List, tuple]) -> Union[np.ndarray,
     # If no units involved, return regular numpy array
     return np.array(sequence)
 
+class QuantitySeparator:
+    @staticmethod
+    def convert_sequences(args: tuple, kwargs: dict) -> tuple[tuple, dict, list]:
+        """转换所有序列参数并获取单位列表
+        
+        Parameters
+        ----------
+        args : tuple
+            位置参数
+        kwargs : dict
+            关键字参数
+            
+        Returns
+        -------
+        tuple
+            (处理后的args, 处理后的kwargs, 单位列表)
+        """
+        args = list(args)
+        sequence_unit_list = []
+
+        if kwargs is None:
+            kwargs = {}
+        
+        # 处理位置参数
+        for i in range(len(args)):
+            if isinstance(args[i], (list, tuple)):
+                converted = convert_sequence_to_array(args[i])
+                if isinstance(converted, u.Quantity):
+                    sequence_unit_list.append(converted.unit)
+                else:
+                    sequence_unit_list.append(None)
+                args[i] = converted
+            else:
+                # 处理非序列类型
+                if isinstance(args[i], u.Quantity):
+                    sequence_unit_list.append(args[i].unit)
+                else:
+                    sequence_unit_list.append(None)
+        
+        # 处理关键字参数
+        for key, value in kwargs.items():
+            if isinstance(value, (list, tuple)):
+                converted = convert_sequence_to_array(value)
+                if isinstance(converted, u.Quantity):
+                    sequence_unit_list.append(converted.unit)
+                else:
+                    sequence_unit_list.append(None)
+                kwargs[key] = converted
+            else:
+                # 处理非序列类型
+                if isinstance(value, u.Quantity):
+                    sequence_unit_list.append(value.unit)
+                else:
+                    sequence_unit_list.append(None)
+            
+        return tuple(args), kwargs, sequence_unit_list
+    
+    @staticmethod
+    def process_args(args: tuple, kwargs: dict, sequence_unit_list) -> tuple[list, dict, dict]:
+        """处理参数，构建单位字典"""
+        unit_dict = {}
+        processed_args = []
+
+        if kwargs is None:
+            kwargs = {}
+        
+        # 处理位置参数
+        for i, arg in enumerate(args):
+            arg_name = f'arg_{i}'
+            if isinstance(arg, u.Quantity):
+                sequence_unit = sequence_unit_list[i]
+                if sequence_unit and arg.unit.physical_type == sequence_unit.physical_type:
+                    unit_dict[arg_name] = sequence_unit
+                    processed_args.append(arg.to(sequence_unit).value)
+                else:
+                    unit_dict[arg_name] = arg.unit
+                    processed_args.append(arg.value)
+            else:
+                processed_args.append(arg)
+                
+        # 处理关键字参数
+        processed_kwargs = {}
+        for j, (key, arg) in enumerate(kwargs.items()):
+            if isinstance(arg, u.Quantity):
+                sequence_unit = sequence_unit_list[len(args) + j]
+                if sequence_unit and arg.unit.physical_type == sequence_unit.physical_type:
+                    unit_dict[key] = sequence_unit
+                    processed_kwargs[key] = arg.to(sequence_unit).value
+                else:
+                    unit_dict[key] = arg.unit
+                    processed_kwargs[key] = arg.value
+            else:
+                processed_kwargs[key] = arg
+                
+        return processed_args, processed_kwargs, unit_dict
+    
+    @staticmethod
+    def get_unit_dict(args: tuple, kwargs: dict = None) -> dict:
+        """获取参数的单位字典
+        
+        Parameters
+        ----------
+        args : tuple or list
+            位置参数
+        kwargs : dict, optional
+            关键字参数，默认为None
+            
+        Returns
+        -------
+        dict
+            单位字典
+        """
+        if kwargs is None:
+            kwargs = {}
+            
+        args, kwargs, sequence_unit_list = QuantitySeparator.convert_sequences(args, kwargs)
+        processed_args, processed_kwargs, unit_dict = QuantitySeparator.process_args(
+            args, kwargs, sequence_unit_list)
+        return unit_dict
+
 class QuantityWrapper:
     """用于包装numpy函数以支持quantity并自动追踪单位传播的类"""
     
@@ -423,92 +546,6 @@ class QuantityWrapper:
         'conj': 'conj',
         'conjugate': 'conjugate'
     }
-    
-    @staticmethod
-    def _convert_sequences(args: tuple, kwargs: dict) -> tuple[tuple, dict, u.Unit]:
-        """转换所有序列参数并获取第一个单位
-        
-        Parameters
-        ----------
-        args : tuple
-            位置参数
-        kwargs : dict
-            关键字参数
-            
-        Returns
-        -------
-        tuple
-            (处理后的args, 处理后的kwargs, 第一个遇到的单位)
-        """
-        args = list(args)
-        sequence_unit = None
-        
-        # 处理位置参数
-        for i in range(len(args)):
-            if isinstance(args[i], (list, tuple)):
-                converted = convert_sequence_to_array(args[i])
-                if isinstance(converted, u.Quantity) and sequence_unit is None:
-                    sequence_unit = converted.unit
-                args[i] = converted
-        
-        # 处理关键字参数
-        for key, value in kwargs.items():
-            if isinstance(value, (list, tuple)):
-                converted = convert_sequence_to_array(value)
-                if isinstance(converted, u.Quantity) and sequence_unit is None:
-                    sequence_unit = converted.unit
-                kwargs[key] = converted
-                
-        return tuple(args), kwargs, sequence_unit
-    
-    @staticmethod
-    def _process_args(args: tuple, kwargs: dict, sequence_unit: u.Unit) -> tuple[list, dict, dict]:
-        """处理参数，构建单位字典
-        
-        Parameters
-        ----------
-        args : tuple
-            位置参数
-        kwargs : dict
-            关键字参数
-        sequence_unit : Unit
-            基准单位
-            
-        Returns
-        -------
-        tuple
-            (处理后的args值列表, 处理后的kwargs值字典, 单位字典)
-        """
-        unit_dict = {}
-        processed_args = []
-        
-        # 处理位置参数
-        for i, arg in enumerate(args):
-            arg_name = f'arg_{i}'
-            if isinstance(arg, u.Quantity):
-                if sequence_unit and arg.unit.physical_type == sequence_unit.physical_type:
-                    unit_dict[arg_name] = sequence_unit
-                    processed_args.append(arg.to(sequence_unit).value)
-                else:
-                    unit_dict[arg_name] = arg.unit
-                    processed_args.append(arg.value)
-            else:
-                processed_args.append(arg)
-                
-        # 处理关键字参数
-        processed_kwargs = {}
-        for key, arg in kwargs.items():
-            if isinstance(arg, u.Quantity):
-                if sequence_unit and arg.unit.physical_type == sequence_unit.physical_type:
-                    unit_dict[key] = sequence_unit
-                    processed_kwargs[key] = arg.to(sequence_unit).value
-                else:
-                    unit_dict[key] = arg.unit
-                    processed_kwargs[key] = arg.value
-            else:
-                processed_kwargs[key] = arg
-                
-        return processed_args, processed_kwargs, unit_dict
     
     @staticmethod
     def _get_propagated_unit(func: Callable, unit_dict: dict, 
@@ -554,7 +591,7 @@ class QuantityWrapper:
     
     @staticmethod
     def _apply_unit(result: Any, output_unit: u.Unit, propagated_unit: u.Unit,
-                   sequence_unit: u.Unit, simplify_units: bool) -> Any:
+                    simplify_units: bool) -> Any:
         """应用单位到结果
         
         Parameters
@@ -576,14 +613,12 @@ class QuantityWrapper:
             带单位的结果
         """
         if output_unit is not None:
-            if sequence_unit and sequence_unit.physical_type == output_unit.physical_type:
-                result = (result * sequence_unit).to(output_unit)
+            if propagated_unit and propagated_unit.physical_type == output_unit.physical_type:
+                result = (result * propagated_unit).to(output_unit)
             else:
                 result = result * output_unit
         elif propagated_unit is not None:
             result = result * propagated_unit
-        elif sequence_unit is not None:
-            result = result * sequence_unit
         if simplify_units and isinstance(result, u.Quantity):
             result = simplify_unit(result)
         return result
@@ -692,7 +727,7 @@ class QuantityWrapper:
             关键字参数
         """
         # 转换序列并获取第一个单位
-        args, kwargs, sequence_unit = QuantityWrapper._convert_sequences(args, kwargs)
+        args, kwargs, sequence_unit_list = QuantitySeparator.convert_sequences(args, kwargs)
         
         # 检查是否有quantity
         all_args = list(args) + list(kwargs.values())
@@ -719,10 +754,11 @@ class QuantityWrapper:
         print(f'Using my own codes')
             
         # 如果quantity_input失败，使用原有的处理方式
-        processed_args, processed_kwargs, unit_dict = QuantityWrapper._process_args(
-            args, kwargs, sequence_unit)
+        processed_args, processed_kwargs, unit_dict = QuantitySeparator.process_args(
+            args, kwargs, sequence_unit_list)
             
         # 获取传播单位
+        print(func, unit_dict, all_args, simplify_units)
         propagated_unit = QuantityWrapper._get_propagated_unit(
             func, unit_dict, all_args, simplify_units)
             
@@ -731,7 +767,7 @@ class QuantityWrapper:
         
         # 应用单位
         return QuantityWrapper._apply_unit(
-            result, output_unit, propagated_unit, sequence_unit, simplify_units)
+            result, output_unit, propagated_unit, simplify_units)
 
 # 为了保持向后兼容，可以定义一个函数作为类方法的别名
 def quantity_wrap(func: Callable, *args, **kwargs) -> Any:
@@ -859,4 +895,17 @@ def example_usage():
     test_unit_conversion()
 
 if __name__ == "__main__":
-    example_usage()
+    #example_usage()
+    def multiply_func(*values):
+        return np.prod(values, axis=0)
+    
+    unit_dict = {'arg_0': u.m, 'arg_1': u.m}
+    final_unit = UnitPropagator.propagate_units(multiply_func, unit_dict)
+    print('hi',final_unit)
+    values = (1. * u.m, 2. * u.m)
+    print("Method 1:", quantity_wrap(np.prod, values))  # 应该输出 2.0 m²    
+    # 2. 使用 multiply 连续相乘
+    print("Method 2:", quantity_wrap(np.multiply, 1. * u.m, 2. * u.m))  # 应该输出 2.0 m²
+    
+    # 3. 直接使用 Quantity 的乘法
+    print("Method 3:", (1. * u.m) * (2. * u.m))  # 应该输出 2.0 m²

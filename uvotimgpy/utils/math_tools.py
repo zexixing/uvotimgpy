@@ -6,7 +6,7 @@ from typing import Union, List, Optional, Tuple
 from numbers import Number
 from scipy import stats
 from uncertainties import ufloat
-from uvotimgpy.base.unit_tools import convert_sequence_to_array
+from uvotimgpy.base.unit_tools import convert_sequence_to_array, QuantitySeparator, UnitPropagator, quantity_wrap
 
 class GaussianFitter2D:
     def __init__(self):
@@ -249,7 +249,52 @@ class GaussianFitter2D:
 
 class ErrorPropagation:
     """误差传播计算类"""
-    
+    @staticmethod
+    def _prepare_array_calculation(values, errors):
+        """准备数组计算，处理形状并扩展标量
+        
+        Parameters
+        ----------
+        values : list
+            值列表
+        errors : list
+            误差列表
+            
+        Returns
+        -------
+        tuple
+            (shape, array_values, array_errors) 如果有数组
+            (None, values, errors) 如果全是标量
+        """
+        # 获取数组形状
+        shape = None
+        for val in values:
+            if isinstance(val, np.ndarray):
+                shape = val.shape
+                break
+                
+        if shape is None:
+            return None, values, errors
+            
+        # 将所有标量扩展为数组
+        array_values = []
+        array_errors = []
+        for val, err in zip(values, errors):
+            if not isinstance(val, np.ndarray):
+                hasunit = hasattr(val, 'unit')
+                val = np.full(shape, val)
+                if hasunit:
+                    val = val*val.unit
+            if not isinstance(err, np.ndarray):
+                hasunit = hasattr(err, 'unit')
+                err = np.full(shape, err)
+                if hasunit:
+                    err = err*err.unit
+            array_values.append(val)
+            array_errors.append(err)
+            
+        return shape, array_values, array_errors
+
     @staticmethod
     def _prepare_inputs(args, errors):
         """预处理所有输入，去掉单位
@@ -297,51 +342,12 @@ class ErrorPropagation:
         return processed_args, processed_errors, args_units, errors_units
     
     @staticmethod
-    def _prepare_array_calculation(values, errors):
-        """准备数组计算，处理形状并扩展标量
-        
-        Parameters
-        ----------
-        values : list
-            值列表
-        errors : list
-            误差列表
-            
-        Returns
-        -------
-        tuple
-            (shape, array_values, array_errors) 如果有数组
-            (None, values, errors) 如果全是标量
-        """
-        # 获取数组形状
-        shape = None
-        for val in values:
-            if isinstance(val, np.ndarray):
-                shape = val.shape
-                break
-                
-        if shape is None:
-            return None, values, errors
-            
-        # 将所有标量扩展为数组
-        array_values = []
-        array_errors = []
-        for val, err in zip(values, errors):
-            if not isinstance(val, np.ndarray):
-                val = np.full(shape, val)
-            if not isinstance(err, np.ndarray):
-                err = np.full(shape, err)
-            array_values.append(val)
-            array_errors.append(err)
-            
-        return shape, array_values, array_errors
-
-    @staticmethod
     def _propagate_array(func, values, errors, derivatives=None):
         """处理数组的误差传播"""
+        processed_values, processed_errors, values_units, errors_units = ErrorPropagation._prepare_inputs(values, errors)
         if derivatives is None:
             # 使用 uncertainties 包计算
-            shape = values[0].shape
+            shape = processed_values[0].shape
             
             # 创建 ufloat 向量化函数
             make_ufloat = np.frompyfunc(lambda v, e: ufloat(v, e), 2, 1)
@@ -349,7 +355,7 @@ class ErrorPropagation:
             get_std = np.frompyfunc(lambda x: x.std_dev, 1, 1)
             
             # 创建 ufloat 数组
-            uarrays = [make_ufloat(v, e) for v, e in zip(values, errors)]
+            uarrays = [make_ufloat(v, e) for v, e in zip(processed_values, processed_errors)]
             
             # 向量化原始函数
             vec_func = np.frompyfunc(lambda *args: func(*args), len(uarrays), 1)
@@ -360,8 +366,14 @@ class ErrorPropagation:
             # 提取标称值和标准差
             result_values = get_nominal(result).astype(float)
             result_errors = get_std(result).astype(float)
-            
-            return result_values, result_errors
+
+            # 获取单位字典
+            unit_dict = QuantitySeparator.get_unit_dict(values)
+            final_unit = UnitPropagator.propagate_units(func, unit_dict)
+            if final_unit:
+                return result_values*final_unit, result_errors*final_unit
+            else:
+                return result_values, result_errors
         else:
             # 使用自定义导数计算
             result_values = func(*values)
@@ -395,11 +407,9 @@ class ErrorPropagation:
     @staticmethod
     def propagate(func, args, errors, derivatives=None, output_unit=None):
         """使用 uncertainties 包或自定义导数计算任意函数的误差传播"""
-        # 预处理所有输入
-        values, errors, values_units, errors_units = ErrorPropagation._prepare_inputs(args, errors)
         # 准备数组计算
         shape, calc_values, calc_errors = ErrorPropagation._prepare_array_calculation(
-            values, errors
+            args, errors
         )
         # 计算结果
         if shape is not None:
@@ -411,15 +421,8 @@ class ErrorPropagation:
                 func, calc_values, calc_errors, derivatives
             )
         
-        # 处理单位
-        if output_unit is not None:
-            return result_values * output_unit, result_errors * output_unit
-        else:
-            #return result_values * units_default[0], result_errors * units_default[0]
-            result_values_unit = func(*values_units)
-            result_errors_unit = func(*errors_units)
-            return result_values * result_values_unit, result_errors * result_errors_unit
-        #return result_values, result_errors
+        return result_values, result_errors
+
 
     @staticmethod
     def add(*args, output_unit=None):
@@ -504,9 +507,9 @@ def test_multiply():
     errors1 = np.array([[0.1, 0.1],
                        [0.1, 0.1]])*u.m
     values2 = np.array([[2.0, 2.0],
-                       [2.0, 2.0]])*u.mm
+                       [2.0, 2.0]])*u.m
     errors2 = np.array([[0.2, 0.2],
-                       [0.2, 0.2]])*u.mm
+                       [0.2, 0.2]])*u.m
     
     # 方法1：使用 multiply 函数
     result_val1, result_err1 = ErrorPropagation.multiply(
