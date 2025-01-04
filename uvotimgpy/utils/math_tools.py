@@ -344,7 +344,11 @@ class ErrorPropagation:
     @staticmethod
     def _propagate_array(func, values, errors, derivatives=None):
         """处理数组的误差传播"""
+        print("\n=== _propagate_array ===")
         processed_values, processed_errors, values_units, errors_units = ErrorPropagation._prepare_inputs(values, errors)
+        print(f"Values units: {values_units}")
+        print(f"Errors units: {errors_units}")
+        
         if derivatives is None:
             # 使用 uncertainties 包计算
             shape = processed_values[0].shape
@@ -368,40 +372,89 @@ class ErrorPropagation:
             result_errors = get_std(result).astype(float)
 
             # 获取单位字典
-            unit_dict = QuantitySeparator.get_unit_dict(values)
-            final_unit = UnitPropagator.propagate_units(func, unit_dict)
+            final_unit = UnitPropagator.propagate(func, *values)
+            print(f"Final unit from propagator: {final_unit}")
             if final_unit:
+                print(f"Adding units to results")
                 return result_values*final_unit, result_errors*final_unit
             else:
+                print("No units to add")
                 return result_values, result_errors
         else:
             # 使用自定义导数计算
-            result_values = func(*values)
-            partial_derivatives = derivatives(*values)
-            # 确保每个导数都与输入数组形状匹配
-            result_errors = np.sqrt(sum(
-                (np.asarray(deriv) * np.asarray(err))**2 
-                for deriv, err in zip(partial_derivatives, errors)
-            ))
+            print("\n使用自定义导数计算:")
+            result_values = quantity_wrap(func, *values)
+            print(f"Result values with units: {result_values}")
             
-        return result_values, result_errors
+            partial_derivatives = quantity_wrap(derivatives, *values)
+            print(f"Partial derivatives: {partial_derivatives}")
+            
+            # 计算每个项的平方项
+            squared_terms = []
+            for i, (deriv, err) in enumerate(zip(partial_derivatives, errors)):
+                print(f"\n计算第{i}项:")
+                print(f"Derivative: {deriv}")
+                print(f"Error: {err}")
+                # 计算 deriv * err
+                term = quantity_wrap(np.multiply, deriv, err)
+                print(f"deriv * err = {term}")
+                # 计算 (deriv * err)^2
+                squared_term = quantity_wrap(np.multiply, term, term)
+                print(f"(deriv * err)^2 = {squared_term}")
+                squared_terms.append(squared_term)
+            
+            # 计算平方和，保持数组维度
+            print("\n计算最终误差:")
+            print(f"Squared terms: {squared_terms}")
+            sum_squares = quantity_wrap(np.sum, squared_terms, axis=0)
+            print(f"Sum of squares: {sum_squares}")
+            # 计算平方根
+            result_errors = quantity_wrap(np.sqrt, sum_squares)
+            print(f"Final errors: {result_errors}")
+            
+            # 获取最终单位
+            final_unit = UnitPropagator.propagate(func, *values)
+            print(f"Final unit for custom derivatives: {final_unit}")
+            
+            # 确保返回值带有正确的单位
+            if final_unit:
+                return result_values, result_errors * final_unit
+            return result_values, result_errors
 
     @staticmethod
     def _propagate_scalar(func, values, errors, derivatives=None):
         """处理标量的误差传播"""
         if derivatives is None:
             # 使用 uncertainties 包计算
-            uvals = [ufloat(v, e) for v, e in zip(values, errors)]
+            processed_values, processed_errors, values_units, errors_units = ErrorPropagation._prepare_inputs(values, errors)
+            uvals = [ufloat(v, e) for v, e in zip(processed_values, processed_errors)]
             result = func(*uvals)
-            return result.nominal_value, result.std_dev
+            final_unit = UnitPropagator.propagate(func, *values)
+            result_values = result.nominal_value
+            result_errors = result.std_dev
+            if final_unit:
+                return result_values*final_unit, result_errors*final_unit
+            else:
+                return result_values, result_errors
         else:
             # 使用自定义导数计算
-            result_value = func(*values)
-            partial_derivatives = derivatives(*values)
-            result_error = np.sqrt(sum(
-                (deriv * err)**2 
-                for deriv, err in zip(partial_derivatives, errors)
-            ))
+            result_value = quantity_wrap(func, *values)
+            partial_derivatives = quantity_wrap(derivatives, *values)
+            
+            # 计算每个项的平方项
+            squared_terms = []
+            for deriv, err in zip(partial_derivatives, errors):
+                # 计算 deriv * err
+                term = quantity_wrap(np.multiply, deriv, err)
+                # 计算 (deriv * err)^2
+                squared_term = quantity_wrap(np.multiply, term, term)
+                squared_terms.append(squared_term)
+            
+            # 计算平方和
+            sum_squares = quantity_wrap(np.sum, squared_terms)
+            # 计算平方根
+            result_error = quantity_wrap(np.sqrt, sum_squares)
+            
             return result_value, result_error
         
     @staticmethod
@@ -411,6 +464,11 @@ class ErrorPropagation:
         shape, calc_values, calc_errors = ErrorPropagation._prepare_array_calculation(
             args, errors
         )
+        
+        # 获取最终单位
+        final_unit = UnitPropagator.propagate(func, *args)  # 使用原始参数而不是处理后的
+        print(f"Propagated unit: {final_unit}")
+        
         # 计算结果
         if shape is not None:
             result_values, result_errors = ErrorPropagation._propagate_array(
@@ -421,6 +479,9 @@ class ErrorPropagation:
                 func, calc_values, calc_errors, derivatives
             )
         
+        # 添加单位
+        if final_unit:
+            return result_values * final_unit, result_errors * final_unit
         return result_values, result_errors
 
 
@@ -452,7 +513,11 @@ class ErrorPropagation:
     def multiply(*args, output_unit=None):
         """乘法误差传播"""
         def multiply_func(*values):
-            return np.prod(values, axis=0)
+            # 检查输入单位
+            print(f"Multiply input values: {values}")
+            result = np.prod(values, axis=0)
+            print(f"Multiply result: {result}")
+            return result
             
         def multiply_derivatives(*values):
             return [
@@ -462,10 +527,25 @@ class ErrorPropagation:
         
         values = [arg[0] for arg in args]
         errors = [arg[1] for arg in args]
-        return ErrorPropagation.propagate(
+        
+        # 检查输入单位
+        print("\n=== multiply ===")
+        print(f"Input values: {values}")
+        print(f"Input errors: {errors}")
+        
+        # 获取预期的输出单位
+        expected_unit = UnitPropagator.propagate(np.multiply, *values)
+        print(f"Expected unit: {expected_unit}")
+        
+        result_values, result_errors = ErrorPropagation.propagate(
             multiply_func, values, errors, 
             multiply_derivatives, output_unit
         )
+        
+        # 如果没有指定输出单位，使用预期单位
+        if output_unit is None and expected_unit:
+            return result_values * expected_unit, result_errors * expected_unit
+        return result_values, result_errors
     
     @staticmethod
     def subtract(*args, output_unit=None):
