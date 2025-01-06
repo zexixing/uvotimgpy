@@ -1,10 +1,15 @@
 from typing import List, Union, Callable, Any, Sequence, Dict
 import numpy as np
 import astropy.units as u
+from astropy.units import quantity_input
 
 import ast
 import inspect
 import textwrap
+
+from typing import Any, List, Union, Tuple
+import numpy as np
+from astropy import units as u
 
 import ast
 import inspect
@@ -25,12 +30,6 @@ def simplify_unit(quantity: u.Quantity) -> u.Quantity:
     except:
         # 如果无法分解，保持原样
         return quantity
-
-
-from typing import Any, List, Union, Tuple
-import numpy as np
-from astropy import units as u
-from astropy.units.core import UnitBase
 
 class UnitPropagator:
     """单位传播计算器：分析函数中的运算并追踪物理单位的传播"""
@@ -707,7 +706,7 @@ class QuantityWrapper:
                 return result, True
                 
         except Exception as e:
-            print(f"Method error: {e}")  # 可选的调试信息
+            #print(f"Method error: {e}")  # 可选的调试信息
             pass
             
         return None, False

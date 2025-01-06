@@ -390,16 +390,11 @@ class ErrorPropagation:
                 squared_terms.append(squared_term)
             
             # 计算平方和，保持数组维度
-            sum_squares = np.sum([term.value for term in squared_terms], axis=0) * squared_terms[0].unit
+            sum_squares = quantity_wrap(np.sum, squared_terms, axis=0)
             # 计算平方根
             result_errors = quantity_wrap(np.sqrt, sum_squares)
             
-            # 获取最终单位
-            final_unit = UnitPropagator.propagate(func, *values)
-            
             # 确保返回值带有正确的单位
-            if final_unit:
-                return result_values, result_errors * final_unit
             return result_values, result_errors
 
     @staticmethod
@@ -446,7 +441,6 @@ class ErrorPropagation:
             args, errors
         )
 
-        
         # 计算结果
         if shape is not None:
             result_values, result_errors = ErrorPropagation._propagate_array(
@@ -504,7 +498,6 @@ class ErrorPropagation:
             multiply_func, values, errors, 
             multiply_derivatives, output_unit
         )
-        
         return result_values, result_errors
     
     @staticmethod
@@ -524,10 +517,10 @@ class ErrorPropagation:
     def divide(*args, output_unit=None):
         """除法误差传播 (a1 / a2 / a3 / ...)"""
         def divide_func(*values):
-            return values[0] / np.prod(values[1:], axis=0)
+            return values[0] / reduce(mul, values[1:])
             
         def divide_derivatives(*values):
-            prod_others = np.prod(values[1:], axis=0)  # 所有除数的乘积
+            prod_others = reduce(mul, values[1:])  # 所有除数的乘积
             return [
                 1/prod_others,  # 对被除数的偏导数
                 *[-values[0]/(val * prod_others)  # 对每个除数的偏导数
