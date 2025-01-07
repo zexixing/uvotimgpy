@@ -71,40 +71,43 @@ class UnitPropagator:
     @staticmethod
     def _try_compute_unit(func: callable, units: List[Union[u.Unit, List[u.Unit]]], **kwargs) -> u.Unit:
         """尝试计算函数结果的单位"""
-    
         # 特殊处理 sqrt 函数
         if func == np.sqrt:
             if len(units) == 1:
                 result = units[0] ** 0.5
                 return result
-        try:
-            if len(units) == 1 and isinstance(units[0], list):
-                result = func(units[0], **kwargs)
-            else:
-                result = func(*units, **kwargs)             
-            if isinstance(result, (u.Unit, u.CompositeUnit, u.IrreducibleUnit)):
-                return result
-            return u.dimensionless_unscaled
-            
-        except Exception as e:
-            # 如果失败，尝试样本值方法
+        result = UnitPropagator._special_func(func, *units, **kwargs)
+        if result:
+            return result
+        else:
             try:
-                sample_args = []
-                for unit in units:
-                    if isinstance(unit, list):
-                        sample_args.append([1 * u if u != u.dimensionless_unscaled else 1 for u in unit])
-                    else:
-                        sample_args.append(1 * unit if unit != u.dimensionless_unscaled else 1)
-                print(sample_args)                
                 if len(units) == 1 and isinstance(units[0], list):
-                    result = func(sample_args[0], **kwargs)
+                    result = func(units[0], **kwargs)
                 else:
-                    result = func(*sample_args, **kwargs)
-                
-                return getattr(result, 'unit', u.dimensionless_unscaled)
-                
+                    result = func(*units, **kwargs)       
+                if isinstance(result, (u.Unit, u.CompositeUnit, u.IrreducibleUnit)):
+                    return result
+                if isinstance(result, u.Quantity):
+                    return result.unit
+                return u.dimensionless_unscaled
+
             except Exception as e:
-                raise ValueError(f"无法计算单位: {str(e)}")
+                # 如果失败，尝试样本值方法
+                try:
+                    sample_args = []
+                    for unit in units:
+                        if isinstance(unit, list):
+                            sample_args.append([1 * u if u != u.dimensionless_unscaled else 1 for u in unit])
+                        else:
+                            sample_args.append(1 * unit if unit != u.dimensionless_unscaled else 1)                
+                    if len(units) == 1 and isinstance(units[0], list):
+                        result = func(sample_args[0], **kwargs)
+                    else:
+                        result = func(*sample_args, **kwargs)
+
+                    return getattr(result, 'unit', u.dimensionless_unscaled)
+                except Exception as e:
+                    raise ValueError(f"无法计算单位: {str(e)}")
 
     @staticmethod
     def _eval_binop(op, left_unit, right_unit) -> u.Unit:
@@ -166,6 +169,10 @@ class UnitPropagator:
             # 计算参数的单位
             arg_units = [UnitPropagator._eval_node(arg, local_dict, unit_dict) for arg in node.args]
 
+            # 处理特殊统计函数
+            result = UnitPropagator._special_func(func, *arg_units)
+            if result:
+                return result
             # 计算函数结果的单位
             result = UnitPropagator._try_compute_unit(func, arg_units)
             return result
@@ -199,7 +206,19 @@ class UnitPropagator:
                 return u.dimensionless_unscaled
         else:
             raise ValueError(f"不支持的节点类型: {type(node).__name__}")
-
+    @staticmethod
+    def _special_func(func: callable, *args, **kwargs) -> u.Unit:
+        if func in [np.mean, np.median, np.std, np.vstack]:
+            if len(args) == 1 and isinstance(args[0], list):
+                unit_list = args[0]
+                # 检查是否所有单位都相同
+                if all(u == unit_list[0] for u in unit_list):
+                    return unit_list[0]
+        if func in [np.reshape]:
+            if len(args) == 1:
+                return args[0]
+        return False
+    
     @staticmethod
     def propagate(func: callable, *args, **kwargs) -> u.Unit:
         """计算函数结果的单位"""
@@ -208,6 +227,7 @@ class UnitPropagator:
             if isinstance(func, np.ufunc) or (hasattr(func, '__module__') and 
                 (func.__module__.startswith('numpy') or func.__module__ == 'builtins')):
                 units = UnitPropagator._get_units_from_args(*args)
+                print(func, units)
                 return UnitPropagator._try_compute_unit(func, units, **kwargs)
 
             # 获取函数源码
@@ -957,7 +977,7 @@ def test_image_operations():
     
     print("\n=== 图像形状操作测试 ===")
     # 5. 形状操作
-    reshape_unit = UnitPropagator.propagate(np.reshape, img1)
+    reshape_unit = UnitPropagator.propagate(np.reshape, img1, newshape=(2,2))
     print(f"重整形状单位: {reshape_unit}")
     
     stack_unit = UnitPropagator.propagate(np.vstack, imgs)
@@ -1068,7 +1088,7 @@ def test_quantity_wrap():
     print(f"最终单位: {getattr(div_result, 'unit', None)}")
 
 if __name__ == '__main__':
-    #test_image_operations()
+    test_image_operations()
     example_usage()
     test_unit_propagation()
     test_quantity_wrap()
