@@ -271,10 +271,14 @@ class ErrorPropagation:
         # 获取数组形状
         shape = None
         for val in values:
-            if isinstance(val, np.ndarray):
+            if hasattr(val, 'unit'):
+                if val.ndim > 0:  # quantity数组
+                    shape = val.shape
+                    break
+            elif isinstance(val, np.ndarray) and val.ndim > 0:
                 shape = val.shape
                 break
-                
+
         if shape is None:
             return None, values, errors
             
@@ -282,19 +286,22 @@ class ErrorPropagation:
         array_values = []
         array_errors = []
         for val, err in zip(values, errors):
-            if not isinstance(val, np.ndarray):
-                hasunit = hasattr(val, 'unit')
+            if hasattr(val, 'unit'):
+                if val.ndim == 0:
+                    valunit = val.unit
+                    val = np.full(shape, val.value)
+                    val = val*valunit
+            elif np.isscalar(val):
                 val = np.full(shape, val)
-                if hasunit:
-                    val = val*val.unit
-            if not isinstance(err, np.ndarray):
-                hasunit = hasattr(err, 'unit')
+            if hasattr(err, 'unit'):
+                if err.ndim == 0:
+                    errunit = err.unit
+                    err = np.full(shape, err.value)
+                    err = err*errunit
+            elif np.isscalar(err):
                 err = np.full(shape, err)
-                if hasunit:
-                    err = err*err.unit
             array_values.append(val)
             array_errors.append(err)
-            
         return shape, array_values, array_errors
 
     @staticmethod
@@ -390,7 +397,7 @@ class ErrorPropagation:
                 squared_terms.append(squared_term)
             
             # 计算平方和，保持数组维度
-            sum_squares = quantity_wrap(np.sum, squared_terms, axis=0)
+            sum_squares = quantity_wrap(sum, squared_terms)
             # 计算平方根
             result_errors = quantity_wrap(np.sqrt, sum_squares)
             
@@ -427,7 +434,7 @@ class ErrorPropagation:
                 squared_terms.append(squared_term)
             
             # 计算平方和
-            sum_squares = quantity_wrap(np.sum, squared_terms)
+            sum_squares = quantity_wrap(sum, squared_terms)
             # 计算平方根
             result_error = quantity_wrap(np.sqrt, sum_squares)
             
@@ -440,7 +447,6 @@ class ErrorPropagation:
         shape, calc_values, calc_errors = ErrorPropagation._prepare_array_calculation(
             args, errors
         )
-
         # 计算结果
         if shape is not None:
             result_values, result_errors = ErrorPropagation._propagate_array(
@@ -470,7 +476,7 @@ class ErrorPropagation:
             (result_value, result_error)
         """
         def add_func(*values):
-            return np.sum(values, axis=0)
+            return sum(values)
             
         def add_derivatives(*values):
             return [1] * len(values)  # 加法的偏导数都是1
@@ -504,7 +510,7 @@ class ErrorPropagation:
     def subtract(*args, output_unit=None):
         """减法误差传播 (a1 - a2 - a3 - ...)"""
         def subtract_func(*values):
-            return values[0] - np.sum(values[1:], axis=0)
+            return values[0] - sum(values[1:])
             
         def subtract_derivatives(*values):
             return [1] + [-1] * (len(values)-1)  # 第一个是1，其他都是-1
@@ -581,4 +587,123 @@ def test_multiply():
             print(f"{' '*len(str(values1[i,j]))}  ×  {' '*len(str(values2[i,j]))}    = ", end="")
             print(f"{result_val2[i,j]:.2f}±{result_err2[i,j]:.2f} (方法2)")
 
-test_multiply()
+def test_divide():
+    """测试除法误差传播"""
+    # 创建2x2测试数组
+    values1 = np.array([[10.0, 20.0],
+                       [30.0, 40.0]]) * u.m
+    errors1 = np.array([[1.0, 1.0],
+                       [1.0, 1.0]]) * u.m
+    values2 = np.array([[2.0, 2.0],
+                       [2.0, 2.0]]) * u.s
+    errors2 = np.array([[0.2, 0.2],
+                       [0.2, 0.2]]) * u.s
+    
+    # 方法1：使用 divide 函数
+    result_val1, result_err1 = ErrorPropagation.divide(
+        (values1, errors1),
+        (values2, errors2)
+    )
+    print("\n方法1 - divide函数:")
+    print("值:")
+    print(result_val1)
+    print("误差:")
+    print(result_err1)
+    
+    # 方法2：使用 propagate 和 uncertainties
+    def divide_func(*values):
+        return values[0] / values[1]
+    
+    result_val2, result_err2 = ErrorPropagation.propagate(
+        divide_func,
+        [values1, values2],
+        [errors1, errors2],
+        derivatives=None  # 使用 uncertainties 包
+    )
+    print("\n方法2 - propagate函数:")
+    print("值:")
+    print(result_val2)
+    print("误差:")
+    print(result_err2)
+    
+    # 打印每个位置的详细计算
+    print("\n详细结果:")
+    for i in range(2):
+        for j in range(2):
+            print(f"位置[{i},{j}]:")
+            print(f"{values1[i,j]}±{errors1[i,j]} ÷ {values2[i,j]}±{errors2[i,j]} = ", end="")
+            print(f"{result_val1[i,j]:.2f}±{result_err1[i,j]:.2f} (方法1)")
+            print(f"{' '*len(str(values1[i,j]))}  ÷  {' '*len(str(values2[i,j]))}    = ", end="")
+            print(f"{result_val2[i,j]:.2f}±{result_err2[i,j]:.2f} (方法2)")
+
+def test_add_subtract():
+    """测试加法和减法误差传播"""
+    # 创建2x2测试数组
+    values1 = np.array([[10.0, 20.0],
+                       [30.0, 40.0]]) * u.m
+    errors1 = 1.0 *u.m
+    values2 = np.array([[5.0, 10.0],
+                       [15.0, 20.0]]) * u.m
+    errors2 = 2.0 *u.m
+    
+    print("\n=== 测试加法 ===")
+    # 方法1：使用 add 函数
+    add_val1, add_err1 = ErrorPropagation.add(
+        (values1, errors1),
+        (values2, errors2)
+    )
+    print("\n方法1 - add函数:")
+    print("值:")
+    print(add_val1)
+    print("误差:")
+    print(add_err1)
+    
+    # 方法2：使用 propagate
+    def add_func(*values):
+        return values[0] + values[1]
+    
+    add_val2, add_err2 = ErrorPropagation.propagate(
+        add_func,
+        [values1, values2],
+        [errors1, errors2],
+        derivatives=None
+    )
+    print("\n方法2 - propagate函数:")
+    print("值:")
+    print(add_val2)
+    print("误差:")
+    print(add_err2)
+    
+    print("\n=== 测试减法 ===")
+    # 方法1：使用 subtract 函数
+    sub_val1, sub_err1 = ErrorPropagation.subtract(
+        (values1, errors1),
+        (values2, errors2)
+    )
+    print("\n方法1 - subtract函数:")
+    print("值:")
+    print(sub_val1)
+    print("误差:")
+    print(sub_err1)
+    
+    # 方法2：使用 propagate
+    def subtract_func(*values):
+        return values[0] - values[1]
+    
+    sub_val2, sub_err2 = ErrorPropagation.propagate(
+        subtract_func,
+        [values1, values2],
+        [errors1, errors2],
+        derivatives=None
+    )
+    print("\n方法2 - propagate函数:")
+    print("值:")
+    print(sub_val2)
+    print("误差:")
+    print(sub_err2)
+    
+
+if __name__ == '__main__':
+    test_multiply()
+    test_divide()
+    test_add_subtract()

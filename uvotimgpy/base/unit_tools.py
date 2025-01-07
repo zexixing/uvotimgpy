@@ -32,294 +32,235 @@ def simplify_unit(quantity: u.Quantity) -> u.Quantity:
         return quantity
 
 class UnitPropagator:
-    """单位传播计算器：分析函数中的运算并追踪物理单位的传播"""
+    class NodeVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.nodes = []
 
-        # 需要展开array的函数：作用于单个array的所有元素
-    array_ops = {
-            # 保持单位不变
-            'preserve': {
-                np.sum, np.mean, np.average, np.median, np.min, np.max,
-                np.percentile, np.nansum, np.nanmean, np.nanmedian, np.nanmin, np.nanmax,
-                np.cumsum,
-                # 排序和形状操作
-                np.sort,
-                # 数组组合
-                np.concatenate, np.stack, np.vstack, np.hstack, np.dstack,
-                # 形状操作
-                np.reshape, np.ravel,
-                # 移动std到这里
-                np.std, np.nanstd
-            },
-            # 单位相乘
-            'multiply': {
-                np.prod, np.nanprod, np.cumprod,
-                # 添加矩阵运算
-                np.dot, np.matmul, np.inner, np.outer
-            },
-            # 单位平方
-            'square': {
-                np.var, np.nanvar,  # 只有方差是平方单位
-                np.ptp  # peak to peak = max - min
-            }
-        }
-        
-        # 不需要展开array的函数：作用于多个array之间对应元素
-    element_ops = {
-            # 返回无量纲
-            'dimensionless': {
-                np.exp, np.log, np.log10, np.log2, np.log1p,
-                np.sin, np.cos, np.tan, np.arcsin, np.arccos, np.arctan,
-                np.sinh, np.cosh, np.tanh, np.arcsinh, np.arccosh, np.arctanh,
-                np.greater, np.less, np.equal, np.not_equal,
-                np.greater_equal, np.less_equal,
-                np.isfinite, np.isinf, np.isnan
-            },
-            # 保持单位
-            'preserve': {
-                np.negative, np.positive, np.absolute, np.abs, np.fabs,
-                np.around, np.round, np.rint, np.floor, np.ceil, np.trunc,
-                np.gradient, np.diff  # 保持单位的导数
-            },
-            # 基本运算
-            'basic': {
-                np.add, np.subtract, np.multiply, np.divide,
-                np.true_divide, np.floor_divide, np.remainder, np.mod
-            },
-            # 幂运算
-            'power': {
-                np.power, np.sqrt, np.square, np.cbrt
-            }
-        }
+        def visit_Return(self, node):
+            self.nodes.append(('return', node))
+            self.generic_visit(node)
+
+        def visit_Assign(self, node):
+            self.nodes.append(('assign', node))
+            self.generic_visit(node)
+
+        def visit_Call(self, node):
+            self.nodes.append(('call', node))
+            self.generic_visit(node)
+
+        def visit_BinOp(self, node):
+            self.nodes.append(('binop', node))
+            self.generic_visit(node)
+
     @staticmethod
-    def _is_unit_array(arg: Any) -> bool:
-        """检查是否是单位数组"""
-        if isinstance(arg, (list, np.ndarray)):
-            try:
-                return isinstance(arg[0][0], (u.UnitBase, u.CompositeUnit))
-            except (IndexError, TypeError):
-                return False
+    def _get_unit_from_arg(arg: Any) -> Union[u.Unit, List[u.Unit]]:
+        if isinstance(arg, (int, float)):
+            return u.dimensionless_unscaled
         elif isinstance(arg, u.Quantity):
-            return True
-        return False
-    
-    @staticmethod
-    def _get_unit(arg: Any) -> Union[u.Unit, float]:
-        """获取参数的单位或值"""
-        if isinstance(arg, u.Quantity):
             return arg.unit
-        elif isinstance(arg, (int, float)):
-            return float(arg)
-        elif isinstance(arg, (list, np.ndarray)):
-            if len(arg) > 0:
-                if isinstance(arg[0], u.Quantity):
-                    return arg[0].unit
-                elif isinstance(arg[0], (list, np.ndarray)) and isinstance(arg[0][0], (u.UnitBase, u.CompositeUnit)):
-                    return arg[0][0]
-        return u.dimensionless_unscaled
-
-    @staticmethod
-    def _get_array_info(arg: Any) -> Tuple[u.Unit, tuple, bool]:
-        """获取数组的单位、形状和是否为单位数组"""
-        if isinstance(arg, u.Quantity):
-            return arg.unit, arg.shape, False
-        elif isinstance(arg, (list, tuple)):
-            if len(arg) > 0:
-                if isinstance(arg[0], u.Quantity):
-                    return arg[0].unit, arg[0].shape, False
-                elif isinstance(arg[0], (list, tuple)):
-                    first_elem = arg[0]
-                    while isinstance(first_elem, (list, tuple)) and len(first_elem) > 0:
-                        first_elem = first_elem[0]
-                    if isinstance(first_elem, (u.Quantity, u.UnitBase, u.CompositeUnit)):
-                        return first_elem.unit if isinstance(first_elem, u.Quantity) else first_elem, first_elem.shape if isinstance(first_elem, u.Quantity) else (), False
-        elif isinstance(arg, np.ndarray):
-            if arg.dtype == np.dtype('object'):
-                first_elem = arg.flat[0]
-                if isinstance(first_elem, (u.Quantity, u.UnitBase, u.CompositeUnit)):
-                    return first_elem.unit if isinstance(first_elem, u.Quantity) else first_elem, first_elem.shape if isinstance(first_elem, u.Quantity) else (), False
-        return u.dimensionless_unscaled, (), True
-
-    @staticmethod
-    def _expand_shape(unit: u.Unit, shape: tuple) -> Union[u.Unit, List]:
-        """根据形状扩展单位"""
-        if not shape:  # 标量
-            return unit
-        if len(shape) == 1:  # 一维数组
-            return [unit] * shape[0]
-        # 多维数组：递归扩展
-        return [UnitPropagator._expand_shape(unit, shape[1:]) for _ in range(shape[0])]
-
-    @staticmethod
-    def _flatten_units(unit_struct: Union[u.Unit, List]) -> List[u.Unit]:
-        """将嵌套的单位结构展平"""
-        if not isinstance(unit_struct, list):
-            return [unit_struct]
-        
-        flattened = []
-        for item in unit_struct:
-            if isinstance(item, list):
-                flattened.extend(UnitPropagator._flatten_units(item))
-            else:
-                flattened.append(item)
-        return flattened
-
-    @staticmethod
-    def _process_array_op(func: callable, *args, **kwargs) -> u.Unit:
-        """处理数组操作"""
-        # 对于矩阵运算，需要处理两个输入
-        if func in {np.dot, np.matmul, np.inner, np.outer}:
-            if len(args) >= 2:
-                unit1, shape1, _ = UnitPropagator._get_array_info(args[0])
-                unit2, shape2, _ = UnitPropagator._get_array_info(args[1])
-                # 矩阵运算的单位是两个输入单位的乘积
-                return unit1 * unit2
-        
-        # 其他数组操作的处理保持不变
-        unit, shape, is_unit_array = UnitPropagator._get_array_info(args[0])
-        axis = kwargs.get('axis', None)
-        
-        if is_unit_array:
-            if func in UnitPropagator.array_ops['multiply']:
-                power = np.prod(shape) if axis is None else shape[axis]
-                return unit ** power
-            elif func in UnitPropagator.array_ops['square']:
-                return unit ** 2
-            return unit
+        elif isinstance(arg, (list, tuple, np.ndarray)):
+            return [UnitPropagator._get_unit_from_arg(x) for x in arg]
         else:
-            expanded_units = UnitPropagator._expand_shape(unit, shape)
-            flat_units = UnitPropagator._flatten_units(expanded_units)
+            return u.dimensionless_unscaled
+
+    @staticmethod
+    def _get_units_from_args(*args) -> List[Union[u.Unit, List[u.Unit]]]:
+        """从所有参数获取单位列表"""
+        return [UnitPropagator._get_unit_from_arg(arg) for arg in args]
+
+    @staticmethod
+    def _try_compute_unit(func: callable, units: List[Union[u.Unit, List[u.Unit]]], **kwargs) -> u.Unit:
+        """尝试计算函数结果的单位"""
+    
+        # 特殊处理 sqrt 函数
+        if func == np.sqrt:
+            if len(units) == 1:
+                result = units[0] ** 0.5
+                return result
+        try:
+            if len(units) == 1 and isinstance(units[0], list):
+                result = func(units[0], **kwargs)
+            else:
+                result = func(*units, **kwargs)             
+            if isinstance(result, (u.Unit, u.CompositeUnit, u.IrreducibleUnit)):
+                return result
+            return u.dimensionless_unscaled
             
-            for category, funcs in UnitPropagator.array_ops.items():
-                if func in funcs:
-                    if category == 'preserve':
-                        return unit
-                    elif category == 'multiply':
-                        if axis is None:
-                            return unit ** len(flat_units)
-                        else:
-                            return unit ** shape[axis]
-                    elif category == 'square':
-                        return unit ** 2
+        except Exception as e:
+            # 如果失败，尝试样本值方法
+            try:
+                sample_args = []
+                for unit in units:
+                    if isinstance(unit, list):
+                        sample_args.append([1 * u if u != u.dimensionless_unscaled else 1 for u in unit])
+                    else:
+                        sample_args.append(1 * unit if unit != u.dimensionless_unscaled else 1)
+                print(sample_args)                
+                if len(units) == 1 and isinstance(units[0], list):
+                    result = func(sample_args[0], **kwargs)
+                else:
+                    result = func(*sample_args, **kwargs)
+                
+                return getattr(result, 'unit', u.dimensionless_unscaled)
+                
+            except Exception as e:
+                raise ValueError(f"无法计算单位: {str(e)}")
+
+    @staticmethod
+    def _eval_binop(op, left_unit, right_unit) -> u.Unit:
+        """计算二元运算的单位"""
+
+        if isinstance(op, ast.Add) or isinstance(op, ast.Sub):
+            if left_unit != right_unit:
+                raise ValueError(f"加减运算的单位必须相同: {left_unit} vs {right_unit}")
+            return left_unit
+
+        elif isinstance(op, ast.Mult):
+            return left_unit * right_unit
+
+        elif isinstance(op, ast.Div):
+            return left_unit / right_unit
+
+        elif isinstance(op, ast.Pow):
+            # 处理幂运算
+            if right_unit != u.dimensionless_unscaled:
+                raise ValueError("指数必须是无量纲的")
+            else:
+                power = right_unit.value
+                # 否则假设是单位为1的量
+                return left_unit ** power
+
+        else:
+            raise ValueError(f"不支持的运算符: {type(op).__name__}")
+
+    @staticmethod
+    def _eval_node(node: ast.AST, local_dict: dict, unit_dict: dict) -> u.Unit:
+        """计算节点的单位"""
+        if isinstance(node, (ast.Constant, ast.Num)):  # ast.Num 是为了兼容旧版本
+            # 存储原始数值
+            unit = u.dimensionless_unscaled
+            unit.value = node.value if hasattr(node, 'value') else node.n
             return unit
 
-    @staticmethod
-    def _process_element_op(func: callable, units: List[u.Unit]) -> u.Unit:
-        """处理元素间运算的函数"""
-        print(f"\n=== _process_element_op ===")
-        print(f"Function: {func}")
-        print(f"Input units: {units}")
-        
-        if not units:
-            return u.dimensionless_unscaled
+        elif isinstance(node, ast.Name):
+            # 优先从unit_dict中获取单位
+            if node.id in unit_dict:
+                result = unit_dict[node.id]
+            else:
+                result = UnitPropagator._get_unit_from_arg(local_dict.get(node.id))
+            return result
 
-        base_unit = units[0]
-        result_unit = base_unit
+        elif isinstance(node, ast.Call):
+            # 获取函数
+            if isinstance(node.func, ast.Name):
+                func = local_dict.get(node.func.id)
+            elif isinstance(node.func, ast.Attribute):
+                if isinstance(node.func.value, ast.Name) and node.func.value.id == 'np':
+                    func = getattr(np, node.func.attr, None)
+            else:
+                raise ValueError(f"不支持的函数调用形式: {ast.dump(node.func)}")
 
-        for category, funcs in UnitPropagator.element_ops.items():
-            if func in funcs:
-                if category == 'basic':
-                    if func in {np.multiply, np.prod}:
-                        for unit in units[1:]:
-                            if isinstance(unit, (u.Unit, u.CompositeUnit)):
-                                result_unit = result_unit * unit
-                            elif isinstance(unit, (int, float)):
-                                continue
-                        print(f"Multiply result unit: {result_unit}")
-                        return result_unit
-                    elif func in {np.divide, np.true_divide, np.floor_divide}:
-                        for unit in units[1:]:
-                            if isinstance(unit, (u.Unit, u.CompositeUnit)):
-                                result_unit = result_unit / unit
-                            elif isinstance(unit, (int, float)):
-                                continue
-                        return result_unit
-                    elif func in {np.add, np.subtract, np.remainder, np.mod}:
-                        return base_unit
-                elif category == 'dimensionless':
-                    return u.dimensionless_unscaled
-                elif category == 'preserve':
-                    return base_unit
-                elif category == 'power':
-                    if func == np.sqrt:
-                        return base_unit ** 0.5
-                    elif func == np.square:
-                        return base_unit ** 2
-                    elif func == np.cbrt:
-                        return base_unit ** (1/3)
-                    elif func == np.power:
-                        if len(units) > 1:
-                            power = units[1]
-                            if isinstance(power, u.Unit):
-                                if power.is_equivalent(u.dimensionless_unscaled):
-                                    power = power.to(u.dimensionless_unscaled).value
-                            return base_unit ** power
-                        return base_unit
-        return base_unit
+            if func is None:
+                raise ValueError(f"未找到函数: {ast.dump(node.func)}")
 
-    @staticmethod
-    def propagate(func: Union[callable, str], *args, **kwargs) -> u.Unit:
-        """计算函数结果的单位
-        
-        Parameters
-        ----------
-        func : Union[callable, str]
-            要分析的函数或函数名
-        args : tuple
-            位置参数
-        simplify_units : bool, optional
-            是否简化单位，默认False
-        kwargs : dict
-            关键字参数
-            
-        Returns
-        -------
-        Unit
-            计算结果的单位
-        """
-        # 如果输入是字符串，尝试从numpy获取对应函数
-        if isinstance(func, str):
-            try:
-                func = getattr(np, func)
-            except AttributeError:
-                raise ValueError(f"未找到numpy函数: {func}")
+            # 计算参数的单位
+            arg_units = [UnitPropagator._eval_node(arg, local_dict, unit_dict) for arg in node.args]
 
-        # 检查函数是否在预定义的操作集中
-        for category, funcs in UnitPropagator.array_ops.items():
-            if func in funcs:
-                result = UnitPropagator._process_array_op(func, *args, **kwargs)
-                return result
+            # 计算函数结果的单位
+            result = UnitPropagator._try_compute_unit(func, arg_units)
+            return result
 
-        # 检查元素操作
-        for category, funcs in UnitPropagator.element_ops.items():
-            if func in funcs:
-                result = UnitPropagator._process_element_op(func, [UnitPropagator._get_unit(arg) for arg in args])
-                return result
+        elif isinstance(node, ast.BinOp):
+            left_unit = UnitPropagator._eval_node(node.left, local_dict, unit_dict)
+            right_unit = UnitPropagator._eval_node(node.right, local_dict, unit_dict)
+            result = UnitPropagator._eval_binop(node.op, left_unit, right_unit)
+            return result
 
-        # 处理自定义函数
-        try:
-            unit_args = []
-            for i, arg in enumerate(args):
-                if isinstance(arg, (int, float)):
-                    unit_args.append(arg)
-                elif isinstance(arg, u.Quantity):
-                    if np.isscalar(arg.value):
-                        unit_args.append(1.0 * arg.unit)
-                    else:
-                        unit_args.append(arg)
-                elif isinstance(arg, list) and all(isinstance(x, u.Quantity) for x in arg):
-                    test_array = np.array([x.value for x in arg])
-                    unit_args.append(test_array * arg[0].unit)
+        elif isinstance(node, ast.List):
+            return [UnitPropagator._eval_node(elt, local_dict, unit_dict) for elt in node.elts]
+
+        elif isinstance(node, ast.Attribute):
+            # 处理属性访问，比如 u.m
+            if isinstance(node.value, ast.Name):
+                if node.value.id == 'u':
+                    # 如果是 astropy.units 的单位
+                    try:
+                        result = getattr(u, node.attr)
+                        return result
+                    except AttributeError:
+                        raise ValueError(f"未知的单位: u.{node.attr}")
                 else:
-                    unit_args.append(1.0 * u.dimensionless_unscaled)
+                    base_obj = local_dict.get(node.value.id)
+                    if base_obj is not None:
+                        result = UnitPropagator._get_unit_from_arg(getattr(base_obj, node.attr, None))
+                        return result
+            # 处理 np.xxx 的情况
+            elif isinstance(node.value, ast.Name) and node.value.id == 'np':
+                return u.dimensionless_unscaled
+        else:
+            raise ValueError(f"不支持的节点类型: {type(node).__name__}")
 
-            result = func(*unit_args, **kwargs)
+    @staticmethod
+    def propagate(func: callable, *args, **kwargs) -> u.Unit:
+        """计算函数结果的单位"""
+        try:
+            # 如果是numpy函数或其他内置函数，直接计算
+            if isinstance(func, np.ufunc) or (hasattr(func, '__module__') and 
+                (func.__module__.startswith('numpy') or func.__module__ == 'builtins')):
+                units = UnitPropagator._get_units_from_args(*args)
+                return UnitPropagator._try_compute_unit(func, units, **kwargs)
 
-            if isinstance(result, u.Quantity):
-                unit = result.unit
-                return unit
-            return u.dimensionless_unscaled
+            # 获取函数源码
+            source = inspect.getsource(func)
+
+            # 处理缩进问题
+            lines = source.splitlines()
+            if lines:
+                # 找到第一行非空白字符的缩进级别
+                first_line = lines[0]
+                indent = len(first_line) - len(first_line.lstrip())
+                # 去除所有行的相同缩进
+                dedented_lines = [line[indent:] if line.startswith(' ' * indent) else line for line in lines]
+                source = '\n'.join(dedented_lines)
+            tree = ast.parse(source)
+
+            if isinstance(tree.body[0], ast.FunctionDef):
+                func_body = tree.body[0].body
+
+                # 创建本地变量字典，用于存储变量和其单位
+                local_dict = {}
+                unit_dict = {}  # 新增：专门存储单位的字典
+
+                # 绑定参数
+                arg_names = [arg.arg for arg in tree.body[0].args.args]
+                for name, value in zip(arg_names, args):
+                    local_dict[name] = value
+                    unit_dict[name] = UnitPropagator._get_unit_from_arg(value)
+
+                local_dict['np'] = np
+                local_dict['u'] = u
+
+                # 收集并处理所有节点
+                visitor = UnitPropagator.NodeVisitor()
+                visitor.visit(tree)
+
+                for node_type, node in visitor.nodes:
+                    if node_type == 'assign':
+                        # 处理赋值语句
+                        target_name = node.targets[0].id
+                        value_unit = UnitPropagator._eval_node(node.value, local_dict, unit_dict)  # 添加unit_dict参数
+                        unit_dict[target_name] = value_unit  # 存储到单位字典中
+                    elif node_type == 'return':
+                        # 使用单位字典查找变量的单位
+                        if isinstance(node.value, ast.Name):
+                            var_name = node.value.id
+                            if var_name in unit_dict:
+                                return unit_dict[var_name]
+                        return UnitPropagator._eval_node(node.value, local_dict, unit_dict)
+
         except Exception as e:
-            raise ValueError(f"单位计算错误: {str(e)}")
+            print(f"错误: {str(e)}")
+            raise
     
 def get_common_unit(*args):
     """获取多个参数的共同单位
@@ -454,6 +395,14 @@ def convert_sequence_to_array(sequence: Union[List, tuple]) -> Union[np.ndarray,
     
     # If no units involved, return regular numpy array
     return np.array(sequence)
+
+def is_quantity_collection(values):
+    if isinstance(values, u.Quantity) and np.isscalar(values.value):
+        return False
+    result =  (isinstance(values, (list, np.ndarray)) and 
+            len(values) > 1 and 
+            hasattr(values[0], 'unit'))
+    return result
 
 class QuantitySeparator:
     @staticmethod
@@ -627,7 +576,7 @@ class QuantityWrapper:
         if simplify_units and isinstance(result, u.Quantity):
             result = simplify_unit(result)
         return result
-    
+
     @staticmethod
     def _try_quantity_input(func: Callable, *args, output_unit: Union[u.Unit, None] = None, 
                            **kwargs) -> tuple[Any, bool]:
@@ -666,7 +615,6 @@ class QuantityWrapper:
                     result = result.to(output_unit)
                 except:
                     return None, False
-                
             return result, True
             
         except Exception as e:
@@ -727,7 +675,7 @@ class QuantityWrapper:
         if not has_quantity and output_unit is None:
             return func(*args, **kwargs)
             
-        # 如果没有强制使用numpy，尝试使用Quantity方法
+        # 尝试使用Quantity方法
         if not force_numpy:
             result, success = QuantityWrapper._try_quantity_method(
                 func, args, output_unit, **kwargs)  # 传递kwargs
@@ -737,8 +685,15 @@ class QuantityWrapper:
         
         # 如果不能使用Quantity方法，使用原有的处理方式
         # 先尝试使用quantity_input
-        result, success = QuantityWrapper._try_quantity_input(
-            func, *args, output_unit=output_unit, **kwargs)
+        if len(args) == 1:
+            if not is_quantity_collection(args):
+                result, success = QuantityWrapper._try_quantity_input(
+                    func, *args, output_unit=output_unit, **kwargs)
+        elif all(not is_quantity_collection(arg) for arg in args):
+            result, success = QuantityWrapper._try_quantity_input(
+                func, *args, output_unit=output_unit, **kwargs)
+        else:
+            success = False
         if success:
             print('success')
             return simplify_unit(result) if simplify_units else result
@@ -945,9 +900,6 @@ def example_usage():
         result1 = quantity_wrap(np.multiply, A, B)
         print(f"A * B =\n{result1}")
         
-        print("\n测试 np.matmul (矩阵乘法):")
-        result2 = quantity_wrap(np.matmul, A, B)
-        print(f"A @ B =\n{result2}")
         
     
     # 运行所有测试
@@ -1019,64 +971,105 @@ def test_image_operations():
     norm_unit = UnitPropagator.propagate(normalize_image, img1, bias)
     print(f"\n归一化图像单位: {norm_unit}")
 
+
 def test_unit_propagation():
-    """测试UnitPropagator对矩阵乘法的单位传播"""
-    print("\n=== 测试UnitPropagator单位传播 ===")
+    """测试UnitPropagator对数组和复合函数的处理"""
+    print("\n=== 测试数组操作 ===")
     
     # 创建测试数据
     A = np.array([[1, 2], [3, 4]]) * u.m
-    B = np.array([[2, 0], [0, 2]]) * u.m
+    B = np.array([[2, 0], [0, 2]]) * u.s
     
-    print("\n方法1: 在函数定义中指定axis:")
-    def multiply_func1(*values):
-        """在函数内部指定axis=0"""
-        print(f"multiply_func1输入: {values}")
-        result = np.prod(values, axis=0)
-        print(f"multiply_func1结果: {result}")
-        return result
+    # 1. 测试直接的数组操作
+    print("\n直接数组操作:")
+    sum_unit = UnitPropagator.propagate(np.sum, A)
+    print(f"np.sum单位: {sum_unit}")  # 应该是 m
     
-    print("\n方法2: 通过kwargs传入axis:")
-    def multiply_func2(*values, **kwargs):
-        """通过kwargs接收axis参数"""
-        print(f"multiply_func2输入: {values}")
-        print(f"multiply_func2 kwargs: {kwargs}")
-        result = np.prod(values, **kwargs)
-        print(f"multiply_func2结果: {result}")
-        return result
+    mean_unit = UnitPropagator.propagate(np.mean, A)
+    print(f"np.mean单位: {mean_unit}")  # 应该是 m
     
-    print("\n方法3: 不指定axis:")
-    def multiply_func3(*values):
-        """不指定axis，让numpy自动处理"""
-        print(f"multiply_func3输入: {values}")
-        result = np.prod(values)
-        print(f"multiply_func3结果: {result}")
-        return result
+    # 2. 测试复合函数
+    print("\n复合函数:")
+    def composite_func1(x):
+        """包含sum的复合函数"""
+        return np.sum(x) / 2
     
-    # 测试方法1
-    print("\n测试方法1:")
-    unit1 = UnitPropagator.propagate(multiply_func1, A, B)
-    print(f"方法1传播单位: {unit1}")
+    def composite_func2(x, y):
+        """包含多个数组操作的复合函数"""
+        #return np.sum(np.prod([x,y],axis=0)) / np.mean(y)
+        return np.prod([x,y])
     
-    # 测试方法2
-    print("\n测试方法2:")
-    unit2 = UnitPropagator.propagate(multiply_func2, A, B, axis=0)
-    print(f"方法2传播单位: {unit2}")
+    comp1_unit = UnitPropagator.propagate(composite_func1, A)
+    print(f"composite_func1单位: {comp1_unit}")  # 应该是 m
     
-    # 测试方法3
-    print("\n测试方法3:")
-    unit3 = UnitPropagator.propagate(multiply_func3, A, B)
-    print(f"方法3传播单位: {unit3}")
+    comp2_unit = UnitPropagator.propagate(composite_func2, A, B)
+    print(f"composite_func2单位: {comp2_unit}")  # 应该是 m
     
-    # 直接调用测试
-    print("\n直接调用测试:")
-    result1 = multiply_func1(A, B)
-    result2 = multiply_func2(A, B, axis=0)
-    result3 = multiply_func3(A, B)
-    print(f"方法1结果单位: {getattr(result1, 'unit', None)}")
-    print(f"方法2结果单位: {getattr(result2, 'unit', None)}")
-    print(f"方法3结果单位: {getattr(result3, 'unit', None)}")
+    # 3. 测试带axis参数的操作
+    
+    # 4. 测试更复杂的复合函数
+    print("\n复杂复合函数:")
+    def complex_func(x, y):
+        """包含多个数组操作和中间计算的复合函数"""
+        intermediate = np.sum(x * y, axis=0)  # 按列求和
+        return np.mean(intermediate) / np.std(y)
+    
+    complex_unit = UnitPropagator.propagate(complex_func, A, B)
+    print(f"complex_func单位: {complex_unit}")  # 应该是 m
+
+def test_quantity_wrap():
+    """测试quantity_wrap对复合函数的处理"""
+    print("\n=== 测试复合函数 ===")
+    
+    # 创建测试数据
+    A = np.array([[1, 2], [3, 4]]) * u.m
+    B = np.array([[2, 0], [0, 2]]) * u.s
+    
+    def composite_func2(x, y):
+        """包含多个数组操作的复合函数"""
+        return np.sum(np.prod([x,y],axis=0)) / np.mean(y)
+    
+    # 1. 直接调用函数
+    print("\n直接调用:")
+    try:
+        direct_result = composite_func2(A, B)
+        print(f"结果: {direct_result}")
+        print(f"单位: {getattr(direct_result, 'unit', None)}")
+    except Exception as e:
+        print(f"错误: {e}")
+    
+    # 2. 使用quantity_wrap
+    print("\n使用quantity_wrap:")
+    wrapped_result = QuantityWrapper.wrap(composite_func2, A, B)
+    print(f"结果: {wrapped_result}")
+    print(f"单位: {getattr(wrapped_result, 'unit', None)}")
+    
+    # 3. 分步测试
+    print("\n分步测试:")
+    # 测试乘法
+    mul_result = QuantityWrapper.wrap(np.multiply, A, B)
+    print(f"x * y = {mul_result}")
+    print(f"乘法单位: {getattr(mul_result, 'unit', None)}")
+    
+    # 测试求和
+    sum_result = QuantityWrapper.wrap(np.sum, mul_result)
+    print(f"sum(x * y) = {sum_result}")
+    print(f"求和单位: {getattr(sum_result, 'unit', None)}")
+    
+    # 测试平均值
+    mean_result = QuantityWrapper.wrap(np.mean, B)
+    print(f"mean(y) = {mean_result}")
+    print(f"平均值单位: {getattr(mean_result, 'unit', None)}")
+    
+    # 测试除法
+    print(sum_result,mean_result)
+    div_result = QuantityWrapper.wrap(np.divide, sum_result, mean_result)
+    print(f"sum(x * y) / mean(y) = {div_result}")
+    print(f"最终单位: {getattr(div_result, 'unit', None)}")
 
 if __name__ == '__main__':
-    test_image_operations()
+    #test_image_operations()
     example_usage()
     test_unit_propagation()
+    test_quantity_wrap()
+    
