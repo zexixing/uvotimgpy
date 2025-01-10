@@ -3,11 +3,9 @@ import numpy as np
 #from scipy.ndimage import shift, rotate
 from skimage.transform import rotate
 from typing import List, Tuple, Union, Optional
-import astropy.units as u
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from regions import CircleAnnulusPixelRegion, CirclePixelRegion, PixCoord
-from uvotimgpy.base.unit_tools import convert_sequence_to_array
 from uvotimgpy.base.region import mask_image
 import warnings
 from astropy.wcs import FITSFixedWarning
@@ -269,22 +267,11 @@ class ImageDistanceCalculator:
             if scale is None:
                 return pixel_dist
             else:
-                if hasattr(pixel_dist, 'unit') and hasattr(scale, 'unit'):
-                    return pixel_dist*scale
-                else:
-                    warnings.warn("Ambiguous units for scale or distance.")
-                    return getattr(pixel_dist, 'value', pixel_dist)*getattr(scale, 'value', scale)
+                return pixel_dist * scale
             
-        # 对于WCS转换，需要float值
-        try:
-            col1, row1 = coords1[0].to('pixel').value, coords1[1].to('pixel').value
-            col2, row2 = coords2[0].to('pixel').value, coords2[1].to('pixel').value
-        except AttributeError:
-            col1, row1 = coords1
-            col2, row2 = coords2
-            
-        sky1 = wcs.pixel_to_world(col1, row1)
-        sky2 = wcs.pixel_to_world(col2, row2)
+        # 使用WCS转换
+        sky1 = wcs.pixel_to_world(coords1[0], coords1[1])
+        sky2 = wcs.pixel_to_world(coords2[0], coords2[1])
         return sky1.separation(sky2)
         
     @staticmethod
@@ -296,22 +283,13 @@ class ImageDistanceCalculator:
         """
         n_rows, n_cols = image.shape
         col, row = coords
-        has_units = hasattr(col, 'unit')
     
-        if has_units:
-            edges = [
-                (col, 0*row.unit),
-                (col, n_rows*row.unit),
-                (0*col.unit, row),
-                (n_cols*col.unit, row)
-            ]
-        else:
-            edges = [
-                (col, 0),
-                (col, n_rows),
-                (0, row),
-                (n_cols, row)
-            ]
+        edges = [
+            (col, 0),
+            (col, n_rows),
+            (0, row),
+            (n_cols, row)
+        ]
 
         distances = [(ImageDistanceCalculator.calc_distance(coords, edge), edge) for edge in edges]
         if distance_method == 'max':
@@ -332,22 +310,13 @@ class ImageDistanceCalculator:
         """
         n_rows, n_cols = image.shape
         col, row = coords
-        has_units = hasattr(col, 'unit')
 
-        if has_units:
-            corners = [
-                (0*col.unit, 0*col.unit),
-                (0*col.unit, n_rows*row.unit),
-                (n_cols*col.unit, 0*row.unit),
-                (n_cols*col.unit, n_rows*row.unit)
-            ]
-        else:
-            corners = [
-                (0, 0),
-                (0, n_rows),
-                (n_cols, 0),
-                (n_cols, n_rows)
-            ]
+        corners = [
+            (0, 0),
+            (0, n_rows),
+            (n_cols, 0),
+            (n_cols, n_rows)
+        ]
 
         distances = [(ImageDistanceCalculator.calc_distance(coords, corner), corner) for corner in corners]
         if distance_method == 'max':
@@ -404,7 +373,7 @@ class DistanceMap:
 class RadialProfile:
     """使用astropy.regions测量图像的径向profile"""
     
-    def __init__(self, image: Union[np.ndarray, u.Quantity], center: tuple, step: float,
+    def __init__(self, image: np.ndarray, center: tuple, step: float,
                  bad_pixel_mask: Optional[np.ndarray] = None,
                  start: Optional[float] = None,
                  end: Optional[float] = None,
@@ -480,10 +449,12 @@ class RadialProfile:
                 radii.append(r)
                 if self.method == 'median':
                     values.append(np.nanmedian(valid_data))
-                else:
+                elif self.method == 'mean' :
                     values.append(np.nanmean(valid_data))
+                else:
+                    raise ValueError("method other than 'median' or 'mean' is not supported")
                 
-        return np.array(radii), convert_sequence_to_array(values)
+        return np.array(radii), np.array(values)
     
 def test_image_operation():
     import matplotlib.pyplot as plt

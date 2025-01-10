@@ -2,7 +2,6 @@ from typing import Union, Tuple, List, Optional
 import numpy as np
 from astropy.io import fits
 from astropy.stats import sigma_clip
-import astropy.units as u
 from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
 import matplotlib.pyplot as plt
@@ -147,7 +146,7 @@ class PixelFiller:
         
         return filled1, filled2
     
-    def by_rings(self, image: Union[np.ndarray, u.Quantity], mask: np.ndarray, 
+    def by_rings(self, image: np.ndarray, mask: np.ndarray, 
                  center: tuple, step: float, 
                  method: str = 'median',
                  start: Optional[float] = None,

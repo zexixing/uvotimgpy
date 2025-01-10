@@ -1,23 +1,18 @@
 from astropy.modeling import models, fitting
 import numpy as np
 import matplotlib.pyplot as plt
-from astropy import units as u
 from typing import Union, List, Optional, Tuple
 from numbers import Number
-from scipy import stats
 from uncertainties import ufloat
-from uvotimgpy.base.unit_tools import convert_sequence_to_array, QuantitySeparator, UnitPropagator, quantity_wrap
-from functools import reduce
-from operator import mul
 
-class GaussianFitter2D:
+class GaussianFitter2D:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
     def __init__(self):
         """初始化2D高斯拟合器"""
         pass
         
     @staticmethod
     def validate_param_list(param_name: str, 
-                          param_value: Union[None, Number, List, Tuple, u.Quantity], 
+                          param_value: Union[None, Number, List, Tuple], 
                           n_gaussians: int,
                           is_position: bool = False) -> List:
         """
@@ -27,7 +22,7 @@ class GaussianFitter2D:
         ----------
         param_name : str
             参数名称，用于错误信息
-        param_value : None, float, list, tuple, or astropy.units.Quantity
+        param_value : None, float, list, or tuple
             参数值
         n_gaussians : int
             高斯函数的数量
@@ -64,7 +59,7 @@ class GaussianFitter2D:
             return list(param_value)
         else:
             # 处理单个数值的情况
-            if isinstance(param_value, (Number, u.Quantity)):
+            if isinstance(param_value, Number):
                 if n_gaussians == 1:
                     return [param_value]
                 else:
@@ -80,7 +75,7 @@ class GaussianFitter2D:
             image: np.ndarray,
             n_gaussians: int = 1,
             threshold: Optional[float] = None,
-            sigma_list: Optional[Union[float, List[float], u.Quantity]] = None,
+            sigma_list: Optional[Union[float, List[float]]] = None,
             amplitude_list: Optional[Union[float, List[float]]] = None,
             position_list: Optional[Union[Tuple[float, float], List[Tuple[float, float]]]] = None,
             theta_list: Optional[Union[float, List[float]]] = None,  # 新增theta参数
@@ -137,11 +132,7 @@ class GaussianFitter2D:
             amplitude = amplitude_list[i] if amplitude_list[i] is not None else peaks[i]
             sigma = sigma_list[i] if sigma_list[i] is not None else 2.0
             theta = theta_list[i] if theta_list[i] is not None else 0.0  # 默认角度为0
-            
-            # 处理带单位的sigma
-            if isinstance(sigma, u.Quantity):
-                sigma = sigma.value
-            
+                        
             gaussian = models.Gaussian2D(
                 amplitude=amplitude,
                 x_mean=col_mean,
@@ -209,15 +200,15 @@ class GaussianFitter2D:
             g = fitted_model[i]
             print(f"\n高斯分量 {i+1}:")
             print("─" * 40)  # 分隔线
-            print(f"振幅:     {g.amplitude.value:10.3f}")
-            print(f"中心位置: ({g.x_mean.value:8.3f}, {g.y_mean.value:8.3f})")
-            print(f"标准差:   ({g.x_stddev.value:8.3f}, {g.y_stddev.value:8.3f})")
-            print(f"旋转角度: {g.theta.value:8.3f} rad ({np.degrees(g.theta.value):8.3f}°)")  # 新增角度输出
+            print(f"振幅:     {g.amplitude:10.3f}")
+            print(f"中心位置: ({g.x_mean:8.3f}, {g.y_mean:8.3f})")
+            print(f"标准差:   ({g.x_stddev:8.3f}, {g.y_stddev:8.3f})")
+            print(f"旋转角度: {g.theta:8.3f} rad ({np.degrees(g.theta):8.3f}°)")  # 新增角度输出
 
         # 打印背景值
         print("\n背景:")
         print("─" * 40)
-        print(f"常数值:   {fitted_model[n_gaussians].amplitude.value:10.3f}")
+        print(f"常数值:   {fitted_model[n_gaussians].amplitude:10.3f}")
 
 
     @staticmethod
@@ -251,219 +242,61 @@ class GaussianFitter2D:
 
 class ErrorPropagation:
     """误差传播计算类"""
-    @staticmethod
-    def _prepare_array_calculation(values, errors):
-        """准备数组计算，处理形状并扩展标量
-        
-        Parameters
-        ----------
-        values : list
-            值列表
-        errors : list
-            误差列表
-            
-        Returns
-        -------
-        tuple
-            (shape, array_values, array_errors) 如果有数组
-            (None, values, errors) 如果全是标量
-        """
-        # 获取数组形状
-        shape = None
-        for val in values:
-            if hasattr(val, 'unit'):
-                if val.ndim > 0:  # quantity数组
-                    shape = val.shape
-                    break
-            elif isinstance(val, np.ndarray) and val.ndim > 0:
-                shape = val.shape
-                break
-
-        if shape is None:
-            return None, values, errors
-            
-        # 将所有标量扩展为数组
-        array_values = []
-        array_errors = []
-        for val, err in zip(values, errors):
-            if hasattr(val, 'unit'):
-                if val.ndim == 0:
-                    valunit = val.unit
-                    val = np.full(shape, val.value)
-                    val = val*valunit
-            elif np.isscalar(val):
-                val = np.full(shape, val)
-            if hasattr(err, 'unit'):
-                if err.ndim == 0:
-                    errunit = err.unit
-                    err = np.full(shape, err.value)
-                    err = err*errunit
-            elif np.isscalar(err):
-                err = np.full(shape, err)
-            array_values.append(val)
-            array_errors.append(err)
-        return shape, array_values, array_errors
-
-    @staticmethod
-    def _prepare_inputs(args, errors):
-        """预处理所有输入，去掉单位
-        
-        Parameters
-        ----------
-        args : list
-            值列表
-        errors : list
-            误差列表
-            
-        Returns
-        -------
-        tuple
-            (处理后的值列表, 处理后的误差列表, 单位)
-        """
-        # 处理所有序列类型的输入
-        processed_args = []
-        processed_errors = []
-        args_units = []
-        errors_units = []
-        
-        # 处理值
-        for arg in args:
-            processed_arg = convert_sequence_to_array(arg)
-            
-            if isinstance(processed_arg, u.Quantity):
-                processed_args.append(processed_arg.value)
-                args_units.append(processed_arg.unit)
-            else:
-                processed_args.append(processed_arg)
-                args_units.append(u.dimensionless_unscaled)
-        # 处理误差
-        for err in errors:
-            processed_err = convert_sequence_to_array(err)
-                
-            if isinstance(processed_err, u.Quantity):
-                processed_errors.append(processed_err.value)
-                errors_units.append(processed_err.unit)
-
-            else:
-                processed_errors.append(processed_err)
-                errors_units.append(u.dimensionless_unscaled)
-            
-        return processed_args, processed_errors, args_units, errors_units
     
     @staticmethod
-    def _propagate_array(func, values, errors, derivatives=None):
-        """处理数组的误差传播"""
-        processed_values, processed_errors, values_units, errors_units = ErrorPropagation._prepare_inputs(values, errors)
-        
+    def propagate(func, *args, derivatives=None):
+        values = [arg[0] for arg in args]
+        errors = [arg[1] for arg in args]
+        """统一处理数组和标量的误差传播"""
         if derivatives is None:
             # 使用 uncertainties 包计算
-            shape = processed_values[0].shape
             
-            # 创建 ufloat 向量化函数
-            make_ufloat = np.frompyfunc(lambda v, e: ufloat(v, e), 2, 1)
-            get_nominal = np.frompyfunc(lambda x: x.nominal_value, 1, 1)
-            get_std = np.frompyfunc(lambda x: x.std_dev, 1, 1)
-            
-            # 创建 ufloat 数组
-            uarrays = [make_ufloat(v, e) for v, e in zip(processed_values, processed_errors)]
-            
-            # 向量化原始函数
-            vec_func = np.frompyfunc(lambda *args: func(*args), len(uarrays), 1)
-            
-            # 计算结果
-            result = vec_func(*uarrays)
-            
-            # 提取标称值和标准差
-            result_values = get_nominal(result).astype(float)
-            result_errors = get_std(result).astype(float)
+            # 如果是数组，需要向量化处理
+            if any(isinstance(v, np.ndarray) for v in values):
+                # 创建向量化函数
+                make_ufloat = np.frompyfunc(lambda v, e: ufloat(v, e), 2, 1)
+                get_nominal = np.frompyfunc(lambda x: x.nominal_value, 1, 1)
+                get_std = np.frompyfunc(lambda x: x.std_dev, 1, 1)
 
-            # 获取单位字典
-            final_unit = UnitPropagator.propagate(func, values)
-            if final_unit:
-                return result_values*final_unit, result_errors*final_unit
-            return result_values, result_errors
-        else:
-            # 使用自定义导数计算
-            print(func, values)
-            result_values = quantity_wrap(func, values)
-            partial_derivatives = quantity_wrap(derivatives, values)
-            
-            # 计算每个项的平方项
-            squared_terms = []
-            for deriv, err in zip(partial_derivatives, errors):
-                # 计算 deriv * err
-                term = quantity_wrap(np.multiply, deriv, err)
-                # 计算 (deriv * err)^2
-                squared_term = quantity_wrap(np.multiply, term, term)
-                squared_terms.append(squared_term)
-            
-            # 计算平方和，保持数组维度
-            sum_squares = quantity_wrap(sum, squared_terms)
-            # 计算平方根
-            result_errors = quantity_wrap(np.sqrt, sum_squares)
-            
-            # 确保返回值带有正确的单位
-            return result_values, result_errors
-
-    @staticmethod
-    def _propagate_scalar(func, values, errors, derivatives=None):
-        """处理标量的误差传播"""
-        if derivatives is None:
-            # 使用 uncertainties 包计算
-            processed_values, processed_errors, values_units, errors_units = ErrorPropagation._prepare_inputs(values, errors)
-            uvals = [ufloat(v, e) for v, e in zip(processed_values, processed_errors)]
-            result = func(*uvals)
-            final_unit = UnitPropagator.propagate(func, *values)
-            result_values = result.nominal_value
-            result_errors = result.std_dev
-            if final_unit:
-                return result_values*final_unit, result_errors*final_unit
+                uarrays = [make_ufloat(v, e) for v, e in zip(values, errors)]
+                
+                # 向量化原始函数
+                vec_func = np.frompyfunc(lambda *args: func(*args), len(uarrays), 1)
+                
+                # 计算结果
+                result = vec_func(*uarrays)
+                
+                # 提取标称值和标准差
+                result_values = get_nominal(result).astype(float)
+                result_errors = get_std(result).astype(float)
             else:
-                return result_values, result_errors
+                # 标量计算
+                uvals = [ufloat(v, e) for v, e in zip(values, errors)]
+                result = func(*uvals)
+                result_values = result.nominal_value
+                result_errors = result.std_dev
+                
         else:
             # 使用自定义导数计算
-            result_value = quantity_wrap(func, *values)
-            partial_derivatives = quantity_wrap(derivatives, *values)
+            result_values = func(*values)
+            partial_derivatives = derivatives(*values)
             
             # 计算每个项的平方项
             squared_terms = []
             for deriv, err in zip(partial_derivatives, errors):
-                # 计算 deriv * err
-                term = quantity_wrap(np.multiply, deriv, err)
-                # 计算 (deriv * err)^2
-                squared_term = quantity_wrap(np.multiply, term, term)
+                term = np.multiply(deriv, err)
+                squared_term = np.multiply(term, term)
                 squared_terms.append(squared_term)
             
-            # 计算平方和
-            sum_squares = quantity_wrap(sum, squared_terms)
-            # 计算平方根
-            result_error = quantity_wrap(np.sqrt, sum_squares)
+            # 计算平方和和平方根
+            sum_squares = np.sum(squared_terms, axis=0)
+            result_errors = np.sqrt(sum_squares)
             
-            return result_value, result_error
-        
-    @staticmethod
-    def propagate(func, args, errors, derivatives=None, output_unit=None):
-        """使用 uncertainties 包或自定义导数计算任意函数的误差传播"""
-        # 准备数组计算
-        shape, calc_values, calc_errors = ErrorPropagation._prepare_array_calculation(
-            args, errors
-        )
-        # 计算结果
-        if shape is not None:
-            result_values, result_errors = ErrorPropagation._propagate_array(
-                func, calc_values, calc_errors, derivatives
-            )
-        else:
-            result_values, result_errors = ErrorPropagation._propagate_scalar(
-                func, calc_values, calc_errors, derivatives
-            )
-        
-        # 添加单位
         return result_values, result_errors
-
+    
 
     @staticmethod
-    def add(*args, output_unit=None):
+    def add(*args):
         """加法误差传播
         
         Parameters
@@ -477,81 +310,66 @@ class ErrorPropagation:
             (result_value, result_error)
         """
         def add_func(*values):
-            return sum(values)
+            return np.sum(values, axis=0)
             
         def add_derivatives(*values):
             return [1] * len(values)  # 加法的偏导数都是1
         
-        values = [arg[0] for arg in args]
-        errors = [arg[1] for arg in args]
-        return ErrorPropagation.propagate(add_func, values, errors, add_derivatives, output_unit)
+        return ErrorPropagation.propagate(add_func, *args, derivatives=add_derivatives)
     
     @staticmethod
-    def multiply(*args, output_unit=None):
+    def multiply(*args):
         """乘法误差传播"""
-
-        def multiply_func(values):
-            print(values)
+        def multiply_func(*values):  # 改为接收可变参数
             return np.prod(values, axis=0)
             
-        def multiply_derivatives(values):
+        def multiply_derivatives(*values):
             return [
                 np.prod(values[:i] + values[i+1:], axis=0)
                 for i in range(len(values))
             ]
         
-        values = [arg[0] for arg in args]
-        errors = [arg[1] for arg in args]
-        
-        result_values, result_errors = ErrorPropagation.propagate(
-            multiply_func, values, errors, 
-            multiply_derivatives, output_unit
-        )
-        return result_values, result_errors
+        return ErrorPropagation.propagate(multiply_func, *args, derivatives=multiply_derivatives)
     
     @staticmethod
-    def subtract(*args, output_unit=None):
+    def subtract(*args):
         """减法误差传播 (a1 - a2 - a3 - ...)"""
         def subtract_func(*values):
-            return values[0] - sum(values[1:])
+            return values[0] - np.sum(values[1:], axis=0)
             
         def subtract_derivatives(*values):
             return [1] + [-1] * (len(values)-1)  # 第一个是1，其他都是-1
         
-        values = [arg[0] for arg in args]
-        errors = [arg[1] for arg in args]
-        return ErrorPropagation.propagate(subtract_func, values, errors, subtract_derivatives, output_unit)
+        return ErrorPropagation.propagate(subtract_func, *args, derivatives=subtract_derivatives)
     
     @staticmethod
-    def divide(*args, output_unit=None):
+    def divide(*args):
         """除法误差传播 (a1 / a2 / a3 / ...)"""
         def divide_func(*values):
-            return values[0] / reduce(mul, values[1:])
+            return values[0] / np.prod(values[1:], axis=0)
             
         def divide_derivatives(*values):
-            prod_others = reduce(mul, values[1:])  # 所有除数的乘积
+            prod_others = np.prod(values[1:], axis=0)  # 所有除数的乘积
             return [
                 1/prod_others,  # 对被除数的偏导数
                 *[-values[0]/(val * prod_others)  # 对每个除数的偏导数
                   for val in values[1:]]
             ]
         
-        values = [arg[0] for arg in args]
-        errors = [arg[1] for arg in args]
-        return ErrorPropagation.propagate(divide_func, values, errors, divide_derivatives, output_unit)
+        return ErrorPropagation.propagate(divide_func, *args, derivatives=divide_derivatives)
 
 
 # 1. 测试乘法
 def test_multiply():
     # 创建2x2测试数组
     values1 = np.array([[1.0, 2.0],
-                       [3.0, 4.0]])*u.m
+                       [3.0, 4.0]])
     errors1 = np.array([[0.1, 0.1],
-                       [0.1, 0.1]])*u.m
+                       [0.1, 0.1]])
     values2 = np.array([[2.0, 2.0],
-                       [2.0, 2.0]])*u.m
+                       [2.0, 2.0]])
     errors2 = np.array([[0.2, 0.2],
-                       [0.2, 0.2]])*u.m
+                       [0.2, 0.2]])
     
     # 方法1：使用 multiply 函数
     result_val1, result_err1 = ErrorPropagation.multiply(
@@ -565,7 +383,7 @@ def test_multiply():
     print(result_err1)
     
     # 方法2：使用 propagate 和 uncertainties
-    def multiply_func(values):
+    def multiply_func(*values):
         return np.prod(values, axis=0)
     
     result_val2, result_err2 = ErrorPropagation.propagate(
@@ -594,13 +412,13 @@ def test_divide():
     """测试除法误差传播"""
     # 创建2x2测试数组
     values1 = np.array([[10.0, 20.0],
-                       [30.0, 40.0]]) * u.m
+                       [30.0, 40.0]])
     errors1 = np.array([[1.0, 1.0],
-                       [1.0, 1.0]]) * u.m
+                       [1.0, 1.0]])
     values2 = np.array([[2.0, 2.0],
-                       [2.0, 2.0]]) * u.s
+                       [2.0, 2.0]])
     errors2 = np.array([[0.2, 0.2],
-                       [0.2, 0.2]]) * u.s
+                       [0.2, 0.2]])
     
     # 方法1：使用 divide 函数
     result_val1, result_err1 = ErrorPropagation.divide(
@@ -643,11 +461,13 @@ def test_add_subtract():
     """测试加法和减法误差传播"""
     # 创建2x2测试数组
     values1 = np.array([[10.0, 20.0],
-                       [30.0, 40.0]]) * u.m
-    errors1 = 1.0 *u.m
+                       [30.0, 40.0]])
+    errors1 = np.array([[10.0, 20.0],
+                       [30.0, 40.0]])
     values2 = np.array([[5.0, 10.0],
-                       [15.0, 20.0]]) * u.m
-    errors2 = 2.0 *u.m
+                       [15.0, 20.0]])
+    errors2 = np.array([[5.0, 10.0],
+                       [15.0, 20.0]])
     
     print("\n=== 测试加法 ===")
     # 方法1：使用 add 函数
@@ -706,7 +526,106 @@ def test_add_subtract():
     print(sub_err2)
     
 
+def test_custom_func():
+    """测试自定义函数 f(x,y) = x*y + x 的误差传播"""
+    print("\n=== 测试自定义函数: f(x,y) = x*y + x ===")
+    
+    # 定义函数和其导数
+    #def custom_func(*values):
+    #    x, y = values
+    #    return x * y + x
+    #    
+    #def custom_derivatives(*values):
+    #    x, y = values
+    #    return [y + 1,  # ∂f/∂x = y + 1
+    #           x]      # ∂f/∂y = x
+    
+    def custom_func(x, y):
+        return x * y + x
+    
+    def custom_derivatives(x, y):
+        return [y + 1,  # ∂f/∂x = y + 1
+               x]      # ∂f/∂y = x
+    
+    # 测试1：数组输入
+    print("\n--- 测试数组输入 ---")
+    x1 = np.array([[1.0, 2.0],
+                   [3.0, 4.0]])
+    y1 = np.array([[2.0, 2.0],
+                   [2.0, 2.0]])
+    dx1 = np.array([[0.1, 0.1],
+                    [0.1, 0.1]])
+    dy1 = np.array([[0.2, 0.2],
+                    [0.2, 0.2]])
+    
+    # 使用 uncertainties 包
+    print("\n使用 uncertainties 包:")
+    result_val1, result_err1 = ErrorPropagation.propagate(
+        custom_func,
+        (x1, dx1),
+        (y1, dy1)
+    )
+    print("值:")
+    print(result_val1)
+    print("误差:")
+    print(result_err1)
+    
+    # 使用自定义导数
+    print("\n使用自定义导数:")
+    result_val2, result_err2 = ErrorPropagation.propagate(
+        custom_func,
+        (x1, dx1),
+        (y1, dy1),
+        derivatives=custom_derivatives
+    )
+    print("值:")
+    print(result_val2)
+    print("误差:")
+    print(result_err2)
+    
+    # 测试2：标量输入
+    print("\n--- 测试标量输入 ---")
+    x2 = 2.0
+    y2 = 3.0
+    dx2 = 0.2
+    dy2 = 0.3
+    
+    # 使用 uncertainties 包
+    print("\n使用 uncertainties 包:")
+    result_val3, result_err3 = ErrorPropagation.propagate(
+        custom_func,
+        (x2, dx2),
+        (y2, dy2)
+    )
+    print(f"值: {result_val3}")
+    print(f"误差: {result_err3}")
+    
+    # 使用自定义导数
+    print("\n使用自定义导数:")
+    result_val4, result_err4 = ErrorPropagation.propagate(
+        custom_func,
+        (x2, dx2),
+        (y2, dy2),
+        derivatives=custom_derivatives
+    )
+    print(f"值: {result_val4}")
+    print(f"误差: {result_err4}")
+    
+    # 打印详细比较
+    print("\n详细比较:")
+    print("数组输入:")
+    for i in range(2):
+        for j in range(2):
+            print(f"\n位置[{i},{j}]:")
+            print(f"uncertainties包: {result_val1[i,j]:.2f}±{result_err1[i,j]:.2f}")
+            print(f"自定义导数:     {result_val2[i,j]:.2f}±{result_err2[i,j]:.2f}")
+    
+    print("\n标量输入:")
+    print(f"uncertainties包: {result_val3:.2f}±{result_err3:.2f}")
+    print(f"自定义导数:     {result_val4:.2f}±{result_err4:.2f}")
+
 if __name__ == '__main__':
     test_multiply()
     test_divide()
     test_add_subtract()
+    test_custom_func()
