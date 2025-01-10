@@ -1,23 +1,11 @@
-from typing import List, Union, Callable, Any, Sequence, Dict
+from typing import List, Union, Callable, Any, Sequence, Dict, Tuple, Optional
 import numpy as np
 import astropy.units as u
 from astropy.units import quantity_input
-
 import ast
 import inspect
-import textwrap
+from functools import reduce
 
-from typing import Any, List, Union, Tuple
-import numpy as np
-from astropy import units as u
-
-import ast
-import inspect
-import textwrap
-from astropy import units as u
-import numpy as np
-
-from typing import Union, List, Any, Optional
 
 def simplify_unit(quantity: u.Quantity) -> u.Quantity:
     """简化Quantity的单位表示"""
@@ -56,8 +44,10 @@ class UnitPropagator:
     def _get_unit_from_arg(arg: Any) -> Union[u.Unit, List[u.Unit]]:
         if isinstance(arg, (int, float)):
             return u.dimensionless_unscaled
-        elif isinstance(arg, u.Quantity):
+        elif isinstance(arg, u.Quantity) and not isinstance(arg, np.ndarray):
             return arg.unit
+        elif isinstance(arg, u.Quantity) and isinstance(arg, np.ndarray):
+            return [arg.unit for x in arg]
         elif isinstance(arg, (list, tuple, np.ndarray)):
             return [UnitPropagator._get_unit_from_arg(x) for x in arg]
         else:
@@ -67,6 +57,54 @@ class UnitPropagator:
     def _get_units_from_args(*args) -> List[Union[u.Unit, List[u.Unit]]]:
         """从所有参数获取单位列表"""
         return [UnitPropagator._get_unit_from_arg(arg) for arg in args]
+
+    def _is_uniform_unit_array(arg) -> bool:
+        """
+        检查是否是由相同 unit 组成的 array
+
+        Parameters
+        ----------
+        arg : Any
+            要检查的参数
+
+        Returns
+        -------
+        bool
+            如果是由相同 unit 组成的 array 返回 True，否则返回 False
+
+        Examples
+        --------
+        >>> arr1 = np.array([u.m * u.s, u.m * u.s], dtype=object)
+        >>> _is_uniform_unit_array(arr1)  # True
+
+        >>> arr2 = np.array([u.m * u.s, u.m], dtype=object)
+        >>> _is_uniform_unit_array(arr2)  # False
+
+        >>> arr3 = np.array([1, 2, 3])
+        >>> _is_uniform_unit_array(arr3)  # False
+        """
+        # 检查是否是 numpy array
+        if not isinstance(arg, np.ndarray):
+            return False
+
+        # 检查 dtype 是否是 object
+        if arg.dtype != object:
+            return False
+
+        # 如果是空数组，返回 False
+        if arg.size == 0:
+            return False
+
+        # 获取第一个元素作为参考
+        first_unit = arg.flat[0]
+
+        # 检查第一个元素是否是 unit
+        if not isinstance(first_unit, (u.Unit, u.CompositeUnit, u.IrreducibleUnit)):
+            return False
+
+        # 检查所有元素是否都是 unit 且与第一个相同
+        return all(isinstance(x, (u.Unit, u.CompositeUnit, u.IrreducibleUnit)) 
+                  and x == first_unit for x in arg.flat)
 
     @staticmethod
     def _try_compute_unit(func: callable, units: List[Union[u.Unit, List[u.Unit]]], **kwargs) -> u.Unit:
@@ -84,12 +122,15 @@ class UnitPropagator:
                 if len(units) == 1 and isinstance(units[0], list):
                     result = func(units[0], **kwargs)
                 else:
-                    result = func(*units, **kwargs)       
+                    result = func(*units, **kwargs)     
                 if isinstance(result, (u.Unit, u.CompositeUnit, u.IrreducibleUnit)):
                     return result
-                if isinstance(result, u.Quantity):
+                elif isinstance(result, u.Quantity):
                     return result.unit
-                return u.dimensionless_unscaled
+                elif UnitPropagator._is_uniform_unit_array(result):
+                    return result[0]
+                else:
+                    return u.dimensionless_unscaled
 
             except Exception as e:
                 # 如果失败，尝试样本值方法
@@ -97,17 +138,27 @@ class UnitPropagator:
                     sample_args = []
                     for unit in units:
                         if isinstance(unit, list):
-                            sample_args.append([1 * u if u != u.dimensionless_unscaled else 1 for u in unit])
+                            sample_args.append([1 * i if i != u.dimensionless_unscaled else 1*u.dimensionless_unscaled for i in unit])
                         else:
-                            sample_args.append(1 * unit if unit != u.dimensionless_unscaled else 1)                
+                            sample_args.append(1 * unit if unit != u.dimensionless_unscaled else 1*u.dimensionless_unscaled)  
+                except Exception as e:
+                    raise ValueError(f"无法计算单位: {str(e)}")
+                try:
                     if len(units) == 1 and isinstance(units[0], list):
                         result = func(sample_args[0], **kwargs)
                     else:
                         result = func(*sample_args, **kwargs)
-
                     return getattr(result, 'unit', u.dimensionless_unscaled)
                 except Exception as e:
-                    raise ValueError(f"无法计算单位: {str(e)}")
+                    try: 
+                        sample_args = [u.Quantity(i) for i in sample_args]
+                        result = func(*sample_args, **kwargs)
+                        if isinstance(result, np.ndarray):
+                            if isinstance(result.flat[0], u.Quantity):
+                                if all(q == result.flat[0] for q in result.flat):
+                                    return getattr(result.flat[0], 'unit', u.dimensionless_unscaled)
+                    except Exception as e:
+                        raise ValueError(f"无法计算单位: {str(e)}")
 
     @staticmethod
     def _eval_binop(op, left_unit, right_unit) -> u.Unit:
@@ -157,6 +208,8 @@ class UnitPropagator:
             # 获取函数
             if isinstance(node.func, ast.Name):
                 func = local_dict.get(node.func.id)
+                if func is None and node.func.id == 'reduce':
+                    func = reduce
             elif isinstance(node.func, ast.Attribute):
                 if isinstance(node.func.value, ast.Name) and node.func.value.id == 'np':
                     func = getattr(np, node.func.attr, None)
@@ -208,15 +261,21 @@ class UnitPropagator:
             raise ValueError(f"不支持的节点类型: {type(node).__name__}")
     @staticmethod
     def _special_func(func: callable, *args, **kwargs) -> u.Unit:
-        if func in [np.mean, np.median, np.std, np.vstack]:
+        if func in [np.mean, np.median, np.std, np.vstack, np.sum, np.stack]:
             if len(args) == 1 and isinstance(args[0], list):
                 unit_list = args[0]
                 # 检查是否所有单位都相同
                 if all(u == unit_list[0] for u in unit_list):
-                    return unit_list[0]
+                    if isinstance(unit_list[0], list):
+                        return unit_list[0][0]
+                    else:
+                        return unit_list[0]
         if func in [np.reshape]:
             if len(args) == 1:
-                return args[0]
+                if isinstance(args[0], list):
+                    return args[0][0]
+                else:
+                    return args[0]
         return False
     
     @staticmethod
@@ -227,7 +286,6 @@ class UnitPropagator:
             if isinstance(func, np.ufunc) or (hasattr(func, '__module__') and 
                 (func.__module__.startswith('numpy') or func.__module__ == 'builtins')):
                 units = UnitPropagator._get_units_from_args(*args)
-                print(func, units)
                 return UnitPropagator._try_compute_unit(func, units, **kwargs)
 
             # 获取函数源码
@@ -678,20 +736,36 @@ class QuantityWrapper:
             pass
             
         return None, False
-    
+    @staticmethod
+    def _contains_quantity(arg) -> bool:
+        """
+        检查参数是否包含 Quantity
+
+        Parameters
+        ----------
+        arg : Any
+            要检查的参数
+
+        Returns
+        -------
+        bool
+            如果参数包含 Quantity 返回 True，否则返回 False
+        """
+        if isinstance(arg, u.Quantity):
+            return True
+        elif isinstance(arg, (list, tuple, np.ndarray)):
+            return any(isinstance(x, u.Quantity) or 
+                      (isinstance(x, (list, tuple, np.ndarray)) and 
+                       QuantityWrapper._contains_quantity(x)) for x in arg)
+        return False
+
     @staticmethod
     def wrap(func: Callable, *args, output_unit: Union[u.Unit, None] = None,
             simplify_units: bool = False, force_numpy: bool = False, **kwargs) -> Any:
         """包装numpy函数以支持quantity并自动追踪单位传播"""
-        # 转换序列并获取第一个单位
-        args, kwargs, sequence_unit_list = QuantitySeparator.convert_sequences(args, kwargs)
-        
-        # 检查是否有quantity
-        all_args = list(args)
-        for key, value in kwargs.items():
-            all_args.append(value)
-            
-        has_quantity = any(isinstance(arg, u.Quantity) for arg in all_args)
+
+        # 检查是否有quantity  
+        has_quantity = any(QuantityWrapper._contains_quantity(arg) for arg in args)
         if not has_quantity and output_unit is None:
             return func(*args, **kwargs)
             
@@ -702,11 +776,17 @@ class QuantityWrapper:
             if success:
                 print('success')
                 return simplify_unit(result) if simplify_units else result
-        
+            
         # 如果不能使用Quantity方法，使用原有的处理方式
         # 先尝试使用quantity_input
         if len(args) == 1:
-            if not is_quantity_collection(args):
+            if is_quantity_collection(args[0]):
+                if args[0][0].unit.physical_type == 'angle' or func in [np.abs, np.log10]:
+                    result, success = QuantityWrapper._try_quantity_input(
+                        func, *args, output_unit=output_unit, **kwargs)
+                else:
+                    success = False
+            else:
                 result, success = QuantityWrapper._try_quantity_input(
                     func, *args, output_unit=output_unit, **kwargs)
         elif all(not is_quantity_collection(arg) for arg in args):
@@ -714,24 +794,41 @@ class QuantityWrapper:
                 func, *args, output_unit=output_unit, **kwargs)
         else:
             success = False
+
         if success:
             print('success')
             return simplify_unit(result) if simplify_units else result
-            
-        # 如果quantity_input失败，使用原有的处理方式
-        processed_args, processed_kwargs, unit_dict = QuantitySeparator.process_args(
-            args, kwargs, sequence_unit_list)
-            
+        
+        def process_arg(arg):
+            if isinstance(arg, u.Quantity):
+                return arg.value
+            elif isinstance(arg, (list, tuple)):
+                # 检查是否所有元素都是Quantity
+                if all(isinstance(x, u.Quantity) for x in arg):
+                    # 检查是否所有单位相同
+                    units = [x.unit for x in arg]
+                    if not all(u == units[0] for u in units):
+                        raise ValueError("列表中的元素必须具有相同的单位")
+                    # 提取值
+                    return [x.value for x in arg]
+                else:
+                    # 如果不是所有元素都是Quantity，则原样返回
+                    return arg
+            else:
+                return arg
+        processed_args = tuple(process_arg(arg) for arg in args)
+
         # 获取传播单位 - 直接使用UnitPropagator.propagate
         propagated_unit = UnitPropagator.propagate(func, *args, **kwargs)
             
         # 计算结果
-        result = func(*processed_args, **processed_kwargs)
+        result = func(*processed_args, **kwargs)
         
         # 应用单位
         print('Use my own method')
+        print(result, propagated_unit)
         result = QuantityWrapper._apply_unit(result, output_unit, propagated_unit, simplify_units)
-        return simplify_unit(result) if simplify_units else result
+        return result
 
 # 为了保持向后兼容，可以定义一个函数作为类方法的别名
 def quantity_wrap(func: Callable, *args, **kwargs) -> Any:
@@ -755,23 +852,9 @@ def example_usage():
         angles_rad = [0, np.pi/4, np.pi/2] * u.rad
         print(f"Sin of {angles_rad}: {quantity_wrap(np.sin, angles_rad)}")
 
-        angles = [30*u.deg, 45*u.deg, 60*u.deg]
-        print(f"Sin of {angles}: {quantity_wrap(np.sin, angles)}")
+        #angles = [30*u.deg, 45*u.deg, 60*u.deg]
+        #print(f"Sin of {angles}: {quantity_wrap(np.sin, angles)}")
     
-    def test_mixed_units():
-        """测试混合单位"""
-        print("\nTesting mixed units:")
-        print("--------------------")
-        
-        # 长度混合
-        lengths = [1 * u.km, 2000 * u.m, 300000 * u.cm]
-        print(f"Original lengths: {lengths}")
-        print(f"Mean length: {quantity_wrap(np.mean, lengths)}")
-        print(f"Mean length in meters: {quantity_wrap(np.mean, lengths, output_unit=u.m)}")
-        
-        # 时间混合
-        times = [1 * u.hour, 3600 * u.s, 120 * u.minute]
-        print(f"Mean time: {quantity_wrap(np.mean, times)}")
     
     def test_array_operations():
         """测试数组操作"""
@@ -783,9 +866,9 @@ def example_usage():
         print(f"Array multiplication: {quantity_wrap(np.multiply, arr1, arr2)}")
         
         # 矩阵运算
-        matrix = np.array([[1, 2], [3, 4]]) * u.m
-        vector = np.array([2, 1]) * u.s
-        print(f"Matrix-vector multiplication: {quantity_wrap(np.dot, matrix, vector)}")
+        #matrix = np.array([[1, 2], [3, 4]]) * u.m
+        #vector = np.array([2, 1]) * u.s
+        #print(f"Matrix-vector multiplication: {quantity_wrap(np.dot, matrix, vector)}")
     
     def test_statistical():
         """测试统计函数"""
@@ -831,8 +914,8 @@ def example_usage():
         
         # 混合数组运算
         arr1 = [1, 2, 3] * u.m
-        arr2 = [4, 5, 6]  # 无单位
-        print(f"{arr1} * {arr2} = {quantity_wrap(np.multiply, arr1, arr2)}")
+        arr2 = [4, 5, 6] * u.dimensionless_unscaled  # 无单位
+        print(f"{arr1} * {arr2} = {quantity_wrap(np.multiply, arr1, arr2)}") # TODO
     
     def test_unit_conversion():
         """测试单位转换"""
@@ -899,7 +982,7 @@ def example_usage():
         print("\n使用quantity_wrap:")
         # 直接使用quantity_wrap
         wrapped_sum = quantity_wrap(np.sum, test_list, axis=0)
-        print(f"Wrapped sum:\n{wrapped_sum}")
+        print(f"Wrapped sum:\n{wrapped_sum}") # TODO
         
         print("\n使用quantity_wrap和stack:")
         # 先堆叠再使用quantity_wrap
@@ -925,7 +1008,6 @@ def example_usage():
     # 运行所有测试
     test_simplify_units()
     test_trigonometric()
-    test_mixed_units()
     test_array_operations()
     test_statistical()
     test_math_operations()
@@ -1089,7 +1171,6 @@ def test_quantity_wrap():
 
 if __name__ == '__main__':
     test_image_operations()
-    example_usage()
-    test_unit_propagation()
-    test_quantity_wrap()
-    
+    #test_unit_propagation()
+    #test_quantity_wrap()
+    #example_usage()

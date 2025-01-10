@@ -378,14 +378,15 @@ class ErrorPropagation:
             result_errors = get_std(result).astype(float)
 
             # 获取单位字典
-            final_unit = UnitPropagator.propagate(func, *values)
+            final_unit = UnitPropagator.propagate(func, values)
             if final_unit:
                 return result_values*final_unit, result_errors*final_unit
             return result_values, result_errors
         else:
             # 使用自定义导数计算
-            result_values = quantity_wrap(func, *values)
-            partial_derivatives = quantity_wrap(derivatives, *values)
+            print(func, values)
+            result_values = quantity_wrap(func, values)
+            partial_derivatives = quantity_wrap(derivatives, values)
             
             # 计算每个项的平方项
             squared_terms = []
@@ -488,12 +489,14 @@ class ErrorPropagation:
     @staticmethod
     def multiply(*args, output_unit=None):
         """乘法误差传播"""
-        def multiply_func(*values):
-            return reduce(mul, values)
+
+        def multiply_func(values):
+            print(values)
+            return np.prod(values, axis=0)
             
-        def multiply_derivatives(*values):
+        def multiply_derivatives(values):
             return [
-                reduce(mul, values[:i] + values[i+1:])
+                np.prod(values[:i] + values[i+1:], axis=0)
                 for i in range(len(values))
             ]
         
@@ -562,8 +565,8 @@ def test_multiply():
     print(result_err1)
     
     # 方法2：使用 propagate 和 uncertainties
-    def multiply_func(*values):
-        return reduce(mul, values)
+    def multiply_func(values):
+        return np.prod(values, axis=0)
     
     result_val2, result_err2 = ErrorPropagation.propagate(
         multiply_func,
