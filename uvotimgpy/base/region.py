@@ -224,7 +224,7 @@ def mask_image(image: np.ndarray,
 
 class RegionSelector:
     def __init__(self, image_data, vmin=0, vmax=None, 
-                 row_range=None, col_range=None, shape='circle'):
+                 row_range=None, col_range=None, shape='circle', region_plot=None):
         """
         Parameters
         ----------
@@ -247,7 +247,7 @@ class RegionSelector:
     
         self.regions = []
         self.patches = []
-        self.current_size = 10
+        self.current_size = 5
         self.shape = shape
         
         # Display parameters
@@ -256,8 +256,11 @@ class RegionSelector:
         
         # Display image and cursor
         self.display = self.ax.imshow(self.image, origin='lower', cmap='viridis',
-                                    vmin=self.vmin, vmax=self.vmax)
+                                    vmin=self.vmin, vmax=self.vmax,
+                                    extent=[0, self.image.shape[1], 0, self.image.shape[0]])
         self.colorbar = plt.colorbar(self.display)
+        if region_plot is not None:
+            region_plot.plot(ax=self.ax, color='orange', linestyle='--', lw=1, alpha=0.7)
         
         # Set display range if provided
         if row_range is not None:
@@ -450,4 +453,90 @@ class RegionSelector:
         plt.show()
         return self.regions
 
+def save_regions(regions: List[PixelRegion], file_path: str) -> None:
+    """
+    将PixelRegion列表保存为DS9可读取的.reg文件
+    """
+    with open(file_path, 'w') as f:
+        f.write("# Region file format: DS9 version 4.1\n")
+        f.write("global color=green dashlist=8 3 width=1 font=\"helvetica 10 normal roman\" ")
+        f.write("select=1 highlite=1 dash=0 fixed=0 edit=1 move=1 delete=1 include=1 source=1\n")
+        f.write("physical\n")
+        
+        for region in regions:
+            if isinstance(region, CirclePixelRegion):
+                # Python (col, row) -> DS9 (x, y)
+                x_ds9 = region.center.x + 1  # col -> x
+                y_ds9 = region.center.y + 1  # row -> y
+                r = region.radius
+                f.write(f"circle({x_ds9},{y_ds9},{r})\n")
+            elif isinstance(region, RectanglePixelRegion):
+                x_ds9 = region.center.x + 1  # col -> x
+                y_ds9 = region.center.y + 1  # row -> y
+                w, h = region.width, region.height
+                f.write(f"box({x_ds9},{y_ds9},{w},{h},0)\n")
 
+def load_regions(file_path: str, shape: Tuple[int, int] = None) -> Union[List[PixelRegion], np.ndarray]:
+    """
+    读取DS9的.reg文件，返回PixelRegion列表或布尔数组
+    """
+    regions = []
+    
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+    
+    if not any('physical' in line.lower() for line in lines):
+        raise ValueError("只支持physical坐标系统的region文件")
+    
+    for line in lines:
+        line = line.strip()
+        if line.startswith('#') or line.startswith('global') or not line or line == 'physical':
+            continue
+            
+        if line.startswith('circle'):
+            params = line[line.find('(')+1:line.find(')')].split(',')
+            # DS9 (x, y) -> Python (col, row)
+            col = float(params[0]) - 1  # x -> col
+            row = float(params[1]) - 1  # y -> row
+            r = float(params[2])
+            center = PixCoord(col, row)
+            regions.append(CirclePixelRegion(center, r))
+            
+        elif line.startswith('box'):
+            params = line[line.find('(')+1:line.find(')')].split(',')
+            col = float(params[0]) - 1  # x -> col
+            row = float(params[1]) - 1  # y -> row
+            w = float(params[2])
+            h = float(params[3])
+            center = PixCoord(col, row)
+            regions.append(RectanglePixelRegion(center, w, h))
+    
+    if shape is not None:
+        combined_regions = RegionCombiner.union(regions)
+        mask = RegionConverter.region_to_bool_array(combined_regions, image_shape=shape)
+        return mask
+    else:
+        return regions
+
+def adjust_regions(regions_list, old_coord, new_coord):
+    # 计算偏移量
+    offset_col = new_coord[0] - old_coord[0]
+    offset_row = new_coord[1] - old_coord[1]
+    # 创建新的regions列表
+    new_regions = []
+    for reg in regions_list:
+        # 深拷贝region以避免修改原始数据
+        new_reg = reg.copy()
+        # 调整位置
+        new_col = new_reg.center.x + offset_col
+        new_row = new_reg.center.y + offset_row
+        new_reg.center = PixCoord(x=new_col, y=new_row)
+        new_regions.append(new_reg)
+    return new_regions
+
+def create_circle_region(center, radius):
+    # center in (col, row)
+    center = PixCoord(x=center[0], y=center[1])
+    #radius = para_dict[filt][1]
+    circle_region = CirclePixelRegion(center=center, radius=radius)
+    return circle_region

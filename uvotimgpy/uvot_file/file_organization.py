@@ -140,8 +140,8 @@ class ObservationLogger:
         
         # Initialize header info
         self.header_keys = {
-            'DATE-OBS': {'dtype': str, 'unit': None},
-            'DATE-END': {'dtype': str, 'unit': None}, 
+            'DATE_OBS': {'dtype': str, 'unit': None},
+            'DATE_END': {'dtype': str, 'unit': None}, 
             'MIDTIME': {'dtype': str, 'unit': None},
             'EXPOSURE': {'dtype': float, 'unit': u.second},
             'WHEELPOS': {'dtype': int, 'unit': None},
@@ -214,8 +214,8 @@ class ObservationLogger:
         header = hdu.header
         header_info = {}
         
-        start_time = Time(header.get('DATE-OBS', ''))
-        end_time = Time(header.get('DATE-END', ''))
+        start_time = Time(header.get('DATE_OBS', ''))
+        end_time = Time(header.get('DATE_END', ''))
         mid_time = start_time + (end_time - start_time) / 2
         
         for key, info in self.header_keys.items():
@@ -494,7 +494,29 @@ class ObservationLogger:
             return final_table
         else:
             process_astropy_table(final_table, output_path, save_format)
-        
+
+def load_obs_dict(file_path):
+    # 读取数据
+    obs_log = np.genfromtxt(file_path,
+                           delimiter=',',
+                           dtype=None,
+                           encoding='utf-8',
+                           names=True)
+    
+    # 获取表头(列名)
+    column_names = obs_log.dtype.names
+    
+    # 创建观测字典列表
+    obs_list = []
+    
+    # 对每一行数据创建字典
+    for obs in obs_log:
+        obs_dict = {}
+        for col in column_names:
+            obs_dict[col] = obs[col]
+        obs_list.append(obs_dict)
+    
+    return obs_list
 # Usage example
 
 if __name__ == "__main__":

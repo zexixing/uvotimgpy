@@ -9,7 +9,7 @@ from regions import CirclePixelRegion, PixCoord, PixelRegion
 from photutils.aperture import ApertureMask
 from uvotimgpy.utils.image_operation import RadialProfile, DistanceMap, ImageDistanceCalculator
 from uvotimgpy.query import StarCatalogQuery
-from uvotimgpy.base.region import RegionConverter, RegionCombiner, RegionSelector
+from uvotimgpy.base.region import RegionConverter, RegionCombiner, RegionSelector, save_regions
 from scipy import ndimage
 from skimage import restoration
 
@@ -46,7 +46,10 @@ class StarIdentifier:
     
     def by_manual(self, image: np.ndarray, 
                   row_range: Optional[Tuple[int, int]] = None,
-                  col_range: Optional[Tuple[int, int]] = None,) -> np.ndarray:
+                  col_range: Optional[Tuple[int, int]] = None,
+                  vmin = 0, vmax=2,
+                  save_path: Optional[str] = None,
+                  region_plot: Optional[Union[np.ndarray, ApertureMask, PixelRegion]] = None) -> np.ndarray:
         """手动输入位置识别"""
         print("Creating selector...")
         
@@ -54,9 +57,10 @@ class StarIdentifier:
         plt.close('all')
         
         # 创建选择器
-        selector = RegionSelector(image, vmin=0, vmax=2, 
+        selector = RegionSelector(image, vmin=vmin, vmax=vmax, 
                                 row_range=row_range, 
-                                col_range=col_range)
+                                col_range=col_range,
+                                region_plot=region_plot)
         
         print("Getting regions...")
         # 显式调用 show 并等待窗口关闭
@@ -70,9 +74,11 @@ class StarIdentifier:
             return np.zeros_like(image, dtype=bool)
         
         # 合并所有选择的区域
-        combined_regions = RegionCombiner.union(regions)
+        if save_path is not None:
+            save_regions(regions=regions, file_path=save_path)
         
         # 转换为布尔数组
+        combined_regions = RegionCombiner.union(regions)
         mask = RegionConverter.region_to_bool_array(combined_regions, image_shape=image.shape)
         
         self.last_mask = mask

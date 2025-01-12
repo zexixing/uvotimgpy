@@ -98,8 +98,8 @@ class HstObservationLogger:
         self.data_table = self.organizer.organize_data()
 
         self.header_keys = {
-            'DATE-OBS': {'dtype':str, 'unit': None},
-            'DATE-END': {'dtype':str, 'unit': None},
+            'DATE_OBS': {'dtype':str, 'unit': None},
+            'DATE_END': {'dtype':str, 'unit': None},
             'MIDTIME': {'dtype':str, 'unit': None},
             'EXPTIME': {'dtype':float, 'unit': u.second},
             'FILTER': {'dtype':str, 'unit': None},
@@ -129,9 +129,9 @@ class HstObservationLogger:
 
             for key, info in self.header_keys.items():
                 try:
-                    if key == 'DATE-OBS':
+                    if key == 'DATE_OBS':
                         value = start_time.isot
-                    elif key == 'DATE-END':
+                    elif key == 'DATE_END':
                         value = end_time.isot
                     elif key == 'MIDTIME':
                         value = mid_time.isot
@@ -222,7 +222,7 @@ class HstObservationLogger:
     
     def _add_fitted_center_pixel(self, processed_table):
         center_pixel_path = '/Volumes/ZexiWork/projects/29p/HST/comet_position_hst.csv'
-        data = np.genfromtxt(center_pixel_path, delimiter=', ', skip_header=1)
+        data = np.genfromtxt(center_pixel_path, delimiter=',', skip_header=1)
         fitted_col_pixel = data[:,2]
         fitted_row_pixel = data[:,3]
         fitted_x_pixel = fitted_col_pixel + 1
@@ -409,6 +409,7 @@ if __name__ == '__main__':
     data_root_path = '/Volumes/ZexiWork/data/HST'
     target_name = '29P'
     logger = HstObservationLogger(target_name, data_root_path, target_alternate='90000395')
-    obs_table = logger.process_data()
+    obs_table = logger.process_data(save_format='csv', output_path='/Volumes/ZexiWork/projects/29p/HST/hst_obs_log.csv')
+    print(obs_table)
     #obtain_real_position(obs_table, 1)
     #print(obs_table)

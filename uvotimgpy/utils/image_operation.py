@@ -99,6 +99,7 @@ def rescale_images(images: Union[np.ndarray, List[np.ndarray]],
                   new_scale: Optional[float] = None,
                   target_coords: Optional[List[Tuple[float, float]]] = None,
                   headers: Optional[List[fits.Header]] = None) -> Tuple:
+    # TODO: check if this is correct
     """
     将图像重新缩放到新的像素尺度
     
@@ -405,7 +406,8 @@ class RadialProfile:
         self.start = start if start is not None else 0
         if end is None:
             rows, cols = image.shape
-            self.end = np.sqrt((rows/2)**2 + (cols/2)**2)
+            #self.end = np.sqrt((rows/2)**2 + (cols/2)**2)
+            self.end = ImageDistanceCalculator.from_corners(image, center, distance_method='max') # TODO: check if this is correct
         else:
             self.end = end
             
@@ -445,6 +447,7 @@ class RadialProfile:
             
             # 去除被mask的像素
             valid_data = data[data != 0]
+            valid_data = valid_data[~np.isnan(valid_data)] # TODO: check if this is necessary
             if len(valid_data) > 0:
                 radii.append(r)
                 if self.method == 'median':

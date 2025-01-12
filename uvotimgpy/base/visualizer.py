@@ -106,4 +106,4 @@ class MaskInspector:
         ax2.set_title('Unmasked Pixels')
         
         plt.tight_layout()
-        plt.show()
+        plt.show(block=True)
