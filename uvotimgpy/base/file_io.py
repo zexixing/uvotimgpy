@@ -101,6 +101,7 @@ def save_stacked_fits(save_path: str, obs_list: list,
     primary_header['DATE_OBS'] = (first_date_obs_str, 'Start time of first observation')
     primary_header['DATE_END'] = (last_date_end_str, 'End time of last observation')
     primary_header['MIDTIME'] = (midtime_iso, 'Middle time between first and last observation')
+    primary_header['YEAR'] = (obs_list[0]['date'], 'Observation year')
     primary_header['FILELIST'] = (', '.join(f'{file_name}' for file_name in file_names), 'List of files used in stacking')
     primary_header['EXPTIME'] = (total_exptime, 'Total exposure time [s]')
     primary_header['BUNIT'] = ('ELECTRONS/S', 'Physical unit of array values')

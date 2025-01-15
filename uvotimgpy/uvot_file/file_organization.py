@@ -140,8 +140,8 @@ class ObservationLogger:
         
         # Initialize header info
         self.header_keys = {
-            'DATE_OBS': {'dtype': str, 'unit': None},
-            'DATE_END': {'dtype': str, 'unit': None}, 
+            'DATE-OBS': {'dtype': str, 'unit': None},
+            'DATE-END': {'dtype': str, 'unit': None}, 
             'MIDTIME': {'dtype': str, 'unit': None},
             'EXPOSURE': {'dtype': float, 'unit': u.second},
             'WHEELPOS': {'dtype': int, 'unit': None},
@@ -214,8 +214,8 @@ class ObservationLogger:
         header = hdu.header
         header_info = {}
         
-        start_time = Time(header.get('DATE_OBS', ''))
-        end_time = Time(header.get('DATE_END', ''))
+        start_time = Time(header.get('DATE-OBS', ''))
+        end_time = Time(header.get('DATE-END', ''))
         mid_time = start_time + (end_time - start_time) / 2
         
         for key, info in self.header_keys.items():
@@ -348,6 +348,10 @@ class ObservationLogger:
         extra_columns.extend([('x_pixel', float, None), ('y_pixel', float, None)])
         
         for col, dtype, unit in extra_columns:
+            if col == 'DATE-OBS':
+                col = 'DATE_OBS'
+            elif col == 'DATE-END':
+                col = 'DATE_END'
             column_names.append(col)
             dtypes.append(dtype)
             units.append(unit)
@@ -526,7 +530,7 @@ if __name__ == "__main__":
     #organizer.process_data(output_path='1p_uvot_data.csv')
     #organizer.process_data()
     #print(logger.data_table)
-    logger = ObservationLogger('46p',data_root_path='/Volumes/ZexiWork/data/Swift', target_alternate='90000549')
-    output_path = '/Users/zexixing//Downloads/46p_uvot_data.csv'
+    logger = ObservationLogger('c2023a3',data_root_path='/Volumes/ZexiWork/data/Swift', target_alternate='90004773')
+    output_path = '/Users/zexixing/Downloads/c2023a3_uvot_data_test.csv'
     logger.process_data(output_path=output_path,
-                        orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation'])
+                        orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation', 'alpha'])

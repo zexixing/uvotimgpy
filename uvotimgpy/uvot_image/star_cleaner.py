@@ -49,7 +49,7 @@ class StarIdentifier:
                   col_range: Optional[Tuple[int, int]] = None,
                   vmin = 0, vmax=2,
                   save_path: Optional[str] = None,
-                  region_plot: Optional[Union[np.ndarray, ApertureMask, PixelRegion]] = None) -> np.ndarray:
+                  region_plot: Optional[Union[PixelRegion, List[PixelRegion]]] = None) -> np.ndarray:
         """手动输入位置识别"""
         print("Creating selector...")
         

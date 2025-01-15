@@ -9,7 +9,7 @@ from astropy.coordinates import SkyCoord
 from astropy import units as u
 from sbpy.data import Ephem
 from uvotimgpy.base.file_io import process_astropy_table
-from uvotimgpy.utils.math_tools import GaussianFitter2D
+from uvotimgpy.base.math_tools import GaussianFitter2D
 from uvotimgpy.base.region import RegionSelector
 import matplotlib.pyplot as plt
 from IPython import get_ipython
@@ -257,7 +257,7 @@ class HstObservationLogger:
         return merged_table
 
     def process_data(self, output_path=None, save_format='csv', selected_columns=None, return_table=False,
-                     orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation']):
+                     orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation', 'alpha']):
         processed_table, targettimes, wcs_dict = self._process_fits_file()
         processed_table = self._add_fitted_center_pixel(processed_table)
         final_table = self._merge_ephem_table(processed_table, targettimes, wcs_dict, orbital_keywords)
@@ -409,7 +409,7 @@ if __name__ == '__main__':
     data_root_path = '/Volumes/ZexiWork/data/HST'
     target_name = '29P'
     logger = HstObservationLogger(target_name, data_root_path, target_alternate='90000395')
-    obs_table = logger.process_data(save_format='csv', output_path='/Volumes/ZexiWork/projects/29p/HST/hst_obs_log.csv')
+    obs_table = logger.process_data(save_format='csv', output_path='/Volumes/ZexiWork/projects/29p/HST/obs_log_29p_hst.csv')
     print(obs_table)
     #obtain_real_position(obs_table, 1)
     #print(obs_table)

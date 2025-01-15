@@ -240,6 +240,118 @@ class GaussianFitter2D:
         plt.tight_layout()
         return fig
 
+# utils/median_error.py
+
+def calculate_median_error(data: Union[np.ndarray, List[np.ndarray]], 
+                         errors: Optional[Union[np.ndarray, List[np.ndarray]]] = None,
+                         bootstrap_threshold: int = 30,
+                         n_bootstrap: int = 1000
+                         ) -> Tuple[np.ndarray, np.ndarray]:
+    """Calculate median and its error"""
+    
+    def single_array_median_error(data, errors=None):
+        """处理单个数组的中位数和误差"""
+        valid_mask = ~np.isnan(data)
+        valid_data = data[valid_mask]
+        
+        if len(valid_data) == 0:
+            return np.nan, np.nan
+            
+        median_val = np.nanmedian(valid_data)
+        n_samples = len(valid_data)
+        
+        #if n_samples < bootstrap_threshold:
+        if errors is not None:
+            valid_errors = errors[valid_mask]
+            median_err = 1.253 * np.sqrt(np.sum(valid_errors**2)) / n_samples
+        else:
+            std = np.std(valid_data, ddof=1)
+            median_err = 1.253 * std / np.sqrt(n_samples)
+        #else:
+        #    # 改进的Bootstrap方法
+        #    medians = np.zeros(n_bootstrap)
+        #    for i in range(n_bootstrap):
+        #        # 生成bootstrap样本
+        #        indices = np.random.randint(0, n_samples, n_samples)
+        #        sample = valid_data[indices]
+        #        
+        #        # 如果有测量误差，添加误差的随机扰动
+        #        if errors is not None:
+        #            sample_errors = errors[valid_mask][indices]
+        #            sample = sample + np.random.normal(0, sample_errors)
+        #        
+        #        medians[i] = np.median(sample)
+            
+        #   median_err = np.std(medians)
+            
+        return median_val, median_err
+    
+    # 处理单个数组的情况
+    if not isinstance(data, list):
+        return single_array_median_error(data, errors)
+    
+    # 处理多个数组的情况
+    else:
+        original_shape = data[0].shape
+        data_array = np.array([arr.flatten() for arr in data]).T
+        n_samples = len(data)
+        
+        # 计算中位数
+        median_val = np.nanmedian(data_array, axis=1)
+        
+        # 计算误差
+        #if n_samples < bootstrap_threshold:
+        if errors is not None:
+            err_array = np.array([err.flatten() for err in errors]).T
+            median_err = np.zeros_like(median_val)
+            for i in range(len(median_val)):
+                valid_mask = ~np.isnan(data_array[i])
+                if np.sum(valid_mask) > 0:
+                    valid_errors = err_array[i][valid_mask]
+                    # 移除除以2
+                    median_err[i] = 1.253 * np.sqrt(np.sum(valid_errors**2)) / np.sum(valid_mask)
+                else:
+                    median_err[i] = np.nan
+        else:
+            median_err = np.zeros_like(median_val)
+            for i in range(len(median_val)):
+                valid_data = data_array[i][~np.isnan(data_array[i])]
+                if len(valid_data) > 0:
+                    std = np.std(valid_data, ddof=1)
+                    median_err[i] = 1.253 * std / np.sqrt(len(valid_data))
+                else:
+                    median_err[i] = np.nan
+        #else:
+        #    # 改进的bootstrap方法
+        #    median_err = np.zeros_like(median_val)
+        #    for i in range(len(median_val)):
+        #        valid_data = data_array[i][~np.isnan(data_array[i])]
+        #        if len(valid_data) == 0:
+        #            median_err[i] = np.nan
+        #            continue
+        #            
+        #        medians = np.zeros(n_bootstrap)
+        #        for j in range(n_bootstrap):
+        #            indices = np.random.randint(0, len(valid_data), len(valid_data))
+        #            sample = valid_data[indices]
+        #            
+        #            # 如果有测量误差，添加误差的随机扰动
+        #            if errors is not None:
+        #                err_array = np.array([err.flatten() for err in errors]).T
+        #                sample_errors = err_array[i][~np.isnan(data_array[i])][indices]
+        #                sample = sample + np.random.normal(0, sample_errors)
+        #                
+        #            medians[j] = np.median(sample)
+        #        
+        #        median_err[i] = np.std(medians)
+        
+        # 恢复原始形状
+        if len(original_shape) > 1:
+            median_val = median_val.reshape(original_shape)
+            median_err = median_err.reshape(original_shape)
+            
+        return median_val, median_err
+
 class ErrorPropagation:
     """误差传播计算类"""
     
@@ -289,7 +401,7 @@ class ErrorPropagation:
                 squared_terms.append(squared_term)
             
             # 计算平方和和平方根
-            sum_squares = np.sum(squared_terms, axis=0)
+            sum_squares = np.nansum(squared_terms, axis=0)
             result_errors = np.sqrt(sum_squares)
             
         return result_values, result_errors
@@ -310,7 +422,7 @@ class ErrorPropagation:
             (result_value, result_error)
         """
         def add_func(*values):
-            return np.sum(values, axis=0)
+            return np.nansum(values, axis=0)
             
         def add_derivatives(*values):
             return [1] * len(values)  # 加法的偏导数都是1
@@ -321,11 +433,11 @@ class ErrorPropagation:
     def multiply(*args):
         """乘法误差传播"""
         def multiply_func(*values):  # 改为接收可变参数
-            return np.prod(values, axis=0)
+            return np.nanprod(values, axis=0)
             
         def multiply_derivatives(*values):
             return [
-                np.prod(values[:i] + values[i+1:], axis=0)
+                np.nanprod(values[:i] + values[i+1:], axis=0)
                 for i in range(len(values))
             ]
         
@@ -335,7 +447,7 @@ class ErrorPropagation:
     def subtract(*args):
         """减法误差传播 (a1 - a2 - a3 - ...)"""
         def subtract_func(*values):
-            return values[0] - np.sum(values[1:], axis=0)
+            return values[0] - np.nansum(values[1:], axis=0)
             
         def subtract_derivatives(*values):
             return [1] + [-1] * (len(values)-1)  # 第一个是1，其他都是-1
@@ -346,10 +458,10 @@ class ErrorPropagation:
     def divide(*args):
         """除法误差传播 (a1 / a2 / a3 / ...)"""
         def divide_func(*values):
-            return values[0] / np.prod(values[1:], axis=0)
+            return values[0] / np.nanprod(values[1:], axis=0)
             
         def divide_derivatives(*values):
-            prod_others = np.prod(values[1:], axis=0)  # 所有除数的乘积
+            prod_others = np.nanprod(values[1:], axis=0)  # 所有除数的乘积
             return [
                 1/prod_others,  # 对被除数的偏导数
                 *[-values[0]/(val * prod_others)  # 对每个除数的偏导数
@@ -357,3 +469,35 @@ class ErrorPropagation:
             ]
         
         return ErrorPropagation.propagate(divide_func, *args, derivatives=divide_derivatives)
+
+    @staticmethod
+    def median(*args, bootstrap_threshold=30, n_bootstrap=500):
+        """中位数误差计算
+        
+        Parameters
+        ----------
+        *args : tuple
+            每个参数是一个 (value, error) 元组，支持数组
+        bootstrap_threshold : int, optional
+            切换方法的样本量阈值，默认30
+        n_bootstrap : int, optional
+            bootstrap重采样次数，默认500
+            
+        Returns
+        -------
+        tuple
+            (median_value, median_error)
+        """
+        print(len(args) == 1, isinstance(args[0], tuple), len(args[0]) == 2)
+        if len(args) == 1 and isinstance(args[0], tuple) and len(args[0]) == 2:
+            # 单个数组的情况
+            return calculate_median_error(args[0][0], args[0][1],
+                                        bootstrap_threshold=bootstrap_threshold,
+                                        n_bootstrap=n_bootstrap)
+        else:
+            values = [arg[0] for arg in args]
+            errors = [arg[1] for arg in args]
+
+            return calculate_median_error(values, errors, 
+                                        bootstrap_threshold=bootstrap_threshold,
+                                        n_bootstrap=n_bootstrap)

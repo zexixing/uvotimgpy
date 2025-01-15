@@ -6,7 +6,8 @@ from typing import List, Tuple, Union, Optional
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from regions import CircleAnnulusPixelRegion, CirclePixelRegion, PixCoord
-from uvotimgpy.base.region import mask_image
+from uvotimgpy.base.math_tools import ErrorPropagation
+from uvotimgpy.base.region import mask_image, RegionStatistics
 import warnings
 from astropy.wcs import FITSFixedWarning
 warnings.filterwarnings('ignore', category=FITSFixedWarning)
@@ -167,40 +168,47 @@ def rescale_images(images: Union[np.ndarray, List[np.ndarray]],
     else:
         return rescaled_images
 
-def rotate_image(img: np.ndarray, 
+def rotate_image(image: np.ndarray, 
                 target_coord: Tuple[Union[float, int], Union[float, int]], 
                 angle: float,
-                fill_value: Union[float, None] = np.nan) -> np.ndarray:
+                fill_value: Union[float, None] = np.nan,
+                image_err: Optional[np.ndarray] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     以源位置为中心旋转图像
     
     Parameters
     ----------
-    img : 输入图像
+    image : 输入图像
     target_coord : (row, column)源的坐标
     angle : 旋转角度（度）
     fill_value : 填充值
     """
-    if img.dtype.byteorder == '>':
-        img = img.byteswap().newbyteorder()
-    return rotate(img, 
+    if image.dtype.byteorder == '>':
+        image = image.byteswap().newbyteorder()
+    return rotate(image, 
                   -angle,
                   center=target_coord,
                   preserve_range=True,
                   mode='constant',
                   cval=fill_value,    # 指定填充值
                   clip=True)
+    if image_err is None:
+        return rotated_img
+    else:
+        rotated_err = rotate_image(image = image_err, target_coord = target_coord, angle = angle, fill_value = fill_value)
+        return rotated_img, rotated_err
 
-def crop_image(img: np.ndarray, 
+def crop_image(image: np.ndarray, 
               target_coord: Tuple[Union[float, int], Union[float, int]], 
               new_target_coord: Tuple[Union[float, int], Union[float, int]],
-              fill_value: Union[float, None] = np.nan) -> np.ndarray:
+              fill_value: Union[float, None] = np.nan,
+              image_err: Optional[np.ndarray] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     以源位置为中心裁剪图像
     
     Parameters
     ----------
-    img : 输入图像
+    image : 输入图像
     target_coord : (column, row)源在原图中的坐标
     new_target_coord : (column, row)源在新图中的期望坐标
     fill_value : 填充值
@@ -210,7 +218,7 @@ def crop_image(img: np.ndarray,
     
     # 计算新图像大小
     new_size = (2 * new_row + 1, 2 * new_col + 1)
-    new_img = np.full(new_size, fill_value)
+    new_image = np.full(new_size, fill_value)
     
     # 计算裁剪范围
     start_col = col - new_col
@@ -218,43 +226,91 @@ def crop_image(img: np.ndarray,
     
     # 复制有效区域
     valid_region = np.s_[
-        max(0, start_row):min(img.shape[0], start_row + new_size[0]),
-        max(0, start_col):min(img.shape[1], start_col + new_size[1])
+        max(0, start_row):min(image.shape[0], start_row + new_size[0]),
+        max(0, start_col):min(image.shape[1], start_col + new_size[1])
     ]
     new_valid_region = np.s_[
-        max(0, -start_row):min(new_size[0], img.shape[0]-start_row),
-        max(0, -start_col):min(new_size[1], img.shape[1]-start_col)
+        max(0, -start_row):min(new_size[0], image.shape[0]-start_row),
+        max(0, -start_col):min(new_size[1], image.shape[1]-start_col)
     ]
     
-    new_img[new_valid_region] = img[valid_region]
-    return new_img
+    new_image[new_valid_region] = image[valid_region]
+
+    if image_err is None:
+        return new_image
+    else:
+        cropped_err = crop_image(image_err, target_coord, new_target_coord, np.nan)
+        return new_image, cropped_err
+
 
 def align_images(images: List[np.ndarray], 
                 target_coords: List[Tuple[Union[float, int], Union[float, int]]],
                 new_target_coord: Tuple[Union[float, int], Union[float, int]],
-                fill_value: Union[float, None] = np.nan) -> List[np.ndarray]:
+                fill_value: Union[float, None] = np.nan,
+                image_err: Optional[List[np.ndarray]] = None) ->  Union[List[np.ndarray], Tuple[List[np.ndarray], List[np.ndarray]]]:
     """
     对齐一系列图像
     """
-    return [crop_image(img, coord, new_target_coord, fill_value) 
-            for img, coord in zip(images, target_coords)]
+    if image_err is None:
+        return [crop_image(img, coord, new_target_coord, fill_value) 
+                for img, coord in zip(images, target_coords)]
+    else:
+        aligned_images = []
+        aligned_errs = []
+        for image, coord, err in zip(images, target_coords, image_err):
+            aligned_image, aligned_err = crop_image(image, coord, new_target_coord, fill_value, err)
+            aligned_images.append(aligned_image)
+            aligned_errs.append(aligned_err)
+        return aligned_images, aligned_errs
 
 def stack_images(images: List[np.ndarray], 
-                method: str = 'median') -> np.ndarray:
+                method: str = 'median',
+                err_data: Optional[List[np.ndarray]] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     叠加图像
     
     Parameters
     ----------
     images : 图像列表
-    method : 'median' 或 'sum'
+    method : 'median' 或 'mean'
     """
-    if method == 'median':
-        return np.nanmedian(images, axis=0)
-    elif method == 'sum':
-        return np.nansum(images, axis=0)
+    if method not in ['median', 'mean']:
+        raise ValueError("method must be 'median' or 'mean'")
+    if method == 'mean':
+        warnings.warn("Some pixels may be not well exposed, please check the exposure map with sum_exposure_map.")
+    if err_data is None:
+        if method == 'median':
+            return np.nanmedian(images, axis=0)
+        elif method == 'mean':
+            return np.nanmean(images, axis=0)
     else:
-        raise ValueError("method must be 'median' or 'sum'")
+        if method == 'mean':
+            n_images = len(images)
+            values_with_errors = [(image/n_images, err/n_images) for image, err in zip(images, err_data)]
+            mean_image, mean_error = ErrorPropagation.add(*values_with_errors)
+            return mean_image, mean_error
+        elif method == 'median':
+            median_image, median_error = ErrorPropagation.median(images, err_data)
+            return median_image, median_error
+
+def sum_exposure_map(images: List[np.ndarray], 
+                     exposures: List[float],
+                     exposure_maps: Optional[List[np.ndarray]] = None) -> Union[np.ndarray]:
+    """
+    叠加曝光图
+    """
+    if exposure_maps is None:
+        exposure_maps = []
+        for image, exposure in zip(images, exposures):
+            image_copy = image.copy()
+            image_copy[~np.isnan(image_copy)] = 1. # TODO: check pixels with values as 0
+            exposure_maps.append(image_copy * exposure)
+    else: # for Swift which has exposure map fits files
+        pass
+    summed_exposure_map = np.nansum(exposure_maps, axis=0)
+    summed_exposure_map = np.nan_to_num(summed_exposure_map, 0)
+    return summed_exposure_map
+    
 
 class ImageDistanceCalculator:
     @staticmethod
@@ -329,6 +385,44 @@ class ImageDistanceCalculator:
             return corner
         return ImageDistanceCalculator.calc_distance(coords, corner, wcs, scale)
 
+    @staticmethod
+    def max_distance_from_valid_pixels(image: np.ndarray, 
+                                     coords: Tuple[Union[float, int], Union[float, int]], 
+                                     ) -> float:
+        """计算图像中非nan像素到指定点的最大距离
+        
+        Parameters
+        ----------
+        image : np.ndarray
+            输入图像
+        coords : tuple
+            参考点坐标 (col, row)
+        wcs : object, optional
+            WCS对象，用于天球坐标转换
+        scale : float, optional
+            像素尺度，用于将像素距离转换为实际距离
+            
+        Returns
+        -------
+        float
+            最大距离（像素单位，或根据scale/wcs转换后的单位）
+        """
+        # 创建坐标网格
+        rows, cols = np.indices(image.shape)
+        
+        # 计算每个像素到参考点的距离
+        col_diff = cols - coords[0]
+        row_diff = rows - coords[1]
+        distances = np.sqrt(col_diff**2 + row_diff**2)
+        
+        # 将nan像素对应的距离设为nan
+        distances[np.isnan(image)] = np.nan
+        
+        # 计算最大距离
+        max_dist = np.nanmax(distances)
+            
+        return max_dist
+
 class DistanceMap:
     """处理图像中像素到指定中心点距离的类"""
     
@@ -371,142 +465,116 @@ class DistanceMap:
         index_map = np.maximum(index_map, 1)
         return index_map
 
-class RadialProfile:
-    """使用astropy.regions测量图像的径向profile"""
+def calc_radial_profile(image: np.ndarray, 
+                       center: tuple, 
+                       step: float,
+                       image_error: Optional[np.ndarray] = None,
+                       bad_pixel_mask: Optional[np.ndarray] = None,
+                       start: Optional[float] = None,
+                       end: Optional[float] = None,
+                       method: str = 'median') -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    """计算径向profile及其误差
+
+    Parameters
+    ----------
+    image : np.ndarray
+        输入图像
+    center : tuple
+        中心点坐标 (col, row)
+    step : float
+        环宽度
+    image_error : np.ndarray, optional
+        图像误差数组
+    bad_pixel_mask : np.ndarray, optional
+        坏像素掩模，True表示被mask的像素
+    start : float, optional
+        起始半径，默认为0
+    end : float, optional
+        结束半径，默认为图像中心到角落的距离
+    method : str
+        计算方法，'median'或'mean'
+
+    Returns
+    -------
+    radii : np.ndarray
+        半径数组
+    values : np.ndarray
+        对应的profile值
+    errors : np.ndarray, optional
+        如果提供了image_error，返回对应的误差值
+    """
+    # 处理输入图像和掩模
+    image = mask_image(image, bad_pixel_mask)
+    image_error = mask_image(image_error, bad_pixel_mask) if image_error is not None else None
     
-    def __init__(self, image: np.ndarray, center: tuple, step: float,
-                 bad_pixel_mask: Optional[np.ndarray] = None,
-                 start: Optional[float] = None,
-                 end: Optional[float] = None,
-                 method: str = 'median'):
-        """
-        Parameters
-        ----------
-        image : np.ndarray
-            输入图像
-        center : tuple
-            中心点坐标 (col, row)
-        step : float
-            环宽度
-        bad_pixel_mask : np.ndarray, optional
-            坏像素掩模，True表示被mask的像素
-        start : float, optional
-            起始半径，默认为0
-        end : float, optional
-            结束半径，默认为图像中心到角落的距离
-        method : str
-            计算方法，'median'或'mean'
-        """
-        self.image = mask_image(image, bad_pixel_mask)
-        self.center = PixCoord(x=center[0], y=center[1])
-        self.step = step
-        self.method = method
-        
-        # 设置起始和结束半径
-        self.start = start if start is not None else 0
-        if end is None:
-            rows, cols = image.shape
-            #self.end = np.sqrt((rows/2)**2 + (cols/2)**2)
-            self.end = ImageDistanceCalculator.from_corners(image, center, distance_method='max') # TODO: check if this is correct
+    # 处理中心坐标
+    if isinstance(center, PixCoord):
+        center_coord = center
+    else:
+        center_coord = PixCoord(x=center[0], y=center[1])
+    
+    # 设置起始和结束半径
+    start = start if start is not None else 0
+    if end is None:
+        end = ImageDistanceCalculator.max_distance_from_valid_pixels(image, center)
+    
+    # 初始化结果列表
+    radii_range = np.arange(start, end, step)
+    radii = []
+    values = []
+    errors = [] if image_error is not None else None
+
+    # 计算每个半径处的值
+    for r in radii_range:
+        # 创建区域
+        if r == 0:
+            region = CirclePixelRegion(
+                center=center_coord,
+                radius=step
+            )
         else:
-            self.end = end
-            
-    def get_radial_profile(self) -> Tuple[np.ndarray, np.ndarray]:
-        """计算径向profile
-        
-        Returns
-        -------
-        radii : np.ndarray
-            半径数组
-        values : np.ndarray
-            对应的profile值
-        """
-        # 生成半径数组
-        radii_range = np.arange(self.start, self.end, self.step)
-        radii = []
-        values = []
-        
-        # 对每个半径计算统计量
-        for r in radii_range:
-            if r == 0:
-                # 使用CirclePixelRegion处理中心区域
-                region = CirclePixelRegion(
-                    center=self.center,
-                    radius=self.step
-                )
+            region = CircleAnnulusPixelRegion(
+                center=center_coord,
+                inner_radius=r,
+                outer_radius=r + step
+            )
+
+        # 获取区域内的有效像素值
+        mask = region.to_mask()
+        region_pixels = mask.get_values(image)
+        valid_pixels = region_pixels[~np.isnan(region_pixels)]
+
+        if len(valid_pixels) == 0:
+            continue
+
+        if image_error is not None:
+            region_errors = mask.get_values(image_error)
+            valid_errors = region_errors[~np.isnan(region_pixels)]
+
+        if method == 'median':
+            if image_error is not None:
+                value, error = ErrorPropagation.median((valid_pixels, valid_errors))
+                if value is not None:
+                    radii.append(r+step/2)
+                    values.append(value)
+                    errors.append(error)
             else:
-                # 使用CircleAnnulusPixelRegion处理环形区域
-                region = CircleAnnulusPixelRegion(
-                    center=self.center,
-                    inner_radius=r,
-                    outer_radius=r + self.step
-                )
-                
-            mask = region.to_mask()
-            data = mask.multiply(self.image)
-            
-            # 去除被mask的像素
-            valid_data = data[data != 0]
-            valid_data = valid_data[~np.isnan(valid_data)] # TODO: check if this is necessary
-            if len(valid_data) > 0:
-                radii.append(r)
-                if self.method == 'median':
-                    values.append(np.nanmedian(valid_data))
-                elif self.method == 'mean' :
-                    values.append(np.nanmean(valid_data))
-                else:
-                    raise ValueError("method other than 'median' or 'mean' is not supported")
-                
-        return np.array(radii), np.array(values)
-    
-def test_image_operation():
-    import matplotlib.pyplot as plt
-    img_dict = {'18':(760,872),
-                #'20':(773,884),
-                '24':(766,877),
-                #'26':(778,889)
-                }
-    img_list = []
-    target_list = []
-    for imgid in img_dict.keys():
-        x, y = img_dict[imgid]
-        hdul = fits.open('/Volumes/ZexiWork/data/HST/29P/2019/'+imgid+'.fits')
-        img = hdul[1].data
-        angle = float(hdul[1].header['ORIENTAT'])
-        col, row = DS9Converter.ds9_to_coords(x, y)[2:]
-        target_list.append((col, row))
+                value = np.median(valid_pixels)
+                radii.append(r+step/2)
+                values.append(value)
+        else:  # mean
+            value = np.mean(valid_pixels)
+            radii.append(r+step/2)
+            values.append(value)
 
-        img = rotate_image(img, target_coord=(col, row), angle=angle, fill_value=np.nan)
-        img_list.append(img)
+            if image_error is not None:
+                error = np.sqrt(np.sum(valid_errors**2)) / len(valid_pixels)
+                errors.append(error)
 
-    new_target_coord_ds9 = (100,100)
-    col, row = DS9Converter.ds9_to_coords(new_target_coord_ds9[0], new_target_coord_ds9[1])[2:]
-    img_list = align_images(img_list, target_list, (col, row))
-
-    img_a = img_list[0]
-    img_b = img_list[1]
-    diff = img_a - img_b
-    mask_pos = diff > 0.05
-    mask_neg = diff < -0.05
-
-    filled_a = img_a.copy()
-    filled_b = img_b.copy()
-
-    filled_a[mask_pos] = img_b[mask_pos]
-    filled_b[mask_neg] = img_a[mask_neg]
-
-    from uvotimgpy.base.visualizer import MaskInspector
-    inspector = MaskInspector(img_a, mask_pos)
-    inspector.show_comparison(vmin=0,vmax=2)
-
-if __name__ == '__main__':
-    pass
-    # test_image_operation()
-    #img = fits.open('/Users/zexixing/Downloads/30.fits')[1].data
-    #selector = ApertureSelector(img,0,2)
-    #aperture = selector.get_apertures()
-    #print(aperture)
-    #from astropy.wcs import WCS
-    #wcs = WCS(fits.open('/Users/zexixing/Downloads/30.fits')[1].header)
-    #dist = ImageDistanceCalculator.calc_distance((623,1131), (576,1142), wcs)
-    #print(dist.arcsec)
+    # 转换为numpy数组并返回结果
+    radii = np.array(radii)
+    values = np.array(values)
+    if errors is not None:
+        errors = np.array(errors)
+        return radii, values, errors
+    return radii, values

@@ -1,6 +1,6 @@
-from typing import Tuple, Union, Optional, List
+from typing import Tuple, Union, Optional, List, Callable, Any
 import numpy as np
-from photutils.aperture import ApertureMask, BoundingBox
+from photutils.aperture import ApertureMask, BoundingBox, Aperture
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
 from regions import PixelRegion, PixCoord, CirclePixelRegion, RectanglePixelRegion
@@ -109,6 +109,31 @@ class RegionConverter:
             return RegionConverter.region_to_bool_array(region, image_shape)
         else:
             return region
+        
+    @staticmethod
+    def to_bool_array_general(regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+                              combine_regions: bool, shape: Optional[Tuple[int, int]] = None) -> List[np.ndarray]:
+        """处理输入的regions，转换为布尔数组列表"""
+        if isinstance(regions, np.ndarray):
+            if regions.dtype != bool:
+                raise ValueError("Input array must be boolean type")
+            return [regions]
+            
+        elif isinstance(regions, PixelRegion):
+            mask = RegionConverter.region_to_bool_array(regions, shape)
+            return [mask]
+            
+        elif isinstance(regions, (list, tuple)):
+            if combine_regions:
+                combined_mask = RegionCombiner.union(regions)
+                if not isinstance(combined_mask, np.ndarray):
+                    combined_mask = RegionConverter.region_to_bool_array(combined_mask, shape)
+                return [combined_mask]
+            else:
+                return [RegionConverter.region_to_bool_array(reg, shape) 
+                        for reg in regions]
+        else:
+            raise ValueError("Unsupported region type")
 
 class RegionCombiner:
     """处理掩膜列表的合并操作"""
@@ -260,7 +285,12 @@ class RegionSelector:
                                     extent=[0, self.image.shape[1], 0, self.image.shape[0]])
         self.colorbar = plt.colorbar(self.display)
         if region_plot is not None:
-            region_plot.plot(ax=self.ax, color='orange', linestyle='--', lw=1, alpha=0.7)
+            if isinstance(region_plot, list):
+                for region_item in region_plot:
+                    region_item.plot(ax=self.ax, color='orange', linestyle='--', lw=1, alpha=0.7)
+            else:
+                region_item = region_plot
+                region_item.plot(ax=self.ax, color='orange', linestyle='--', lw=1, alpha=0.7)
         
         # Set display range if provided
         if row_range is not None:
@@ -540,3 +570,144 @@ def create_circle_region(center, radius):
     #radius = para_dict[filt][1]
     circle_region = CirclePixelRegion(center=center, radius=radius)
     return circle_region
+
+def get_total_bounds(region_list):
+    # 获取每个圆形region的边界框
+    bounds = [region.bounding_box for region in region_list]
+    
+    # 从边界框中提取最小最大值
+    row_mins = [box.ixmin for box in bounds]
+    row_maxs = [box.ixmax for box in bounds]
+    col_mins = [box.iymin for box in bounds]
+    col_maxs = [box.iymax for box in bounds]
+    
+    total_row_min = min(row_mins)
+    total_row_max = max(row_maxs)
+    total_col_min = min(col_mins)
+    total_col_max = max(col_maxs)
+    
+    return total_row_min, total_row_max, total_col_min, total_col_max
+
+class RegionStatistics:
+    """区域统计量计算类"""
+    
+    @staticmethod
+    def calculate_stats(data: np.ndarray,
+                       regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+                       func: Callable[[np.ndarray], Any],
+                       combine_regions: bool = False,
+                       mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
+                       ) -> Union[Any, List[Any]]:
+        """
+        计算区域统计量的静态方法
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            要统计的数据数组
+        regions : Union[PixelRegion, List[PixelRegion], np.ndarray]
+            要统计的区域，可以是单个PixelRegion，PixelRegion列表，或布尔数组
+        stat_func : Callable[[np.ndarray], Any]
+            用于计算统计量的函数，接收有效数据数组作为输入
+        combine_regions : bool, optional
+            当输入多个区域时，是否将它们合并统计，默认False（分别统计）
+        mask : Union[PixelRegion, List[PixelRegion], np.ndarray], optional
+            需要排除的区域，可以是区域对象、区域列表或布尔掩模
+        """
+        bool_masks = RegionConverter.to_bool_array_general(regions, combine_regions=combine_regions, shape=data.shape)
+        
+        # 处理mask
+        exclude_mask = None
+        if mask is not None:
+            exclude_masks = RegionConverter.to_bool_array_general(mask, combine_regions=True, shape=data.shape)
+            exclude_mask = exclude_masks[0]
+            
+        stats = [RegionStatistics._calculate_stat(data, region_mask, func, exclude_mask) 
+                for region_mask in bool_masks]
+        return stats[0] if len(stats) == 1 else stats
+
+    @staticmethod
+    def _calculate_stat(data: np.ndarray, 
+                       mask: np.ndarray, 
+                       func: Callable[[np.ndarray], Any],
+                       exclude_mask: Optional[np.ndarray] = None) -> Any:
+        """计算单个区域的统计量"""
+        if exclude_mask is not None:
+            valid_mask = mask & ~exclude_mask & ~np.isnan(data)
+        else:
+            valid_mask = mask & ~np.isnan(data)
+        valid_data = data[valid_mask]
+        return func(valid_data)
+
+    # 快捷方法
+    @staticmethod
+    def count_pixels(data: np.ndarray, 
+                    regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+                    combine_regions: bool = False,
+                    mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
+                    ) -> Union[int, List[int]]:
+        """计算区域内的像素数量"""
+        return RegionStatistics.calculate_stats(data, regions, len, combine_regions, mask)
+
+    @staticmethod
+    def sum(data: np.ndarray, 
+           regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+           combine_regions: bool = False,
+           mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
+           ) -> Union[float, List[float]]:
+        """计算区域内像素值的和"""
+        return RegionStatistics.calculate_stats(data, regions, np.sum, combine_regions, mask)
+
+    @staticmethod
+    def sum_square(data: np.ndarray, 
+                   regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+                   combine_regions: bool = False,
+                   mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
+                   ) -> Union[float, List[float]]:
+        """计算区域内像素值平方的和"""
+        return RegionStatistics.calculate_stats(data*data, regions, np.sum, combine_regions, mask)
+
+    @staticmethod
+    def mean(data: np.ndarray, 
+            regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+            combine_regions: bool = False,
+            mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
+            ) -> Union[float, List[float]]:
+        """计算区域内像素值的平均值"""
+        return RegionStatistics.calculate_stats(data, regions, np.mean, combine_regions, mask)
+
+    @staticmethod
+    def median(data: np.ndarray, 
+              regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+              combine_regions: bool = False,
+              mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
+              ) -> Union[float, List[float]]:
+        """计算区域内像素值的中位数"""
+        return RegionStatistics.calculate_stats(data, regions, np.median, combine_regions, mask)
+
+    @staticmethod
+    def std(data: np.ndarray, 
+           regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+           combine_regions: bool = False,
+           mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
+           ) -> Union[float, List[float]]:
+        """计算区域内像素值的标准差"""
+        return RegionStatistics.calculate_stats(data, regions, np.std, combine_regions, mask)
+
+    @staticmethod
+    def min(data: np.ndarray, 
+           regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+           combine_regions: bool = False,
+           mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
+           ) -> Union[float, List[float]]:
+        """计算区域内像素值的最小值"""
+        return RegionStatistics.calculate_stats(data, regions, np.min, combine_regions, mask)
+
+    @staticmethod
+    def max(data: np.ndarray, 
+           regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+           combine_regions: bool = False,
+           mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
+           ) -> Union[float, List[float]]:
+        """计算区域内像素值的最大值"""
+        return RegionStatistics.calculate_stats(data, regions, np.max, combine_regions, mask)
