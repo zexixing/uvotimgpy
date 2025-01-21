@@ -7,7 +7,7 @@ from astropy.coordinates import SkyCoord
 import matplotlib.pyplot as plt
 from regions import CirclePixelRegion, PixCoord, PixelRegion
 from photutils.aperture import ApertureMask
-from uvotimgpy.utils.image_operation import RadialProfile, DistanceMap, ImageDistanceCalculator
+from uvotimgpy.utils.image_operation import calc_radial_profile, DistanceMap, ImageDistanceCalculator
 from uvotimgpy.query import StarCatalogQuery
 from uvotimgpy.base.region import RegionConverter, RegionCombiner, RegionSelector, save_regions
 from scipy import ndimage
@@ -75,7 +75,7 @@ class StarIdentifier:
         
         # 合并所有选择的区域
         if save_path is not None:
-            save_regions(regions=regions, file_path=save_path)
+            save_regions(regions=regions, file_path=save_path, correct=1)
         
         # 转换为布尔数组
         combined_regions = RegionCombiner.union(regions)
@@ -195,9 +195,9 @@ class PixelFiller:
         # 初始化
         filled_image = image.copy()
 
-        # 使用RadialProfile计算每个环的值
-        profile = RadialProfile(image, center=center, step=step, bad_pixel_mask=mask,
-                                start=start, end=end, method=method)
+        # 使用calc_radial_profile计算每个环的值
+        profile = calc_radial_profile(image, center=center, step=step, bad_pixel_mask=mask,
+                                      start=start, end=end, method=method)
         radii, values = profile.get_radial_profile()
         dist_map = DistanceMap(image, center)
 

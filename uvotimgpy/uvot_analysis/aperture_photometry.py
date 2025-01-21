@@ -14,7 +14,7 @@ class BackgroundEstimator:
     @staticmethod
     def estimate_from_regions(image: np.ndarray,
                               regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
-                              err_image: Optional[np.ndarray] = None
+                              image_err: Optional[np.ndarray] = None
                               ) -> Union[float, Tuple[float, float]]:
         """使用区域统计方法估计背景
 
@@ -32,14 +32,14 @@ class BackgroundEstimator:
         Union[float, Tuple[float, float]]
             如果提供err_image，返回(背景值, 误差)；否则只返回背景值
         """
-        if err_image is None:
+        if image_err is None:
             return RegionStatistics.median(image, regions, combine_regions=True)
         else:
             # 获取区域内的像素和对应误差
             masks = RegionConverter.to_bool_array_general(regions, combine_regions=True, shape=image.shape)
             mask = masks[0]
             valid_data = image[mask & ~np.isnan(image)]
-            valid_errors = err_image[mask & ~np.isnan(image)]
+            valid_errors = image_err[mask & ~np.isnan(image)]
             
             # 使用ErrorPropagation计算中位数及其误差
             value, error = ErrorPropagation.median((valid_data, valid_errors))
@@ -173,3 +173,77 @@ def perform_photometry(image: np.ndarray,
     else:
         net_flux = RegionStatistics.sum(image-background_map, regions, combine_regions=False, mask=mask)
         return net_flux
+
+from sbpy.activity import phase_HalleyMarcus
+import astropy.units as u
+def convert_to_absolute_mag(apparent_mag, r_h, delta, alpha):
+    """
+    转换为绝对星等R(1,1,0)
+    
+    参数:
+    apparent_mag: float, 视星等(AB或Vega)
+    r_h: float, 日距(AU)
+    delta: float, 地距(AU)
+    alpha: float, 相角(度)
+    
+    返回:
+    float: 绝对星等R(1,1,0)
+    """
+    # 计算5log(r_h * delta)
+    distance_term = 5 * np.log10(r_h * delta)
+    
+    # 相角改正
+    # 这里使用线性相角改正作为示例
+    # 实际使用中可能需要更复杂的相角改正函数
+    phase_correction = phase_HalleyMarcus(alpha * u.deg)    # 简化的相角改正
+    
+    # R(1,1,0) = m - 5log(r_h * delta) - φ(α)
+    absolute_mag = apparent_mag - distance_term - phase_correction # TODO: check the phase correction
+    
+    return absolute_mag
+
+def flux_to_st(flux):
+    """Flux转换到ST星等
+    flux: erg/s/cm2/A
+    """
+    return -2.5 * np.log10(flux) - 21.10
+
+def flux_to_ab(flux):
+    """Flux转换到AB星等
+    flux: erg/s/cm2/Hz
+    """
+    return -2.5 * np.log10(flux) - 48.6
+
+def st_to_ab(st_mag, photplam):
+    """ST星等转换到AB星等
+    st_mag: ST星等
+    """
+    return st_mag - 5*np.log10(photplam) + 18.692
+
+from synphot import SourceSpectrum, SpectralElement
+from synphot.models import ConstFlux1D
+from synphot import units
+
+def convert_mags(ab_mag, bandpass='johnson_r'):
+    """
+    转换AB星等到其他系统
+    
+    参数:
+    ab_mag: float, AB星等
+    bandpass: str, 滤光片名称 ('r', 'g', 等)
+    
+    返回:
+    dict: 不同星等系统的结果
+    """
+    # 创建AB系统中的源
+    flux_density = 10 ** (-0.4 * (ab_mag + 48.6))
+    sp = SourceSpectrum(ConstFlux1D, amplitude=flux_density * units.FLAM)
+    
+    # 加载滤光片
+    bp = SpectralElement.from_filter(bandpass)
+    
+    # 计算不同系统的星等
+    ab = -2.5 * np.log10(sp.integrate_filter(bp)) - 48.6
+    vega = sp.to_vega(bp)
+    
+    return {'ab_mag': ab, 'vega_mag': vega}

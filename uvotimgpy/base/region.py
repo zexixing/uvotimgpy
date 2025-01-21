@@ -3,7 +3,7 @@ import numpy as np
 from photutils.aperture import ApertureMask, BoundingBox, Aperture
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
-from regions import PixelRegion, PixCoord, CirclePixelRegion, RectanglePixelRegion
+from regions import PixelRegion, PixCoord, CirclePixelRegion, RectanglePixelRegion, CircleAnnulusPixelRegion
 from functools import reduce
 from operator import or_, and_
 
@@ -24,8 +24,8 @@ class RegionConverter:
         numpy.ndarray
             布尔数组形式的掩膜
         """
-        mask = region.to_mask(mode='center').to_image(image_shape)
-        return mask.astype(bool)
+        mask_inner = region.to_mask(mode='center').to_image(image_shape)
+        return mask_inner.astype(bool)
 
     @staticmethod
     def aperture_to_bool_array(aperture_mask: ApertureMask, 
@@ -282,7 +282,7 @@ class RegionSelector:
         # Display image and cursor
         self.display = self.ax.imshow(self.image, origin='lower', cmap='viridis',
                                     vmin=self.vmin, vmax=self.vmax,
-                                    extent=[0, self.image.shape[1], 0, self.image.shape[0]])
+                                    extent=[-0.5, self.image.shape[1]-0.5, -0.5, self.image.shape[0]-0.5])
         self.colorbar = plt.colorbar(self.display)
         if region_plot is not None:
             if isinstance(region_plot, list):
@@ -483,9 +483,9 @@ class RegionSelector:
         plt.show()
         return self.regions
 
-def save_regions(regions: List[PixelRegion], file_path: str) -> None:
+def save_regions(regions: List[PixelRegion], file_path: str, correct: Optional[float] = 1) -> None:
     """
-    将PixelRegion列表保存为DS9可读取的.reg文件
+    1: 将从图上选择的PixelRegion列表保存为DS9可读取的.reg文件
     """
     with open(file_path, 'w') as f:
         f.write("# Region file format: DS9 version 4.1\n")
@@ -496,19 +496,19 @@ def save_regions(regions: List[PixelRegion], file_path: str) -> None:
         for region in regions:
             if isinstance(region, CirclePixelRegion):
                 # Python (col, row) -> DS9 (x, y)
-                x_ds9 = region.center.x + 1  # col -> x
-                y_ds9 = region.center.y + 1  # row -> y
+                x_ds9 = region.center.x + correct  # col -> x
+                y_ds9 = region.center.y + correct  # row -> y
                 r = region.radius
                 f.write(f"circle({x_ds9},{y_ds9},{r})\n")
             elif isinstance(region, RectanglePixelRegion):
-                x_ds9 = region.center.x + 1  # col -> x
-                y_ds9 = region.center.y + 1  # row -> y
+                x_ds9 = region.center.x + correct  # col -> x
+                y_ds9 = region.center.y + correct  # row -> y
                 w, h = region.width, region.height
                 f.write(f"box({x_ds9},{y_ds9},{w},{h},0)\n")
 
-def load_regions(file_path: str, shape: Tuple[int, int] = None) -> Union[List[PixelRegion], np.ndarray]:
+def load_regions(file_path: str, shape: Tuple[int, int] = None, correct: Optional[float] = -1) -> Union[List[PixelRegion], np.ndarray]:
     """
-    读取DS9的.reg文件，返回PixelRegion列表或布尔数组
+    -1: 读取DS9的.reg文件，返回PixelRegion列表或布尔数组到array处理
     """
     regions = []
     
@@ -526,16 +526,16 @@ def load_regions(file_path: str, shape: Tuple[int, int] = None) -> Union[List[Pi
         if line.startswith('circle'):
             params = line[line.find('(')+1:line.find(')')].split(',')
             # DS9 (x, y) -> Python (col, row)
-            col = float(params[0]) - 1  # x -> col
-            row = float(params[1]) - 1  # y -> row
+            col = float(params[0]) + correct  # x -> col
+            row = float(params[1]) + correct  # y -> row
             r = float(params[2])
             center = PixCoord(col, row)
             regions.append(CirclePixelRegion(center, r))
             
         elif line.startswith('box'):
             params = line[line.find('(')+1:line.find(')')].split(',')
-            col = float(params[0]) - 1  # x -> col
-            row = float(params[1]) - 1  # y -> row
+            col = float(params[0]) + correct  # x -> col
+            row = float(params[1]) + correct  # y -> row
             w = float(params[2])
             h = float(params[3])
             center = PixCoord(col, row)
@@ -564,22 +564,15 @@ def adjust_regions(regions_list, old_coord, new_coord):
         new_regions.append(new_reg)
     return new_regions
 
-def create_circle_region(center, radius):
-    # center in (col, row)
-    center = PixCoord(x=center[0], y=center[1])
-    #radius = para_dict[filt][1]
-    circle_region = CirclePixelRegion(center=center, radius=radius)
-    return circle_region
-
 def get_total_bounds(region_list):
     # 获取每个圆形region的边界框
     bounds = [region.bounding_box for region in region_list]
     
     # 从边界框中提取最小最大值
-    row_mins = [box.ixmin for box in bounds]
-    row_maxs = [box.ixmax for box in bounds]
-    col_mins = [box.iymin for box in bounds]
-    col_maxs = [box.iymax for box in bounds]
+    col_mins = [box.ixmin for box in bounds]
+    col_maxs = [box.ixmax for box in bounds]
+    row_mins = [box.iymin for box in bounds]
+    row_maxs = [box.iymax for box in bounds]
     
     total_row_min = min(row_mins)
     total_row_max = max(row_maxs)
@@ -711,3 +704,16 @@ class RegionStatistics:
            ) -> Union[float, List[float]]:
         """计算区域内像素值的最大值"""
         return RegionStatistics.calculate_stats(data, regions, np.max, combine_regions, mask)
+    
+def create_circle_region(center, radius):
+    center = PixCoord(x=center[0], y=center[1])
+    circle_region = CirclePixelRegion(center=center, radius=radius)
+    return circle_region
+
+def create_crcle_annulus_region(center, inner_radius, outer_radius):
+    # center in (col, row)
+    center = PixCoord(x=center[0], y=center[1])
+    annulus_region = CircleAnnulusPixelRegion(center=center, 
+                                             inner_radius=inner_radius,
+                                             outer_radius=outer_radius)
+    return annulus_region

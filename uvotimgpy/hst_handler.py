@@ -106,6 +106,7 @@ class HstObservationLogger:
             'INSTRUME': {'dtype':str, 'unit': None},
             'REFFRAME': {'dtype':str, 'unit': None},
             'ORIENTAT': {'dtype':float, 'unit': u.degree},
+            'PHOTFLAM': {'dtype':float, 'unit': u.Unit('erg / (Angstrom electron cm2)')},
             'WCS': {'dtype': 'wcs', 'unit': None},
         }
 
@@ -223,10 +224,8 @@ class HstObservationLogger:
     def _add_fitted_center_pixel(self, processed_table):
         center_pixel_path = '/Volumes/ZexiWork/projects/29p/HST/comet_position_hst.csv'
         data = np.genfromtxt(center_pixel_path, delimiter=',', skip_header=1)
-        fitted_col_pixel = data[:,2]
-        fitted_row_pixel = data[:,3]
-        fitted_x_pixel = fitted_col_pixel + 1
-        fitted_y_pixel = fitted_row_pixel + 1
+        fitted_x_pixel = data[:,2]
+        fitted_y_pixel = data[:,3]
         processed_table['fitted_x_pixel'] = fitted_x_pixel
         processed_table['fitted_y_pixel'] = fitted_y_pixel
         return processed_table
@@ -410,6 +409,5 @@ if __name__ == '__main__':
     target_name = '29P'
     logger = HstObservationLogger(target_name, data_root_path, target_alternate='90000395')
     obs_table = logger.process_data(save_format='csv', output_path='/Volumes/ZexiWork/projects/29p/HST/obs_log_29p_hst.csv')
-    print(obs_table)
     #obtain_real_position(obs_table, 1)
     #print(obs_table)

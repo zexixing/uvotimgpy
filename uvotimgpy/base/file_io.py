@@ -105,8 +105,8 @@ def save_stacked_fits(save_path: str, obs_list: list,
     primary_header['FILELIST'] = (', '.join(f'{file_name}' for file_name in file_names), 'List of files used in stacking')
     primary_header['EXPTIME'] = (total_exptime, 'Total exposure time [s]')
     primary_header['BUNIT'] = ('ELECTRONS/S', 'Physical unit of array values')
-    primary_header['XPIXEL'] = (target_pos[0], 'Target X position in Python coordinates')
-    primary_header['YPIXEL'] = (target_pos[1], 'Target Y position in Python coordinates')
+    primary_header['COLPIXEL'] = (target_pos[0], 'Target X position in Python coordinates')
+    primary_header['ROWPIXEL'] = (target_pos[1], 'Target Y position in Python coordinates')
     primary_header['DS9XPIX'] = (target_pos[0] + 1, 'Target X position in DS9 coordinates')
     primary_header['DS9YPIX'] = (target_pos[1] + 1, 'Target Y position in DS9 coordinates')
     primary_header['FILTER'] = (filt, 'Filter used in observations')
@@ -135,4 +135,39 @@ def save_stacked_fits(save_path: str, obs_list: list,
     
     # 保存文件
     #save_path = save_path[:-3]
+    hdul.writeto(save_path, overwrite=True)
+
+def save_cleaned_fits(save_path: str, obs: dict, cleaned_image: np.ndarray, uncleaned_image: np.ndarray,
+                      target_position: Union[Tuple, List], cleaned_error: np.ndarray, script_name: str = None):
+    primary_hdu = fits.PrimaryHDU()
+    primary_header = primary_hdu.header
+
+    for key in obs.keys():
+        primary_header[key] = f'{obs[key]}'
+    
+    target_pos = target_position
+    if script_name is None:
+        script_name = __file__
+    primary_header['BUNIT'] = ('ELECTRONS/S', 'Physical unit of array values')
+    primary_header['COLPIXEL'] = (target_pos[0], 'Target column position in Python coordinates')
+    primary_header['ROWPIXEL'] = (target_pos[1], 'Target row position in Python coordinates')
+    primary_header['DS9XPIX'] = (target_pos[0] + 1, 'Target X position in DS9 coordinates')
+    primary_header['DS9YPIX'] = (target_pos[1] + 1, 'Target Y position in DS9 coordinates')
+    primary_header['CREATED'] = (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
+                                'File creation time (local)')
+    primary_header['HISTORY'] = f'Created by {script_name}'
+    primary_header['HISTORY'] = f'Created by Zexi Xing'
+
+    primary_header['EXT1NAME'] = ('CLEANED_IMAGE', 'Name of extension 1')
+    primary_header['EXT2NAME'] = ('UNCLEANED_IMAGE', 'Name of extension 2')
+    if cleaned_error is not None:
+        primary_header['EXT3NAME'] = ('CLEANED_ERROR', 'Name of extension 3')
+    
+    image_hdu = fits.ImageHDU(data=cleaned_image, name='CLEANED_IMAGE')
+    uncleaned_hdu = fits.ImageHDU(data=uncleaned_image, name='UNCLEANED_IMAGE')
+    hdul = fits.HDUList([primary_hdu, image_hdu, uncleaned_hdu])
+    if cleaned_error is not None:
+        error_hdu = fits.ImageHDU(data=cleaned_error, name='CLEANED_ERROR')
+        hdul.append(error_hdu)   
+
     hdul.writeto(save_path, overwrite=True)
