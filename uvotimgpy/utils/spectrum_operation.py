@@ -4,7 +4,15 @@ from synphot import SpectralElement, Empirical1D
 from sbpy.spectroscopy import SpectralGradient, Reddening
 from sbpy.units import hundred_nm
 
-class ReddeningModel:
+def obtain_reddening(reddening_percent, wave, wave0):
+    gradient = SpectralGradient(reddening_percent * u.percent / hundred_nm, 
+                               wave=wave,
+                               wave0=wave0
+                               )
+    reddening = Reddening(gradient)
+    return reddening
+
+class ReddeningSpectrum:
     @staticmethod
     def create_wave_grid(wave_range=[5000, 6000]*u.AA, num_points=1000):
         """
@@ -51,11 +59,7 @@ class ReddeningModel:
         if wave_grid is None:
             wave_grid = ReddeningModel.create_wave_grid(wave_grid_range)
             
-        gradient = SpectralGradient(reddening_percent * u.percent / hundred_nm, 
-                                   wave=wave,
-                                   wave0=wave0
-                                   )
-        reddening = Reddening(gradient)
+        reddening = obtain_reddening(reddening_percent, wave, wave0)
         red_factors = reddening(wave_grid.to(u.um))
             
         return SpectralElement(Empirical1D, 
