@@ -6,6 +6,12 @@ from uvotimgpy.base.region import RegionStatistics, RegionConverter
 from uvotimgpy.utils.image_operation import calc_radial_profile
 from uvotimgpy.base.math_tools import ErrorPropagation
 from scipy.interpolate import interp1d
+import astropy.units as u
+import synphot.units as su
+from synphot import SourceSpectrum, Observation, SpectralElement
+from synphot.units import convert_flux
+import stsynphot as stsyn
+from synphot.models import ConstFlux1D
 
 
 class BackgroundEstimator:
@@ -42,7 +48,7 @@ class BackgroundEstimator:
             valid_errors = image_err[mask & ~np.isnan(image)]
             
             # 使用ErrorPropagation计算中位数及其误差
-            value, error = ErrorPropagation.median((valid_data, valid_errors))
+            value, error = ErrorPropagation.median((valid_data, valid_errors), axis=None, method='std')
             return value, error
         
     @staticmethod
@@ -81,12 +87,12 @@ class BackgroundEstimator:
         """
         if err_image is None:
             rho, intensity = calc_radial_profile(image, center, step=step, bad_pixel_mask=bad_pixel_mask,
-                                                 start=fit_range[0], end=fit_range[1],)
+                                                 start=fit_range[0], end=fit_range[1], method='median', median_method='std')
             sigma = None
         else:
             rho, intensity, errors = calc_radial_profile(image, center, step=step, bad_pixel_mask=bad_pixel_mask,
                                                          start=fit_range[0], end=fit_range[1],
-                                                         image_error=err_image)
+                                                         image_error=err_image, method='median', median_method='std')
             sigma = errors  # 用于加权拟合
             
         # 定义拟合函数
@@ -220,30 +226,226 @@ def st_to_ab(st_mag, photplam):
     """
     return st_mag - 5*np.log10(photplam) + 18.692
 
-from synphot import SourceSpectrum, SpectralElement
-from synphot.models import ConstFlux1D
-from synphot import units
+class FluxConverter:
+    @staticmethod
+    def convert_flux_units(flux: u.Quantity, wavelength: u.Quantity, to_unit):
+        """
+        在不同的flux单位之间转换
+        
+        Parameters
+        ----------
+        flux : Quantity
+            输入的flux值，必须包含单位
+        wavelength : Quantity
+            波长，必须包含单位
+        to_unit : Unit
+            目标单位 (如 su.FLAM, su.FNU, su.PHOTLAM)
+            PHOTLAM: photon/s/cm2/A
+            PHOTNU: photon/s/cm2/Hz
+            FLAM: erg/s/cm2/A
+            FNU: erg/s/cm2/Hz
+        """
+        return convert_flux(wavelength, flux, to_unit)
 
-def convert_mags(ab_mag, bandpass='johnson_r'):
-    """
-    转换AB星等到其他系统
-    
-    参数:
-    ab_mag: float, AB星等
-    bandpass: str, 滤光片名称 ('r', 'g', 等)
-    
-    返回:
-    dict: 不同星等系统的结果
-    """
-    # 创建AB系统中的源
-    flux_density = 10 ** (-0.4 * (ab_mag + 48.6))
-    sp = SourceSpectrum(ConstFlux1D, amplitude=flux_density * units.FLAM)
-    
-    # 加载滤光片
-    bp = SpectralElement.from_filter(bandpass)
-    
-    # 计算不同系统的星等
-    ab = -2.5 * np.log10(sp.integrate_filter(bp)) - 48.6
-    vega = sp.to_vega(bp)
-    
-    return {'ab_mag': ab, 'vega_mag': vega}
+    @staticmethod
+    def countrate_to_flux(count_rate, photflam, target_unit=su.FLAM, wavelength=None, bandpass=None, source_spectrum=None):
+        """
+        将计数率转换为flux
+        
+        Parameters
+        ----------
+        count_rate : float
+            每秒计数率
+        photflam : float
+            inverse sensitivity (erg/s/cm²/Å per count/s)
+        target_unit : Unit
+            目标flux单位
+        wavelength : Quantity, optional
+            波长，当目标单位不是FLAM时需要提供
+        bandpass : str or SpectralElement, optional
+            滤光片
+        source_spectrum : SourceSpectrum, optional
+            源光谱
+        """
+        if source_spectrum is None:
+            correction = 1
+        else:
+            bandpass = stsyn.band(bandpass)
+            obs = Observation(source_spectrum, bandpass)
+            correction = 1.0 / obs.effstim(flux_unit=u.FLAM)
+        flux_flam = count_rate * photflam * su.FLAM * correction
+        
+        if wavelength is None and bandpass is not None:
+            bandpass = stsyn.band(bandpass)
+            wavelength = bandpass.pivot()
+        if target_unit != su.FLAM:
+            return convert_flux(wavelength, flux_flam, target_unit)
+            
+        return flux_flam
+
+    @staticmethod
+    def flux_to_stmag(flux: u.Quantity, wavelength: u.Quantity):
+        """
+        将flux转换为ST星等
+        
+        Parameters
+        ----------
+        flux : Quantity
+            输入的flux，必须包含单位
+        wavelength : Quantity
+            波长，必须包含单位
+        """
+            
+        return convert_flux(wavelength, flux, u.STmag)
+
+    @staticmethod
+    def flux_to_abmag(flux: u.Quantity, wavelength: u.Quantity):
+        """
+        将flux转换为AB星等
+        
+        Parameters
+        ----------
+        flux : Quantity
+            输入的flux，必须包含单位
+        wavelength : Quantity
+            波长，必须包含单位
+        """
+            
+        return convert_flux(wavelength, flux, u.ABmag)
+
+    @staticmethod
+    def flux_to_vegamag(flux: u.Quantity, wavelength: u.Quantity):
+        """
+        将flux转换为VEGA星等
+        
+        Parameters
+        ----------
+        flux : Quantity
+            输入的flux，必须包含单位
+        wavelength : Quantity
+            波长
+        """
+        vega = SourceSpectrum.from_vega()
+        
+        return convert_flux(wavelength, flux, su.VEGAMAG, vegaspec=vega)
+
+    @staticmethod
+    def stmag_to_abmag(stmag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        ST星等转换为AB星等
+        
+        Parameters
+        ----------
+        stmag : float
+            ST星等
+        wavelength : Quantity
+            波长
+        """
+        if isinstance(stmag, float):
+            stmag = stmag * u.STmag
+        # 先转换为FLAM
+        flux = convert_flux(wavelength, stmag, su.FLAM)
+        # 再转换为AB星等
+        return FluxConverter.flux_to_abmag(flux, wavelength)
+
+    @staticmethod
+    def stmag_to_vegamag(stmag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        ST星等转换为VEGA星等
+        
+        Parameters
+        ----------
+        stmag : float
+            ST星等
+        wavelength : Quantity
+            波长
+        """
+        if isinstance(stmag, float):
+            stmag = stmag * u.STmag
+        # 先转换为FLAM
+        flux = convert_flux(wavelength, stmag, su.FLAM)
+        # 再转换为VEGA星等
+        return FluxConverter.flux_to_vegamag(flux, wavelength)
+
+    @staticmethod
+    def abmag_to_stmag(abmag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        AB星等转换为ST星等
+        
+        Parameters
+        ----------
+        abmag : float
+            AB星等
+        wavelength : Quantity
+            波长
+        """
+        if isinstance(abmag, float):
+            abmag = abmag * u.ABmag
+        # 先转换为FLAM
+        flux = convert_flux(wavelength, abmag, su.FLAM)
+        # 再转换为ST星等
+        return FluxConverter.flux_to_stmag(flux, wavelength)
+
+    @staticmethod
+    def abmag_to_vegamag(abmag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        AB星等转换为VEGA星等
+        
+        Parameters
+        ----------
+        abmag : float
+            AB星等
+        wavelength : Quantity
+        """
+        if isinstance(abmag, float):
+            abmag = abmag * u.ABmag
+        
+        # 先转换为FLAM
+        flux = convert_flux(wavelength, abmag, su.FLAM)
+        # 再转换为VEGA星等
+        return FluxConverter.flux_to_vegamag(flux, wavelength)
+
+    @staticmethod
+    def vegamag_to_stmag(vegamag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        VEGA星等转换为ST星等
+        
+        Parameters
+        ----------
+        vegamag : float
+            VEGA星等
+        wavelength : Quantity
+            波长
+        """
+        if isinstance(vegamag, float):
+            vegamag = vegamag * u.VEGAMAG
+        
+        vega = SourceSpectrum.from_vega()
+        
+        # 先转换为FLAM
+        flux = convert_flux(wavelength, vegamag, su.FLAM, vegaspec=vega)
+        # 再转换为ST星等
+        return FluxConverter.flux_to_stmag(flux, wavelength)
+
+    @staticmethod
+    def vegamag_to_abmag(vegamag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        VEGA星等转换为AB星等
+        
+        Parameters
+        ----------
+        vegamag : float
+            VEGA星等
+        wavelength : Quantity
+            波长
+        """
+        if isinstance(vegamag, float):
+            vegamag = vegamag * u.VEGAMAG
+        
+        vega = SourceSpectrum.from_vega()
+        
+        # 先转换为FLAM
+        flux = convert_flux(wavelength, vegamag, su.FLAM, vegaspec=vega)
+        # 再转换为AB星等
+        return FluxConverter.flux_to_abmag(flux, wavelength)
+

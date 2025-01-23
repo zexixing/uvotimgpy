@@ -265,7 +265,9 @@ def align_images(images: List[np.ndarray],
 
 def stack_images(images: List[np.ndarray], 
                 method: str = 'median',
-                err_data: Optional[List[np.ndarray]] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+                err_data: Optional[List[np.ndarray]] = None,
+                axis: int = 0,
+                median_method: str = 'mean') -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     叠加图像
     
@@ -284,13 +286,12 @@ def stack_images(images: List[np.ndarray],
         elif method == 'mean':
             return np.nanmean(images, axis=0)
     else:
+        values_with_errors = [(image, err) for image, err in zip(images, err_data)]
         if method == 'mean':
-            n_images = len(images)
-            values_with_errors = [(image/n_images, err/n_images) for image, err in zip(images, err_data)]
-            mean_image, mean_error = ErrorPropagation.add(*values_with_errors)
+            mean_image, mean_error = ErrorPropagation.mean(*values_with_errors, axis=0)
             return mean_image, mean_error
         elif method == 'median':
-            median_image, median_error = ErrorPropagation.median(images, err_data)
+            median_image, median_error = ErrorPropagation.median(*values_with_errors, axis=0, method=median_method)
             return median_image, median_error
 
 def sum_exposure_map(images: List[np.ndarray], 
@@ -472,7 +473,8 @@ def calc_radial_profile(image: np.ndarray,
                        bad_pixel_mask: Optional[np.ndarray] = None,
                        start: Optional[float] = None,
                        end: Optional[float] = None,
-                       method: str = 'median') -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+                       method: str = 'median',
+                       median_method: str = 'mean') -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """计算径向profile及其误差
 
     Parameters
@@ -553,7 +555,7 @@ def calc_radial_profile(image: np.ndarray,
 
         if method == 'median':
             if image_error is not None:
-                value, error = ErrorPropagation.median((valid_pixels, valid_errors))
+                value, error = ErrorPropagation.median((valid_pixels, valid_errors), axis=None, method=median_method)
                 if value is not None:
                     radii.append(r+step/2)
                     values.append(value)

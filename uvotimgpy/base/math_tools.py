@@ -6,6 +6,7 @@ from numbers import Number
 from uncertainties import ufloat
 from astropy import constants as const
 from astropy import units as u
+import warnings
 
 class GaussianFitter2D:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
     def __init__(self):
@@ -244,115 +245,74 @@ class GaussianFitter2D:
 
 # utils/median_error.py
 
-def calculate_median_error(data: Union[np.ndarray, List[np.ndarray]], 
-                         errors: Optional[Union[np.ndarray, List[np.ndarray]]] = None,
-                         bootstrap_threshold: int = 30,
-                         n_bootstrap: int = 1000
-                         ) -> Tuple[np.ndarray, np.ndarray]:
-    """Calculate median and its error"""
+def obtain_n_samples(data: List[np.ndarray], 
+                     axis: int = 0) -> Union[np.ndarray, float]:
+    """获取有效样本数"""
+    valid_mask_list = [~np.isnan(d) for d in data]
+    return np.sum(valid_mask_list, axis=axis)
+
+def calculate_median_error(data: Union[np.ndarray, List[np.ndarray], List[float]], 
+                           errors: Optional[Union[np.ndarray, List[np.ndarray], List[float]]] = None,
+                           axis: int = 0, method: str = 'mean') -> Tuple[Union[np.ndarray, float], Union[np.ndarray, float]]:
+    """Calculate median and its error along specified axis
     
-    def single_array_median_error(data, errors=None):
-        """处理单个数组的中位数和误差"""
-        valid_mask = ~np.isnan(data)
-        valid_data = data[valid_mask]
+    Parameters
+    ----------
+    data : array-like
+        Input data as ndarray, list of ndarrays, or list of floats
+    errors : array-like, optional
+        Input errors matching data type and shape
+    axis : int, default=0
+        Axis along which to compute median
+    method : str, default='mean'
+        Method to compute median error, 'mean' or 'std'
         
-        if len(valid_data) == 0:
-            return np.nan, np.nan
-            
-        median_val = np.nanmedian(valid_data)
-        n_samples = len(valid_data)
+    Returns
+    -------
+    median_val : ndarray or float
+        Computed median values
+    median_err : ndarray or float
+        Computed median errors
+    """
+    # Convert list of floats to array if needed
+    if isinstance(data, list) and all(isinstance(x, (int, float)) for x in data):
+        data = np.array(data)
+    if isinstance(errors, list) and all(isinstance(x, (int, float)) for x in errors):
+        errors = np.array(errors)
         
-        #if n_samples < bootstrap_threshold:
+    # Validate input types and shapes
+    if type(data) != type(errors):
+        raise ValueError("Data and errors must have the same type")
+    if isinstance(data, np.ndarray) and data.shape != errors.shape:
+        raise ValueError("Data and error arrays must have the same shape")
+        
+    # Wrap single arrays in list
+    if isinstance(data, np.ndarray):
+        data = [data]
+        errors = [errors]
+    # Calculate median
+    median_val = np.nanmedian(data, axis=axis)
+    
+    # Calculate error using existing method
+    valid_mask_list = [~np.isnan(d) for d in data]
+    n_samples = np.sum(valid_mask_list, axis=axis)
+    if method == 'mean':
         if errors is not None:
-            valid_errors = errors[valid_mask]
-            median_err = 1.253 * np.sqrt(np.sum(valid_errors**2)) / n_samples
+            valid_errors_square_list = [(err * mask)**2 for err, mask in zip(errors, valid_mask_list)]
+            median_err = 1.253 * np.sqrt(np.nansum(valid_errors_square_list, axis=axis)) / n_samples
         else:
-            std = np.std(valid_data, ddof=1)
-            median_err = 1.253 * std / np.sqrt(n_samples)
-        #else:
-        #    # 改进的Bootstrap方法
-        #    medians = np.zeros(n_bootstrap)
-        #    for i in range(n_bootstrap):
-        #        # 生成bootstrap样本
-        #        indices = np.random.randint(0, n_samples, n_samples)
-        #        sample = valid_data[indices]
-        #        
-        #        # 如果有测量误差，添加误差的随机扰动
-        #        if errors is not None:
-        #            sample_errors = errors[valid_mask][indices]
-        #            sample = sample + np.random.normal(0, sample_errors)
-        #        
-        #        medians[i] = np.median(sample)
-            
-        #   median_err = np.std(medians)
-            
-        return median_val, median_err
-    
-    # 处理单个数组的情况
-    if not isinstance(data, list):
-        return single_array_median_error(data, errors)
-    
-    # 处理多个数组的情况
+            raise ValueError("Warning: errors is None using mean method; try std method instead")
+    elif method == 'std':
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            std_value = np.nanstd(data, axis=axis, ddof=1)
+            if any("Degrees of freedom <= 0 for slice" in str(warning.message) for warning in w):
+                std_value = np.nan_to_num(std_value, nan=0) 
+        median_err = 1.253 * std_value / np.sqrt(n_samples)
     else:
-        original_shape = data[0].shape
-        data_array = np.array([arr.flatten() for arr in data]).T
-        n_samples = len(data)
-        
-        # 计算中位数
-        median_val = np.nanmedian(data_array, axis=1)
-        
-        # 计算误差
-        #if n_samples < bootstrap_threshold:
-        if errors is not None:
-            err_array = np.array([err.flatten() for err in errors]).T
-            median_err = np.zeros_like(median_val)
-            for i in range(len(median_val)):
-                valid_mask = ~np.isnan(data_array[i])
-                if np.sum(valid_mask) > 0:
-                    valid_errors = err_array[i][valid_mask]
-                    # 移除除以2
-                    median_err[i] = 1.253 * np.sqrt(np.sum(valid_errors**2)) / np.sum(valid_mask)
-                else:
-                    median_err[i] = np.nan
-        else:
-            median_err = np.zeros_like(median_val)
-            for i in range(len(median_val)):
-                valid_data = data_array[i][~np.isnan(data_array[i])]
-                if len(valid_data) > 0:
-                    std = np.std(valid_data, ddof=1)
-                    median_err[i] = 1.253 * std / np.sqrt(len(valid_data))
-                else:
-                    median_err[i] = np.nan
-        #else:
-        #    # 改进的bootstrap方法
-        #    median_err = np.zeros_like(median_val)
-        #    for i in range(len(median_val)):
-        #        valid_data = data_array[i][~np.isnan(data_array[i])]
-        #        if len(valid_data) == 0:
-        #            median_err[i] = np.nan
-        #            continue
-        #            
-        #        medians = np.zeros(n_bootstrap)
-        #        for j in range(n_bootstrap):
-        #            indices = np.random.randint(0, len(valid_data), len(valid_data))
-        #            sample = valid_data[indices]
-        #            
-        #            # 如果有测量误差，添加误差的随机扰动
-        #            if errors is not None:
-        #                err_array = np.array([err.flatten() for err in errors]).T
-        #                sample_errors = err_array[i][~np.isnan(data_array[i])][indices]
-        #                sample = sample + np.random.normal(0, sample_errors)
-        #                
-        #            medians[j] = np.median(sample)
-        #        
-        #        median_err[i] = np.std(medians)
-        
-        # 恢复原始形状
-        if len(original_shape) > 1:
-            median_val = median_val.reshape(original_shape)
-            median_err = median_err.reshape(original_shape)
-            
-        return median_val, median_err
+        raise ValueError("Invalid method: must be 'mean' or 'std'")
+
+    return median_val, median_err
 
 class ErrorPropagation:
     """误差传播计算类"""
@@ -473,17 +433,13 @@ class ErrorPropagation:
         return ErrorPropagation.propagate(divide_func, *args, derivatives=divide_derivatives)
 
     @staticmethod
-    def median(*args, bootstrap_threshold=30, n_bootstrap=500):
+    def median(*args, axis=0, method='mean'):
         """中位数误差计算
         
         Parameters
         ----------
         *args : tuple
             每个参数是一个 (value, error) 元组，支持数组
-        bootstrap_threshold : int, optional
-            切换方法的样本量阈值，默认30
-        n_bootstrap : int, optional
-            bootstrap重采样次数，默认500
             
         Returns
         -------
@@ -491,18 +447,26 @@ class ErrorPropagation:
             (median_value, median_error)
         """
         if len(args) == 1 and isinstance(args[0], tuple) and len(args[0]) == 2:
-            # 单个数组的情况
-            return calculate_median_error(args[0][0], args[0][1],
-                                        bootstrap_threshold=bootstrap_threshold,
-                                        n_bootstrap=n_bootstrap)
+            values = args[0][0]
+            errors = args[0][1]
         else:
             values = [arg[0] for arg in args]
             errors = [arg[1] for arg in args]
+        return calculate_median_error(data=values, errors=errors, axis=axis, method=method)
+    
+    def mean(*args, axis=0):
+        if len(args) == 1 and isinstance(args[0], tuple) and len(args[0]) == 2:
+            values = args[0][0]
+            errors = args[0][1]
+        else:
+            values = [arg[0] for arg in args]
+            errors = [arg[1] for arg in args]
+        _, median_error = calculate_median_error(data=values, errors=errors, axis=axis, method='mean')
+        mean_image = np.nanmean(values, axis=axis)
+        mean_error = median_error/1.253
+        return mean_image, mean_error
+    
 
-            return calculate_median_error(values, errors, 
-                                        bootstrap_threshold=bootstrap_threshold,
-                                        n_bootstrap=n_bootstrap)
-        
 class UnitConverter:
     """天文单位转换工具类"""
         
