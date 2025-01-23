@@ -3,6 +3,7 @@ import numpy as np
 from synphot import SpectralElement, Empirical1D
 from sbpy.spectroscopy import SpectralGradient, Reddening
 from sbpy.units import hundred_nm
+import stsynphot as stsyn
 
 def obtain_reddening(reddening_percent, wave, wave0):
     gradient = SpectralGradient(reddening_percent * u.percent / hundred_nm, 
@@ -57,7 +58,7 @@ class ReddeningSpectrum:
             红化传输函数
         """
         if wave_grid is None:
-            wave_grid = ReddeningModel.create_wave_grid(wave_grid_range)
+            wave_grid = ReddeningSpectrum.create_wave_grid(wave_grid_range)
             
         reddening = obtain_reddening(reddening_percent, wave, wave0)
         red_factors = reddening(wave_grid.to(u.um))
@@ -65,26 +66,6 @@ class ReddeningSpectrum:
         return SpectralElement(Empirical1D, 
                              points=wave_grid, 
                              lookup_table=red_factors)
-    
-    @staticmethod
-    def custom_reddening(wave_points, red_factors):
-        """
-        自定义红化曲线
-        
-        Parameters
-        ----------
-        wave_points : Quantity
-            波长点列表
-        red_factors : array-like
-            对应的红化因子
-            
-        Returns
-        -------
-        SpectralElement
-            红化传输函数
-        """
-        # placeholder
-        pass
 
     @staticmethod
     def piecewise_reddening(reddening_percents, breakpoints=None, wave0=None, wave_grid_range=[5000, 6000]*u.AA, wave_grid=None):
@@ -111,10 +92,10 @@ class ReddeningSpectrum:
             红化传输函数
         """
         if wave_grid is None:
-            wave_grid = ReddeningModel.create_wave_grid(wave_grid_range)
-            wave_unit = wave_grid.unit # TODO: 需要检查
+            wave_grid = ReddeningSpectrum.create_wave_grid(wave_grid_range)
+            wave_unit = wave_grid.unit
         else:
-            wave_unit = wave_grid_range.unit # TODO: 需要检查
+            wave_unit = wave_grid_range.unit
 
         if breakpoints is None:
             raise ValueError("breakpoints parameter must be provided for piecewise reddening")
@@ -133,7 +114,7 @@ class ReddeningSpectrum:
         mask = (wave_grid < breakpoints[0])
         if np.any(mask):
             # 使用第一段的红化率延伸
-            first_segment = ReddeningModel.linear_reddening(
+            first_segment = ReddeningSpectrum.linear_reddening(
                 reddening_percents[0],
                 wave=[wave_grid[mask][0].value, breakpoints[0].value]*wave_unit,
                 wave0=wave0,
@@ -148,7 +129,7 @@ class ReddeningSpectrum:
         for i in range(len(breakpoints)-1):
             mask = ((wave_grid >= breakpoints[i]) & (wave_grid < breakpoints[i+1]))
             if np.any(mask):
-                segment = ReddeningModel.linear_reddening(
+                segment = ReddeningSpectrum.linear_reddening(
                     reddening_percents[i],
                     wave=[breakpoints[i].value, breakpoints[i+1].value]*wave_unit,
                     wave0=current_wave0,
@@ -163,7 +144,7 @@ class ReddeningSpectrum:
         # 处理大于最后一个分段点的部分
         mask = (wave_grid >= breakpoints[-1])
         if np.any(mask):
-            last_segment = ReddeningModel.linear_reddening(
+            last_segment = ReddeningSpectrum.linear_reddening(
                 reddening_percents[-1],
                 wave=[breakpoints[-1].value, wave_grid[mask][-1].value]*wave_unit,
                 wave0=current_wave0,
@@ -174,4 +155,21 @@ class ReddeningSpectrum:
         return SpectralElement(Empirical1D, 
                              points=wave_grid, 
                              lookup_table=red_factors)
+    
+    @staticmethod
+    def custom_reddening():
+        """
+        自定义红化曲线
+        """
+        # placeholder
+        pass
 
+class SolarSpectrum:
+    @staticmethod
+    def from_model(model_name='k93models'):
+        solar_spectrum = stsyn.grid_to_spec(model_name, 5777, 0, 4.44)
+        return solar_spectrum
+    
+    @staticmethod
+    def from_file(file_path):
+        pass
