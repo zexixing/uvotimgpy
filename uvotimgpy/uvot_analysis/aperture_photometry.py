@@ -14,7 +14,7 @@ from sbpy.data import Ephem
 from uvotimgpy.base.region import RegionStatistics, RegionConverter
 from uvotimgpy.utils.image_operation import calc_radial_profile
 from uvotimgpy.base.math_tools import ErrorPropagation
-from uvotimgpy.utils.spectrum_operation import calculate_flux, calculate_count_rate
+from uvotimgpy.utils.spectrum_operation import format_bandpass, SolarSpectrum, calculate_flux, TypicalWaveFluxd
 
 
 class BackgroundEstimator:
@@ -210,279 +210,93 @@ def convert_to_absolute_mag(apparent_mag, r_h, delta, alpha=0, n=2):
     
     return absolute_mag
 
-class FluxdConverter:
-    @staticmethod
-    def convert_fluxd_units(flux: u.Quantity, wavelength: u.Quantity, to_unit):
-        """
-        在不同的flux单位之间转换
-        
-        Parameters
-        ----------
-        flux : Quantity
-            输入的flux值，必须包含单位
-        wavelength : Quantity
-            波长，必须包含单位
-        to_unit : Unit
-            目标单位 (如 su.FLAM, su.FNU, su.PHOTLAM)
-            PHOTLAM: photon/s/cm2/A
-            PHOTNU: photon/s/cm2/Hz
-            FLAM: erg/s/cm2/A
-            FNU: erg/s/cm2/Hz
-        """
-        return convert_flux(wavelength, flux, to_unit)
 
+class AfrhoCalculator:
     @staticmethod
-    def countrate_to_fluxd(count_rate, photflam, target_unit=su.FLAM, wavelength=None, bandpass=None, source_spectrum=None):
-        """
-        将计数率转换为fluxd (erg/s/cm²/Å)
-        
-        Parameters
-        ----------
-        count_rate : float
-            每秒计数率
-        photflam : float
-            inverse sensitivity (erg/s/cm²/Å per count/s)
-        target_unit : Unit
-            目标flux单位
-        wavelength : Quantity, optional
-            波长，当目标单位不是FLAM时需要提供
-        bandpass : str or SpectralElement, optional
-            滤光片
-        source_spectrum : SourceSpectrum, optional
-            源光谱
-        """
-        if source_spectrum is None:
-            correction = 1
-        else:
-            if isinstance(bandpass, str):
-                bandpass = stsyn.band(bandpass)
-            pivot_wave = bandpass.pivot()
-            fluxd_at_pivot_in_theory = source_spectrum(pivot_wave)
-            count_rate_in_theory = calculate_count_rate(source_spectrum, bandpass)
-            photflam = fluxd_at_pivot_in_theory / count_rate_in_theory # TODO: to be verified
-        fluxd = count_rate * photflam * su.FLAM * correction
-        
-        if target_unit != su.FLAM:
-            if wavelength is None and bandpass is not None:
-                bandpass = stsyn.band(bandpass)
-                wavelength = bandpass.pivot()
-            return convert_flux(wavelength, fluxd, target_unit)
-            
-        return fluxd
-
-    @staticmethod
-    def fluxd1_to_fluxd2(fluxd1: u.Quantity, wavelength1: u.Quantity, wavelength2: u.Quantity, source_spectrum: SourceSpectrum):
-        """
-        将wavelength1处的fluxd转换为wavelength2处的fluxd
-        """
-        fluxd1_in_theory = source_spectrum(wavelength1)
-        fluxd2_in_theory = source_spectrum(wavelength2)
-        factor = fluxd2_in_theory / fluxd1_in_theory
-        return fluxd1 * factor
+    def basic_function(fluxd, sun_fluxd, rh, delta, aper):
+        # delta in cm, rh in au, aper in cm
+        # fluxd and sun_fluxd have the same unit
+        rh = rh.to(u.au).value
+        delta = delta.to(u.cm).value
+        aper = aper.to(u.cm).value
+        return (4 * delta**2 * rh**2 / aper) * (fluxd / sun_fluxd) * u.cm
     
     @staticmethod
-    def fluxd_to_stmag(fluxd: u.Quantity, wavelength: u.Quantity):
+    def from_fluxd_at_pivot(pivot_fluxd: u.Quantity, bandpass: Union[str, SpectralElement],
+                                sun: SolarSpectrum,
+                                rh: u.Quantity, delta: u.Quantity, aper: u.Quantity,
+                                from_phase: u.Quantity = None, to_phase: u.Quantity = 0 * u.deg):
         """
-        将fluxd转换为ST星等
-        
-        Parameters
-        ----------
-        fluxd : Quantity
-            输入的flux，必须包含单位
-        wavelength : Quantity
-            波长，必须包含单位
+        fluxd转换为Afrho
         """
-            
-        return convert_flux(wavelength, fluxd, u.STmag)
+        bandpass = format_bandpass(bandpass)
+        pivot_wave = bandpass.pivot()
+        sun_fluxd = sun(pivot_wave, flux_unit=su.FLAM)
+        pivot_fluxd = convert_flux(pivot_wave, pivot_fluxd, out_flux_unit=su.FLAM)
 
+        afrho = AfrhoCalculator.basic_function(pivot_fluxd, sun_fluxd, rh, delta, aper)
+        afrho = Afrho(afrho)
+        if from_phase is not None:
+            afrho = afrho.to_phase(to_phase, from_phase)
+        return afrho
+    
     @staticmethod
-    def fluxd_to_abmag(fluxd: u.Quantity, wavelength: u.Quantity):
-        """
-        将fluxd转换为AB星等
-        
-        Parameters
-        ----------
-        fluxd : Quantity
-            输入的flux，必须包含单位
-        wavelength : Quantity
-            波长，必须包含单位
-        """
-            
-        return convert_flux(wavelength, fluxd, u.ABmag)
-
-    @staticmethod
-    def fluxd_to_vegamag(fluxd: u.Quantity, wavelength: u.Quantity):
-        """
-        将fluxd转换为VEGA星等
-        
-        Parameters
-        ----------
-        fluxd : Quantity
-            输入的fluxd，必须包含单位
-        wavelength : Quantity
-            波长
-        """
-        vega = SourceSpectrum.from_vega()
-        
-        return convert_flux(wavelength, fluxd, su.VEGAMAG, vegaspec=vega)
-
-    @staticmethod
-    def stmag_to_abmag(stmag: Union[float, u.Quantity], wavelength: u.Quantity):
-        """
-        ST星等转换为AB星等
-        
-        Parameters
-        ----------
-        stmag : float
-            ST星等
-        wavelength : Quantity
-            波长
-        """
-        if isinstance(stmag, float):
-            stmag = stmag * u.STmag
-        # 先转换为FLAM
-        fluxd = convert_flux(wavelength, stmag, su.FLAM)
-        # 再转换为AB星等
-        return FluxdConverter.fluxd_to_abmag(fluxd, wavelength)
-
-    @staticmethod
-    def stmag_to_vegamag(stmag: Union[float, u.Quantity], wavelength: u.Quantity):
-        """
-        ST星等转换为VEGA星等
-        
-        Parameters
-        ----------
-        stmag : float
-            ST星等
-        wavelength : Quantity
-            波长
-        """
-        if isinstance(stmag, float):
-            stmag = stmag * u.STmag
-        # 先转换为FLAM
-        fluxd = convert_flux(wavelength, stmag, su.FLAM)
-        # 再转换为VEGA星等
-        return FluxdConverter.fluxd_to_vegamag(fluxd, wavelength)
-
-    @staticmethod
-    def abmag_to_stmag(abmag: Union[float, u.Quantity], wavelength: u.Quantity):
-        """
-        AB星等转换为ST星等
-        
-        Parameters
-        ----------
-        abmag : float
-            AB星等
-        wavelength : Quantity
-            波长
-        """
-        if isinstance(abmag, float):
-            abmag = abmag * u.ABmag
-        # 先转换为FLAM
-        fluxd = convert_flux(wavelength, abmag, su.FLAM)
-        # 再转换为ST星等
-        return FluxdConverter.fluxd_to_stmag(fluxd, wavelength)
-
-    @staticmethod
-    def abmag_to_vegamag(abmag: Union[float, u.Quantity], wavelength: u.Quantity):
-        """
-        AB星等转换为VEGA星等
-        
-        Parameters
-        ----------
-        abmag : float
-            AB星等
-        wavelength : Quantity
-        """
-        if isinstance(abmag, float):
-            abmag = abmag * u.ABmag
-        
-        # 先转换为FLAM
-        fluxd = convert_flux(wavelength, abmag, su.FLAM)
-        # 再转换为VEGA星等
-        return FluxdConverter.fluxd_to_vegamag(fluxd, wavelength)
-
-    @staticmethod
-    def vegamag_to_stmag(vegamag: Union[float, u.Quantity], wavelength: u.Quantity):
-        """
-        VEGA星等转换为ST星等
-        
-        Parameters
-        ----------
-        vegamag : float
-            VEGA星等
-        wavelength : Quantity
-            波长
-        """
-        if isinstance(vegamag, float):
-            vegamag = vegamag * u.VEGAMAG
-        
-        vega = SourceSpectrum.from_vega()
-        
-        # 先转换为FLAM
-        fluxd = convert_flux(wavelength, vegamag, su.FLAM, vegaspec=vega)
-        # 再转换为ST星等
-        return FluxdConverter.fluxd_to_stmag(fluxd, wavelength)
-
-    @staticmethod
-    def vegamag_to_abmag(vegamag: Union[float, u.Quantity], wavelength: u.Quantity):
-        """
-        VEGA星等转换为AB星等
-        
-        Parameters
-        ----------
-        vegamag : float
-            VEGA星等
-        wavelength : Quantity
-            波长
-        """
-        if isinstance(vegamag, float):
-            vegamag = vegamag * u.VEGAMAG
-        
-        vega = SourceSpectrum.from_vega()
-        
-        # 先转换为FLAM
-        fluxd = convert_flux(wavelength, vegamag, su.FLAM, vegaspec=vega)
-        # 再转换为AB星等
-        return FluxdConverter.fluxd_to_abmag(fluxd, wavelength)
-
-class AfrhoConverter:
-    @staticmethod
-    def fluxd_to_Afrho(fluxd: u.Quantity, aper: u.Quantity, eph: Ephem, 
-                      bandpass: Union[str, SpectralElement] = None, solar_fluxd: dict = None):
+    def from_flux(flux: u.Quantity, bandpass: Union[str, SpectralElement],
+                      sun: SolarSpectrum,
+                      rh: u.Quantity, delta: u.Quantity, aper: u.Quantity,
+                      from_phase: u.Quantity = None, to_phase: u.Quantity = 0 * u.deg):
         """
         flux转换为Afrho
-        flux can be magnitudes (u.ABmag, u.STmag) or flux (u.FLAM, u.FNU ..)
         """
-        if solar_fluxd is None and bandpass is not None:
-            if isinstance(bandpass, str):
-                bandpass = stsyn.band(bandpass)
-            wfb = bandpass
-        elif solar_fluxd is not None:
-            wfb = solar_fluxd
-        else:
-            raise ValueError("Either bandpass or solar_fluxd must be provided")
-        
-        afrho = Afrho.from_fluxd(wfb, fluxd, aper, eph)
+        bandpass = format_bandpass(bandpass)
+        sun_flux = calculate_flux(sun, bandpass)
+
+        afrho = AfrhoCalculator.basic_function(flux, sun_flux, rh, delta, aper)
+        afrho = Afrho(afrho)
+
+        if from_phase is not None:
+            afrho.to_phase(to_phase, from_phase)
         return afrho
 
+class ReddeningCalculator:
     @staticmethod
-    def Afrho_to_fluxd(afrho: Union[Afrho, u.Quantity], aper: u.Quantity, eph: Ephem, 
-                      bandpass: Union[str, SpectralElement] = None, solar_fluxd: dict = None, 
-                      unit: u.Unit = su.FLAM):
-        """
-        Afrho转换为flux
-        """
-        if solar_fluxd is None and bandpass is not None:
-            if isinstance(bandpass, str):
-                bandpass = stsyn.band(bandpass)
-            wfb = bandpass
-        elif solar_fluxd is not None:
-            wfb = solar_fluxd
-        else:
-            raise ValueError("Either bandpass or solar_fluxd must be provided")
-        
-        if isinstance(afrho, u.Quantity):
-            afrho = Afrho(afrho)
-        flux = afrho.to_fluxd(wfb, aper, eph, unit=unit)
-        return flux
+    def basic_function(r1: u.Quantity, r2: u.Quantity, wave1: u.Quantity, wave2: u.Quantity):
+        wave1 = wave1.to(u.AA)
+        wave2 = wave2.to(u.AA)
+        reddening = ((r2 - r1) / (wave2 - wave1)) / ((r2 + r1) / 2) * 1000 * u.AA * 100 * u.percent
+        return reddening
+    
+    @staticmethod
+    def from_spectrum(reflectance_spectrum: SourceSpectrum, wave1: u.Quantity, wave2: u.Quantity):
+        r1 = reflectance_spectrum(wave1, flux_unit=su.FLAM)
+        r2 = reflectance_spectrum(wave2, flux_unit=su.FLAM)
+        reddening = ReddeningCalculator.basic_function(r1, r2, wave1, wave2)
+        return reddening
+
+    @staticmethod
+    def from_filter_flux(source_spectrum: SourceSpectrum, solar_spectrum: SolarSpectrum,
+                         bandpass1: Union[str, SpectralElement], bandpass2: Union[str, SpectralElement]):
+        bandpass1 = format_bandpass(bandpass1)
+        bandpass2 = format_bandpass(bandpass2)
+        r1 = calculate_flux(source_spectrum, bandpass1)/calculate_flux(solar_spectrum, bandpass1)
+        r2 = calculate_flux(source_spectrum, bandpass2)/calculate_flux(solar_spectrum, bandpass2)
+        wave1 = TypicalWaveFluxd.average_wave(bandpass1) # TODO: to be checked
+        wave2 = TypicalWaveFluxd.average_wave(bandpass2) # TODO: to be checked
+        reddening = ReddeningCalculator.basic_function(r1, r2, wave1, wave2)
+        return reddening
+
+    @staticmethod
+    def from_color(source_color: Union[u.Quantity, float], solar_color: Union[u.Quantity, float], wave1: u.Quantity, wave2: u.Quantity):
+        if isinstance(source_color, u.Quantity):
+            source_color = source_color.value
+        if isinstance(solar_color, u.Quantity):
+            solar_color = solar_color.value
+        r1 = np.power(10, -0.4*solar_color)
+        r2 = np.power(10, -0.4*source_color)
+        reddening = ReddeningCalculator.basic_function(r1, r2, wave1, wave2)
+        return reddening
+
+    @staticmethod
+    def from_afrho(afrho1: u.Quantity, afrho2: u.Quantity, wave1: u.Quantity, wave2: u.Quantity):
+        reddening = ReddeningCalculator.basic_function(afrho1, afrho2, wave1, wave2)
+        return reddening

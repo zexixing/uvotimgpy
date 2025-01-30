@@ -8,6 +8,7 @@ import stsynphot as stsyn
 from synphot.units import convert_flux
 from astropy import constants as const
 import synphot.units as su
+from sbpy.calib import Sun
 
 
 def obtain_reddening(reddening_percent, wave, wave0):
@@ -171,24 +172,16 @@ class ReddeningSpectrum:
 
 class SolarSpectrum:
     @staticmethod
-    def from_model(model_name='k93models'):
-        solar_spectrum = stsyn.grid_to_spec(model_name, 5777, 0, 4.44)
-        return solar_spectrum
+    #def from_model(model_name='k93models'):
+    #    solar_spectrum = stsyn.grid_to_spec(model_name, 5777, 0, 4.44)
+    #    return solar_spectrum
+    def from_model():
+        sun = Sun.from_default()
+        return create_spectrum(sun.wave, sun.fluxd.to(su.FLAM))
     
     @staticmethod
     def from_file(file_path):
         pass
-
-def scale_spectrum(spectrum_to_be_scaled, wavelength, flux_target=None, spectrum_target=None):
-    if flux_target is None and spectrum_target is not None:
-        flux_target = spectrum_target(wavelength)
-    flux_to_be_scaled = spectrum_to_be_scaled(wavelength)
-
-    flux_target = convert_flux(wavelength, flux_target, flux_to_be_scaled.unit)
-    
-    scale_factor = flux_target/flux_to_be_scaled
-    scaled_spectrum = spectrum_to_be_scaled*scale_factor
-    return scaled_spectrum
 
 def create_bandpass(wave: u.Quantity, thru: Union[u.Quantity, np.ndarray]) -> SpectralElement:
     '''
@@ -197,7 +190,6 @@ def create_bandpass(wave: u.Quantity, thru: Union[u.Quantity, np.ndarray]) -> Sp
     # 确保thru是无量纲的
     if isinstance(thru, u.Quantity):
         thru = thru.value
-        
     return SpectralElement(Empirical1D, points=wave, lookup_table=thru, fill_value=0)
 
 def create_spectrum(wave: u.Quantity, fluxd: u.Quantity) -> SourceSpectrum:
@@ -320,7 +312,272 @@ class TypicalWaveFluxd:
         bandpass = format_bandpass(bandpass)
 
         # 分子：∫ F_λ(λ)S(λ)dλ
-        numerator = calculate_flux(source_spectrum, bandpass) # TODO: check units
+        numerator = calculate_flux(source_spectrum, bandpass)
         # 分母：∫ S(λ)dλ
         denominator = bandpass.equivwidth() # bandpass.equivwidth() = bandpass.integrate()
         return numerator / denominator
+
+class FluxdConverter:
+    @staticmethod
+    def convert_fluxd_units(flux: u.Quantity, wavelength: u.Quantity, to_unit):
+        """
+        在不同的flux单位之间转换
+        
+        Parameters
+        ----------
+        flux : Quantity
+            输入的flux值，必须包含单位
+        wavelength : Quantity
+            波长，必须包含单位
+        to_unit : Unit
+            目标单位 (如 su.FLAM, su.FNU, su.PHOTLAM)
+            PHOTLAM: photon/s/cm2/A
+            PHOTNU: photon/s/cm2/Hz
+            FLAM: erg/s/cm2/A
+            FNU: erg/s/cm2/Hz
+        """
+        return convert_flux(wavelength, flux, to_unit)
+
+    @staticmethod
+    def countrate_to_fluxd_pivot(count_rate, photflam, target_unit=su.FLAM, wavelength=None, bandpass=None, source_spectrum=None, area=None):
+        """
+        将计数率转换为fluxd (erg/s/cm²/Å)
+        
+        Parameters
+        ----------
+        count_rate : float
+            每秒计数率
+        photflam : float
+            inverse sensitivity (erg/s/cm²/Å per count/s)
+        target_unit : Unit
+            目标flux单位
+        wavelength : Quantity, optional
+            波长，当目标单位不是FLAM时需要提供
+        bandpass : str or SpectralElement, optional
+            滤光片
+        source_spectrum : SourceSpectrum, optional
+            源光谱
+        """
+        if source_spectrum is not None:
+            bandpass = format_bandpass(bandpass)
+            pivot_wave = bandpass.pivot()
+            fluxd_at_pivot_in_theory = source_spectrum(pivot_wave, flux_unit=su.FLAM)
+            count_rate_in_theory = calculate_count_rate(source_spectrum, bandpass, area=area)
+            photflam = fluxd_at_pivot_in_theory / count_rate_in_theory
+            photflam = photflam.value
+        fluxd = count_rate * photflam * su.FLAM
+        
+        if target_unit != su.FLAM:
+            if wavelength is None and bandpass is not None:
+                bandpass = stsyn.band(bandpass)
+                wavelength = bandpass.pivot()
+            return convert_flux(wavelength, fluxd, target_unit)
+            
+        return fluxd
+
+    @staticmethod
+    def fluxd1_to_fluxd2(fluxd1: u.Quantity, wavelength1: u.Quantity, wavelength2: u.Quantity, source_spectrum: SourceSpectrum):
+        """
+        将wavelength1处的fluxd转换为wavelength2处的fluxd
+        """
+        fluxd1_in_theory = source_spectrum(wavelength1, flux_unit=fluxd1.unit)
+        fluxd2_in_theory = source_spectrum(wavelength2, flux_unit=fluxd1.unit)
+        factor = fluxd2_in_theory / fluxd1_in_theory
+        return fluxd1 * factor
+    
+    @staticmethod
+    def flux1_to_flux2_filter(flux1: u.Quantity, bandpass1: u.Quantity, bandpass2: u.Quantity, source_spectrum: SourceSpectrum):
+        """
+        将通过bandpass1得到的flux转换为通过bandpass2得到的flux
+        """
+        flux1_in_theory = calculate_flux(source_spectrum, bandpass1)
+        flux2_in_theory = calculate_flux(source_spectrum, bandpass2)
+        factor = flux2_in_theory / flux1_in_theory
+        return flux1 * factor
+    
+    @staticmethod
+    def fluxd_to_stmag(fluxd: u.Quantity, wavelength: u.Quantity):
+        """
+        将fluxd转换为ST星等
+        
+        Parameters
+        ----------
+        fluxd : Quantity
+            输入的flux，必须包含单位
+        wavelength : Quantity
+            波长，必须包含单位
+        """
+            
+        return convert_flux(wavelength, fluxd, u.STmag)
+
+    @staticmethod
+    def fluxd_to_abmag(fluxd: u.Quantity, wavelength: u.Quantity):
+        """
+        将fluxd转换为AB星等
+        
+        Parameters
+        ----------
+        fluxd : Quantity
+            输入的flux，必须包含单位
+        wavelength : Quantity
+            波长，必须包含单位
+        """
+            
+        return convert_flux(wavelength, fluxd, u.ABmag)
+
+    @staticmethod
+    def fluxd_to_vegamag(fluxd: u.Quantity, wavelength: u.Quantity):
+        """
+        将fluxd转换为VEGA星等
+        
+        Parameters
+        ----------
+        fluxd : Quantity
+            输入的fluxd，必须包含单位
+        wavelength : Quantity
+            波长
+        """
+        vega = SourceSpectrum.from_vega()
+        
+        return convert_flux(wavelength, fluxd, su.VEGAMAG, vegaspec=vega)
+
+    @staticmethod
+    def stmag_to_abmag(stmag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        ST星等转换为AB星等
+        
+        Parameters
+        ----------
+        stmag : float
+            ST星等
+        wavelength : Quantity
+            波长
+        """
+        if isinstance(stmag, float):
+            stmag = stmag * u.STmag
+        # 先转换为FLAM
+        fluxd = convert_flux(wavelength, stmag, su.FLAM)
+        # 再转换为AB星等
+        return FluxdConverter.fluxd_to_abmag(fluxd, wavelength)
+
+    @staticmethod
+    def stmag_to_vegamag(stmag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        ST星等转换为VEGA星等
+        
+        Parameters
+        ----------
+        stmag : float
+            ST星等
+        wavelength : Quantity
+            波长
+        """
+        if isinstance(stmag, float):
+            stmag = stmag * u.STmag
+        # 先转换为FLAM
+        fluxd = convert_flux(wavelength, stmag, su.FLAM)
+        # 再转换为VEGA星等
+        return FluxdConverter.fluxd_to_vegamag(fluxd, wavelength)
+
+    @staticmethod
+    def abmag_to_stmag(abmag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        AB星等转换为ST星等
+        
+        Parameters
+        ----------
+        abmag : float
+            AB星等
+        wavelength : Quantity
+            波长
+        """
+        if isinstance(abmag, float):
+            abmag = abmag * u.ABmag
+        # 先转换为FLAM
+        fluxd = convert_flux(wavelength, abmag, su.FLAM)
+        # 再转换为ST星等
+        return FluxdConverter.fluxd_to_stmag(fluxd, wavelength)
+
+    @staticmethod
+    def abmag_to_vegamag(abmag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        AB星等转换为VEGA星等
+        
+        Parameters
+        ----------
+        abmag : float
+            AB星等
+        wavelength : Quantity
+        """
+        if isinstance(abmag, float):
+            abmag = abmag * u.ABmag
+        
+        # 先转换为FLAM
+        fluxd = convert_flux(wavelength, abmag, su.FLAM)
+        # 再转换为VEGA星等
+        return FluxdConverter.fluxd_to_vegamag(fluxd, wavelength)
+
+    @staticmethod
+    def vegamag_to_stmag(vegamag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        VEGA星等转换为ST星等
+        
+        Parameters
+        ----------
+        vegamag : float
+            VEGA星等
+        wavelength : Quantity
+            波长
+        """
+        if isinstance(vegamag, float):
+            vegamag = vegamag * u.VEGAMAG
+        
+        vega = SourceSpectrum.from_vega()
+        
+        # 先转换为FLAM
+        fluxd = convert_flux(wavelength, vegamag, su.FLAM, vegaspec=vega)
+        # 再转换为ST星等
+        return FluxdConverter.fluxd_to_stmag(fluxd, wavelength)
+
+    @staticmethod
+    def vegamag_to_abmag(vegamag: Union[float, u.Quantity], wavelength: u.Quantity):
+        """
+        VEGA星等转换为AB星等
+        
+        Parameters
+        ----------
+        vegamag : float
+            VEGA星等
+        wavelength : Quantity
+            波长
+        """
+        if isinstance(vegamag, float):
+            vegamag = vegamag * u.VEGAMAG
+        
+        vega = SourceSpectrum.from_vega()
+        
+        # 先转换为FLAM
+        fluxd = convert_flux(wavelength, vegamag, su.FLAM, vegaspec=vega)
+        # 再转换为AB星等
+        return FluxdConverter.fluxd_to_abmag(fluxd, wavelength)
+
+class SpectrumScaler:
+    @staticmethod
+    def by_fluxd(spectrum_to_be_scaled, wavelength, fluxd_target):
+        fluxd_to_be_scaled = spectrum_to_be_scaled(wavelength)
+        
+        fluxd_target = convert_flux(wavelength, fluxd_target, fluxd_to_be_scaled.unit)
+        
+        scale_factor = fluxd_target/fluxd_to_be_scaled
+        scaled_spectrum = spectrum_to_be_scaled*scale_factor
+        return scaled_spectrum
+    
+    @staticmethod
+    def by_flux(spectrum_to_be_scaled, bandpass, flux_target):
+        flux_to_be_scaled = calculate_flux(spectrum_to_be_scaled, bandpass)
+        if isinstance(flux_target, u.Quantity) and flux_target.unit == su.FLAM:
+            scale_factor = flux_target/flux_to_be_scaled
+            scaled_spectrum = spectrum_to_be_scaled*scale_factor
+            return scaled_spectrum
+        else:
+            raise ValueError("flux_target must be a Quantity with unit of FLAM")

@@ -6,6 +6,7 @@ from typing import List, Tuple, Union, Optional
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from regions import CircleAnnulusPixelRegion, CirclePixelRegion, PixCoord
+from scipy.interpolate import interp1d
 from uvotimgpy.base.math_tools import ErrorPropagation
 from uvotimgpy.base.region import mask_image, RegionStatistics
 import warnings
@@ -267,7 +268,7 @@ def stack_images(images: List[np.ndarray],
                 method: str = 'median',
                 err_data: Optional[List[np.ndarray]] = None,
                 axis: int = 0,
-                median_method: str = 'mean') -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+                median_err_method: str = 'mean') -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     叠加图像
     
@@ -291,7 +292,7 @@ def stack_images(images: List[np.ndarray],
             mean_image, mean_error = ErrorPropagation.mean(*values_with_errors, axis=0)
             return mean_image, mean_error
         elif method == 'median':
-            median_image, median_error = ErrorPropagation.median(*values_with_errors, axis=0, method=median_method)
+            median_image, median_error = ErrorPropagation.median(*values_with_errors, axis=0, method=median_err_method)
             return median_image, median_error
 
 def sum_exposure_map(images: List[np.ndarray], 
@@ -474,7 +475,7 @@ def calc_radial_profile(image: np.ndarray,
                        start: Optional[float] = None,
                        end: Optional[float] = None,
                        method: str = 'median',
-                       median_method: str = 'mean') -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+                       median_err_method: str = 'mean') -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """计算径向profile及其误差
 
     Parameters
@@ -555,7 +556,7 @@ def calc_radial_profile(image: np.ndarray,
 
         if method == 'median':
             if image_error is not None:
-                value, error = ErrorPropagation.median((valid_pixels, valid_errors), axis=None, method=median_method)
+                value, error = ErrorPropagation.median((valid_pixels, valid_errors), axis=None, method=median_err_method)
                 if value is not None:
                     radii.append(r+step/2)
                     values.append(value)
@@ -580,3 +581,51 @@ def calc_radial_profile(image: np.ndarray,
         errors = np.array(errors)
         return radii, values, errors
     return radii, values
+
+class ImageEnhancer:
+    @staticmethod
+    def by_azimuthal_median(image: np.ndarray,
+                            center: Tuple[float, float],
+                            step: float = 1.0,
+                            image_error: Optional[np.ndarray] = None,
+                            bad_pixel_mask: Optional[np.ndarray] = None,
+                            start: Optional[float] = None,
+                            end: Optional[float] = None,
+                            method: str = 'median',
+                            median_err_method: str = 'mean') -> np.ndarray:
+        """
+        使用方位角中值剖面增强彗星图像
+        """
+        # 获取径向剖面
+        radial_profile = calc_radial_profile(
+            image=image,
+            center=center,
+            step=step,
+            image_error=image_error,
+            bad_pixel_mask=bad_pixel_mask,
+            start=start,
+            end=end,
+            method=method,
+            median_err_method=median_err_method
+        )
+        
+        if image_error is not None:
+            radii, values, errors = radial_profile
+        else:
+            radii, values = radial_profile
+        
+        # 创建插值函数
+        profile_interp = interp1d(radii, values, 
+                                  bounds_error=False, 
+                                  fill_value=np.nan)
+        
+        # 创建距离图像
+        r = DistanceMap(image, center).get_distance_map()
+
+        # 使用插值函数创建2D模型图像
+        model_image = profile_interp(r)
+        
+        # 计算增强后的图像，对于模型为0的位置设为nan
+        enhanced_image = np.where(model_image <= 0, np.nan, image / model_image)
+        
+        return enhanced_image
