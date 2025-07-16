@@ -13,8 +13,111 @@ import re
 from uvotimgpy.config import paths
 from uvotimgpy.base.math_tools import UnitConverter
 from uvotimgpy.utils.image_operation import DistanceMap
+from uvotimgpy.utils.spectrum_operation import ReddeningSpectrum, SolarSpectrum, calculate_flux, calculate_count_rate
+from uvotimgpy.base.filters import get_effective_area
 
+class RatioCalculator_V_UV:
+    """
+    for swift image subtraction
+    """
+    @staticmethod
+    def reddening_correction(reddening):
+        """
+        To get (1+t)/(1-t), where t = (Lambda_2-Lambda_1)*R/(2*1000A*100%)
 
+        Obtained with steps below:
+            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
+            bp_v = get_effective_area('v', transmission=True, bandpass=True)
+            average_wave_uv = TypicalWaveSfluxd.average_wave(bp_uv).to(u.AA).value
+            average_wave_v = TypicalWaveSfluxd.average_wave(bp_v).to(u.AA).value
+        """
+        average_wave_uv = 2616.72 # 2616.728247883734 A for UVW1
+        average_wave_v = 5429.57 # 5429.569566258718 A for V
+        t = (average_wave_uv - average_wave_v)*reddening/(2*1000*100)
+        return (1+t)/(1-t)
+
+    @staticmethod
+    def dust_countrate_ratio_from_reddening_CR(reddening, gray_dust_spectrum='sun'):
+        """
+        To get CountRate(UV,dust)/CountRate(V,dust) for swift image subtraction.
+        Equals to (1+t)/(1-t) * CountRate(UV,gray dust)/CountRate(V,gray dust)
+        This is suitable for reddening defined from countrates, 
+            or is an approximation for reddening defined from fluxes.
+
+        To get gray_dust_countrate_ratio
+        Obtained with steps below:
+            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
+            bp_v = get_effective_area('v', transmission=True, bandpass=True)
+            sun = SolarSpectrum.from_model()
+            countrate_uv_gray_dust = calculate_count_rate(sun, bp_uv)
+            countrate_v_gray_dust = calculate_count_rate(sun, bp_v)
+            gray_dust_countrate_ratio = countrate_uv_gray_dust/countrate_v_gray_dust
+        """
+        if gray_dust_spectrum == 'sun':
+            # gray_dust_countrate_ratio = countrate_uv_gray_dust/countrate_v_gray_dust
+            gray_dust_countrate_ratio = 0.09020447142191476 # sun = SolarSpectrum.from_model()
+            # gray_dust_countrate_ratio = 0.09276191549759981 # sun = SolarSpectrum.from_colina96()
+        else:
+            raise ValueError(f"Not supported for now: {gray_dust_spectrum}")
+
+        correction_factor = RatioCalculator_V_UV.reddening_correction(reddening)
+        return correction_factor * gray_dust_countrate_ratio
+    
+    @staticmethod
+    def dust_flux_ratio_from_reddening_flux(reddening, gray_dust_spectrum='sun'):
+        """
+        To get Flux(UV,dust)/Flux(V,dust) for swift image subtraction.
+        Equals to (1+t)/(1-t) * Flux(UV,gray dust)/Flux(V,gray dust)
+        This is suitable for reddening defined from fluxes, 
+            or is an approximation for reddening defined from countrates.
+
+        To get gray_dust_countrate_ratio
+        Obtained with steps below:
+            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
+            bp_v = get_effective_area('v', transmission=True, bandpass=True)
+            sun = SolarSpectrum.from_model()
+            flux_uv_gray_dust = calculate_flux(sun, bp_uv)
+            flux_v_gray_dust = calculate_flux(sun, bp_v)
+            gray_dust_flux_ratio = flux_uv_gray_dust/flux_v_gray_dust
+        """
+        if gray_dust_spectrum == 'sun':
+            # gray_dust_flux_ratio = flux_uv_gray_dust/flux_v_gray_dust
+            gray_dust_flux_ratio = 0.15373407817907703 # sun = SolarSpectrum.from_model()
+            # gray_dust_flux_ratio = 0.15838868851932458 # sun = SolarSpectrum.from_colina96()
+        else:
+            raise ValueError(f"Not supported for now: {gray_dust_spectrum}")
+
+        correction_factor = RatioCalculator_V_UV.reddening_correction(reddening)
+        return correction_factor * gray_dust_flux_ratio
+    
+    @staticmethod
+    def dust_countrate_ratio_from_reddening_flux(reddening, bp1=None, bp2=None, gray_dust_spectrum='sun'):
+        """
+        To get CountRate(UV,dust)/CountRate(V,dust) for swift image subtraction.
+        Equals to (1+t)/(1-t) * CountRate(UV,gray dust)/CountRate(V,gray dust)
+        This is suitable for reddening defined from flux.
+
+        bp1 and bp2 are the two filters used to measure the reddening. They needs to be SpectralElement objects.
+        """
+        if gray_dust_spectrum == 'sun':
+            gray_dust_spectrum = SolarSpectrum.from_model()
+            # gray_dust_flux_ratio = flux_uv_gray_dust/flux_v_gray_dust
+            gray_dust_flux_ratio = 0.15373407817907703 # sun = SolarSpectrum.from_model()
+            # gray_dust_flux_ratio = 0.15838868851932458 # sun = SolarSpectrum.from_colina96()
+        else:
+            raise ValueError(f"Not supported for now: {gray_dust_spectrum}")
+        bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
+        bp_v = get_effective_area('v', transmission=True, bandpass=True)
+        if bp1 is None and bp2 is None:
+            bp1 = bp_uv
+            bp2 = bp_v
+        reddening_spectrum = ReddeningSpectrum.linear_reddening(reddening, wave_grid_range=[1000, 9000]*u.AA, num_points=1000, 
+                                                                wave_grid=None, reddening_defination='flux', bp1=bp1, bp2=bp2)
+        reddened_dust_spectrum = gray_dust_spectrum * reddening_spectrum
+        cr2flux_uvw1 = calculate_flux(reddened_dust_spectrum, bp_uv)/calculate_count_rate(reddened_dust_spectrum, bp_uv)
+        cr2flux_v = calculate_flux(reddened_dust_spectrum, bp_v)/calculate_count_rate(reddened_dust_spectrum, bp_v)
+        dust_countrate_ratio = (cr2flux_v/cr2flux_uvw1) * gray_dust_flux_ratio * RatioCalculator_V_UV.reddening_correction(reddening)
+        return dust_countrate_ratio
 
 def flux_to_column_density(flux: Union[float, np.ndarray], 
                         flux_err: Union[float, np.ndarray], 

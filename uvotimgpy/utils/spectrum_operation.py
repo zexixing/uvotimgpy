@@ -2,6 +2,7 @@ from typing import Union, List, Optional, Tuple
 from astropy import units as u
 from astropy.io import fits
 import os
+import warnings
 import numpy as np
 from synphot import SourceSpectrum, SpectralElement, Empirical1D, Observation
 from sbpy.units import hundred_nm
@@ -14,8 +15,12 @@ from synphot.specio import read_fits_spec
 from stsynphot.config import conf
 from uvotimgpy.config import paths
 from uvotimgpy.base.math_tools import ErrorPropagation
-from uvotimgpy.base.filters import get_effective_area
 
+def create_spectrum(wave: u.Quantity, sfluxd: u.Quantity) -> SourceSpectrum:
+    '''
+    Create SourceSpectrum from wavelength and flux arrays
+    '''
+    return SourceSpectrum(Empirical1D, points=wave, lookup_table=sfluxd, fill_value=0)
 
 class SolarSpectrum:
     @staticmethod
@@ -31,6 +36,70 @@ class SolarSpectrum:
         colina96_path = paths.get_subpath(paths.package_uvotimgpy, 'auxil', 'sun_1A.txt')
         colina96 = np.loadtxt(colina96_path)
         return create_spectrum(colina96[:, 0] * u.AA, colina96[:, 1] * su.FLAM)
+    
+def read_calspec(file_name, file_path=None):
+    if file_path is None:
+        conf_path = conf.rootdir
+        calspec_path = os.path.join(conf_path, 'calspec', file_name+'.fits')
+    else:
+        calspec_path = os.path.join(file_path, file_name+'.fits')
+    hdul = fits.open(calspec_path)
+    wave = hdul[1].data['WAVELENGTH']
+    sfluxd = hdul[1].data['FLUX']
+    hdul.close()
+    diff = np.diff(wave)
+    monotonic = np.all(diff > 0) or np.all(diff < 0)
+    if monotonic:
+        sp = create_spectrum(wave, sfluxd)
+        return sp
+    else:
+        sort_idx = np.argsort(wave)
+        wave_sorted = wave[sort_idx]
+        sfluxd_sorted = sfluxd[sort_idx]
+        unique_idx = np.unique(wave_sorted, return_index=True)[1]
+        wave_unique = wave_sorted[unique_idx] * u.AA
+        sfluxd_unique = sfluxd_sorted[unique_idx] * su.FLAM
+        return create_spectrum(wave_unique, sfluxd_unique)
+
+def format_bandpass(bandpass: Union[str, SpectralElement]):
+    if isinstance(bandpass, str):
+        bandpass = stsyn.band(bandpass)
+    return bandpass
+
+def calculate_flux(source_spectrum: SourceSpectrum, bandpass: Union[str, SpectralElement], area: u.Quantity = None, unit=su.FLAM):
+    """
+    计算通过滤光片的总flux (erg/s(/cm2))
+    
+    参数:
+    source_spectrum: 源光谱对象 (SourceSpectrum)
+    bandpass: 通带对象 (SpectralElement)
+    erg/s (power): area is not None; 
+        area is 1~cm2 for bandpass from effective area (bandpass has no area unit)
+    erg/s/cm2 (flux): area is None
+    
+    返回:
+    integrated_flux: 积分后的总flux
+    """
+    bandpass = format_bandpass(bandpass)
+
+    sp_filtered = source_spectrum * bandpass
+    flux = sp_filtered.integrate(flux_unit=unit)
+    if area is not None:
+        flux = flux * area
+    return flux
+
+def calculate_count_rate(source_spectrum: SourceSpectrum, bandpass: Union[str, SpectralElement], area: u.Quantity = None):
+    """
+    计算每秒光子数(count rate)
+    
+    参数:
+    source_spectrum: 源光谱对象 (SourceSpectrum)
+    bandpass: 通带对象 (SpectralElement)
+    
+    返回:
+    count_rate: 每秒光子数
+    """
+    return calculate_flux(source_spectrum, bandpass, area, unit=su.PHOTLAM)
     
 class ReddeningSpectrum:
     @staticmethod
@@ -55,7 +124,8 @@ class ReddeningSpectrum:
         return np.linspace(wave_min.value, wave_max.value, num_points) * wave_min.unit
 
     @staticmethod
-    def linear_reddening(reddening_percent, wave=None, wave0=None, wave_grid_range=[5000, 6000]*u.AA, num_points=1000, wave_grid=None):
+    def linear_reddening(reddening_percent, wave=None, wave0=None, wave_grid_range=[5000, 6000]*u.AA, num_points=1000, wave_grid=None, 
+                         reddening_defination='r', bp1=None, bp2=None, return_a_b=False):
         """
         线性红化模型
         
@@ -70,6 +140,11 @@ class ReddeningSpectrum:
             用于计算的波长网格范围
         wave_grid : Quantity, optional
             直接提供的波长网格
+        reddening_defination : str, optional
+            'r' for reddening defined from two points on the reflectance spectrum that is created from flux density (erg/s/cm2/A),
+            'flux' for reddening defined from flux ratio (erg/s/cm2 or erg/s),
+            'cr' for reddening defined from countrate ratio.
+            default is 'r'.
             
         Returns
         -------
@@ -87,19 +162,46 @@ class ReddeningSpectrum:
         else:
             # r(lambda) = a * (lambda + b)
             # a can be set as arbitrary value, e.g., 1
-            if wave0 is None:
-                wave0 = (wave[0].to(wave_grid_unit) + wave[1].to(wave_grid_unit))/2
-            b = (1000*u.AA).to(wave_grid_unit) * 100*u.percent/(reddening_percent*u.percent) - wave0
             a = 1 / wave_grid_unit
-            red_factors = a * (wave_grid + b)
+            if reddening_defination == 'r':
+                if wave0 is None:
+                    wave0 = (wave[0].to(wave_grid_unit) + wave[1].to(wave_grid_unit))/2
+                b = (1000*u.AA).to(wave_grid_unit) * 100*u.percent/(reddening_percent*u.percent) - wave0
+            else:
+                if bp1 is None or bp2 is None:
+                    raise ValueError("bp1 and bp2 must be provided for flux reddening defination")
+                wave1 = TypicalWaveSfluxd.average_wave(bp1)
+                wave2 = TypicalWaveSfluxd.average_wave(bp2)
+                sun = SolarSpectrum.from_model()
+                if reddening_defination == 'flux':
+                    # wave_weighted_by_solar_flux: int(wave*f_sun*bp*dwave) / int(f_sun*bp*dwave)
+                    wave1_weighted_by_solar_flux = TypicalWaveSfluxd.effective_wave_energy_weighted(sun, bp1)
+                    wave2_weighted_by_solar_flux = TypicalWaveSfluxd.effective_wave_energy_weighted(sun, bp2)
+                    # set alias
+                    t1 = wave1_weighted_by_solar_flux
+                    t2 = wave2_weighted_by_solar_flux
+                    b = ((t2 - t1) / (wave2 - wave1)) * ((100*u.percent) / (reddening_percent*u.percent)) * (1000*u.AA) - (t2+t1)/2
+                elif reddening_defination == 'cr':
+                    # wave_weighted_by_solar_countrate: int(wave*wave*f_sun*bp*dwave) / int(wave*f_sun*bp*dwave)
+                    wave1_weighted_by_solar_countrate = TypicalWaveSfluxd.effective_wave_photon_weighted(sun, bp1)
+                    wave2_weighted_by_solar_countrate = TypicalWaveSfluxd.effective_wave_photon_weighted(sun, bp2)
+                    # set alias
+                    t1 = wave1_weighted_by_solar_countrate
+                    t2 = wave2_weighted_by_solar_countrate
+                    b = ((t2 - t1) / (wave2 - wave1)) * ((100*u.percent) / (reddening_percent*u.percent)) * (1000*u.AA) - (t2+t1)/2
             
-        return SpectralElement(Empirical1D, 
-                              points=wave_grid, 
-                              lookup_table=red_factors,
-                              keep_neg = True)
-    
+            red_factors = a * (wave_grid + b)
+        if return_a_b:
+            return a, b
+        else:
+            return SpectralElement(Empirical1D, 
+                                  points=wave_grid, 
+                                  lookup_table=red_factors,
+                                  keep_neg = True)
+
     @staticmethod
-    def piecewise_reddening(reddening_percents, breakpoints=None, wave_grid_range=[5000, 6000]*u.AA, num_points=1000, wave_grid=None):
+    def piecewise_reddening(reddening_percents, breakpoints=None, wave_grid_range=[5000, 6000]*u.AA, num_points=1000, wave_grid=None,
+                            reddening_defination='r', bp_list=None):
         """
         分段线性红化
 
@@ -144,12 +246,17 @@ class ReddeningSpectrum:
 
 
         # 处理第一个分段
+        if reddening_defination != 'r':
+            warnings.warn("reddening_defination is based on countrate or flux, the breakpoints should be average wavelengths of the filters")
         mask = (wave_grid <= breakpoints[1])
         if np.any(mask):
             segment = ReddeningSpectrum.linear_reddening(
                 reddening_percents[0],
                 wave=[breakpoints[0].value, breakpoints[1].value]*wave_unit,
-                wave_grid=wave_grid[mask]
+                wave_grid=wave_grid[mask],
+                reddening_defination=reddening_defination,
+                bp1=bp_list[0],
+                bp2=bp_list[1]
             )
             start = segment(breakpoints[0]).value
             red_factors[mask] = segment(wave_grid[mask]).value
@@ -162,7 +269,10 @@ class ReddeningSpectrum:
                 segment = ReddeningSpectrum.linear_reddening(
                     reddening_percents[i],
                     wave=[breakpoints[i].value, breakpoints[i+1].value]*wave_unit,
-                    wave_grid=wave_grid[mask]
+                    wave_grid=wave_grid[mask],
+                    reddening_defination=reddening_defination,
+                    bp1=bp_list[i],
+                    bp2=bp_list[i+1]
                 )
                 start = segment(breakpoints[i]).value
                 current_factor = end / start
@@ -177,7 +287,10 @@ class ReddeningSpectrum:
             last_segment = ReddeningSpectrum.linear_reddening(
                 reddening_percents[-1],
                 wave=[breakpoints[-2].value, breakpoints[-1].value]*wave_unit,
-                wave_grid=wave_grid[mask]
+                wave_grid=wave_grid[mask],
+                reddening_defination=reddening_defination,
+                bp1=bp_list[-2],
+                bp2=bp_list[-1]
             )
             start = last_segment(breakpoints[-2]).value
             current_factor = end / start
@@ -196,6 +309,7 @@ class ReddeningSpectrum:
         reddening_percents: array
             红化百分比
         """
+        # TODO: The current codes are wrong, to be updated
         if len(wave_grid.value) != len(reddening_percents):
             raise ValueError("Length of wave_grid must be equal to length of reddening_percents")
         
@@ -386,123 +500,6 @@ class ReddeningCalculator:
             reddening, reddening_err = ReddeningCalculator.basic_function_err(afrho1, afrho2, wave1, wave2,
                                                                               afrho1_err, afrho2_err)
             return reddening, reddening_err
-        
-class CountrateRatioCalculator:
-    """
-    for swift image subtraction
-    """
-    @staticmethod
-    def reddening_correction(reddening):
-        """
-        To get (1-t)/(1+t), where t = (Lambda_2-Lambda_1)*R/(2*1000A*100%)
-
-        Obtained with steps below:
-            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
-            bp_v = get_effective_area('v', transmission=True, bandpass=True)
-            average_wave_uv = TypicalWaveSfluxd.average_wave(bp_uv).to(u.AA).value
-            average_wave_v = TypicalWaveSfluxd.average_wave(bp_v).to(u.AA).value
-        """
-        average_wave_uv = 2616.72 # 2616.728247883734 A
-        average_wave_v = 5429.57 # 5429.569566258718 A
-        t = (average_wave_uv - average_wave_v)*reddening/(2*1000*100)
-        return (1+t)/(1-t)
-    
-    @staticmethod
-    def gray_dust_countrate_ratio():
-        """
-        To get CountRate(UV,gray dust)/CountRate(V,gray dust).
-
-        Obtained with steps below:
-            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
-            bp_v = get_effective_area('v', transmission=True, bandpass=True)
-            sun = SolarSpectrum.from_model()
-            countrate_uv_gray_dust = calculate_count_rate(sun, bp_uv)
-            countrate_v_gray_dust = calculate_count_rate(sun, bp_v)
-            return countrate_uv_gray_dust/countrate_v_gray_dust
-        """
-        return 0.09020447142191476 # sun = SolarSpectrum.from_model()
-        #return 0.09276191549759981 # sun = SolarSpectrum.from_colina96()
-    
-
-    @staticmethod
-    def dust_countrate_ratio(reddening):
-        # to get CountRate(UV,dust)/CountRate(V,dust) for swift image subtraction
-        # Equals to (1-t)/(1+t) * CountRate(UV,gray dust)/CountRate(V,gray dust)
-        correction_factor = CountrateRatioCalculator.reddening_correction(reddening)
-        gray_dust_ratio = CountrateRatioCalculator.gray_dust_countrate_ratio()
-        return correction_factor * gray_dust_ratio
-
-def create_spectrum(wave: u.Quantity, sfluxd: u.Quantity) -> SourceSpectrum:
-    '''
-    Create SourceSpectrum from wavelength and flux arrays
-    '''
-    return SourceSpectrum(Empirical1D, points=wave, lookup_table=sfluxd, fill_value=0)
-
-
-def read_calspec(file_name, file_path=None):
-    if file_path is None:
-        conf_path = conf.rootdir
-        calspec_path = os.path.join(conf_path, 'calspec', file_name+'.fits')
-    else:
-        calspec_path = os.path.join(file_path, file_name+'.fits')
-    hdul = fits.open(calspec_path)
-    wave = hdul[1].data['WAVELENGTH']
-    sfluxd = hdul[1].data['FLUX']
-    hdul.close()
-    diff = np.diff(wave)
-    monotonic = np.all(diff > 0) or np.all(diff < 0)
-    if monotonic:
-        sp = create_spectrum(wave, sfluxd)
-        return sp
-    else:
-        sort_idx = np.argsort(wave)
-        wave_sorted = wave[sort_idx]
-        sfluxd_sorted = sfluxd[sort_idx]
-        unique_idx = np.unique(wave_sorted, return_index=True)[1]
-        wave_unique = wave_sorted[unique_idx] * u.AA
-        sfluxd_unique = sfluxd_sorted[unique_idx] * su.FLAM
-        return create_spectrum(wave_unique, sfluxd_unique)
-
-def format_bandpass(bandpass: Union[str, SpectralElement]):
-    if isinstance(bandpass, str):
-        bandpass = stsyn.band(bandpass)
-    return bandpass
-
-def calculate_flux(source_spectrum: SourceSpectrum, bandpass: Union[str, SpectralElement], area: u.Quantity = None, unit=su.FLAM):
-    """
-    计算通过滤光片的总flux (erg/s(/cm2))
-    
-    参数:
-    source_spectrum: 源光谱对象 (SourceSpectrum)
-    bandpass: 通带对象 (SpectralElement)
-    erg/s (power): area is not None; 
-        area is 1~cm2 for bandpass from effective area (bandpass has no area unit)
-    erg/s/cm2 (flux): area is None
-    
-    返回:
-    integrated_flux: 积分后的总flux
-    """
-    bandpass = format_bandpass(bandpass)
-
-    sp_filtered = source_spectrum * bandpass
-    flux = sp_filtered.integrate(flux_unit=unit)
-    if area is not None:
-        flux = flux * area
-    return flux
-
-def calculate_count_rate(source_spectrum: SourceSpectrum, bandpass: Union[str, SpectralElement], area: u.Quantity = None):
-    """
-    计算每秒光子数(count rate)
-    
-    参数:
-    source_spectrum: 源光谱对象 (SourceSpectrum)
-    bandpass: 通带对象 (SpectralElement)
-    
-    返回:
-    count_rate: 每秒光子数
-    """
-    return calculate_flux(source_spectrum, bandpass, area, unit=su.PHOTLAM)
-
 
 class TypicalWaveSfluxd:
     @staticmethod
