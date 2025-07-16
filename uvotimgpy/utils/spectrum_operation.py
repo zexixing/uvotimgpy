@@ -4,7 +4,7 @@ from astropy.io import fits
 import os
 import warnings
 import numpy as np
-from synphot import SourceSpectrum, SpectralElement, Empirical1D, Observation
+from synphot import SourceSpectrum, SpectralElement, Empirical1D, Observation, BaseUnitlessSpectrum
 from sbpy.units import hundred_nm
 import stsynphot as stsyn
 from synphot.units import convert_flux
@@ -16,11 +16,16 @@ from stsynphot.config import conf
 from uvotimgpy.config import paths
 from uvotimgpy.base.math_tools import ErrorPropagation
 
-def create_spectrum(wave: u.Quantity, sfluxd: u.Quantity) -> SourceSpectrum:
+def create_spectrum(wave: u.Quantity, spec: u.Quantity, ifunit=True, **kwargs) -> Union[SourceSpectrum, BaseUnitlessSpectrum]:
     '''
     Create SourceSpectrum from wavelength and flux arrays
     '''
-    return SourceSpectrum(Empirical1D, points=wave, lookup_table=sfluxd, fill_value=0)
+    if ifunit:
+        fill_value = kwargs.pop('fill_value', 0)
+        return SourceSpectrum(Empirical1D, points=wave, lookup_table=spec, fill_value=fill_value, **kwargs)
+    else:
+        fill_value = kwargs.pop('fill_value', np.nan)
+        return BaseUnitlessSpectrum(Empirical1D, points=wave, lookup_table=spec, fill_value=fill_value, **kwargs)
 
 class SolarSpectrum:
     @staticmethod
@@ -29,13 +34,13 @@ class SolarSpectrum:
     #    return solar_spectrum
     def from_model():
         sun = Sun.from_default()
-        return create_spectrum(sun.wave, sun.fluxd.to(su.FLAM))
+        return create_spectrum(sun.wave, sun.fluxd.to(su.FLAM), True)
     
     @staticmethod
     def from_colina96():
         colina96_path = paths.get_subpath(paths.package_uvotimgpy, 'auxil', 'sun_1A.txt')
         colina96 = np.loadtxt(colina96_path)
-        return create_spectrum(colina96[:, 0] * u.AA, colina96[:, 1] * su.FLAM)
+        return create_spectrum(colina96[:, 0] * u.AA, colina96[:, 1] * su.FLAM, True)
     
 def read_calspec(file_name, file_path=None):
     if file_path is None:
@@ -50,7 +55,7 @@ def read_calspec(file_name, file_path=None):
     diff = np.diff(wave)
     monotonic = np.all(diff > 0) or np.all(diff < 0)
     if monotonic:
-        sp = create_spectrum(wave, sfluxd)
+        sp = create_spectrum(wave, sfluxd, True)
         return sp
     else:
         sort_idx = np.argsort(wave)
@@ -59,7 +64,7 @@ def read_calspec(file_name, file_path=None):
         unique_idx = np.unique(wave_sorted, return_index=True)[1]
         wave_unique = wave_sorted[unique_idx] * u.AA
         sfluxd_unique = sfluxd_sorted[unique_idx] * su.FLAM
-        return create_spectrum(wave_unique, sfluxd_unique)
+        return create_spectrum(wave_unique, sfluxd_unique, True)
 
 def format_bandpass(bandpass: Union[str, SpectralElement]):
     if isinstance(bandpass, str):
@@ -124,7 +129,7 @@ class ReddeningSpectrum:
         return np.linspace(wave_min.value, wave_max.value, num_points) * wave_min.unit
 
     @staticmethod
-    def linear_reddening(reddening_percent, wave=None, wave0=None, wave_grid_range=[5000, 6000]*u.AA, num_points=1000, wave_grid=None, 
+    def linear_reddening(reddening_percent, wave=None, wave0=None, wave_grid_range=[1000, 10000]*u.AA, num_points=3000, wave_grid=None, 
                          reddening_defination='r', bp1=None, bp2=None, return_a_b=False):
         """
         线性红化模型
@@ -194,13 +199,15 @@ class ReddeningSpectrum:
         if return_a_b:
             return a, b
         else:
-            return SpectralElement(Empirical1D, 
-                                  points=wave_grid, 
-                                  lookup_table=red_factors,
-                                  keep_neg = True)
+            #return SpectralElement(Empirical1D, 
+            #                      points=wave_grid, 
+            #                      lookup_table=red_factors,
+            #                      keep_neg = True)
+            return create_spectrum(wave_grid, red_factors, ifunit=False, keep_neg=True)
+        
 
     @staticmethod
-    def piecewise_reddening(reddening_percents, breakpoints=None, wave_grid_range=[5000, 6000]*u.AA, num_points=1000, wave_grid=None,
+    def piecewise_reddening(reddening_percents, breakpoints=None, wave_grid_range=[1000, 10000]*u.AA, num_points=3000, wave_grid=None,
                             reddening_defination='r', bp_list=None):
         """
         分段线性红化
@@ -296,10 +303,11 @@ class ReddeningSpectrum:
             current_factor = end / start
             red_factors[mask] = current_factor * last_segment(wave_grid[mask]).value
 
-        return SpectralElement(Empirical1D, 
-                             points=wave_grid, 
-                             lookup_table=red_factors,
-                             keep_neg = True)
+        #return SpectralElement(Empirical1D, 
+        #                     points=wave_grid, 
+        #                     lookup_table=red_factors,
+        #                     keep_neg = True)
+        return create_spectrum(wave_grid, red_factors, ifunit=False, keep_neg=True)
     
     @staticmethod
     def custom_reddening(wave_grid, reddening_percents):
@@ -314,12 +322,25 @@ class ReddeningSpectrum:
             raise ValueError("Length of wave_grid must be equal to length of reddening_percents")
         
         red_factors = (1000*u.AA * 100*u.percent/(reddening_percents*u.percent))* (1/u.AA)
-        return SpectralElement(Empirical1D, 
-                               points=wave_grid, 
-                               lookup_table=red_factors,
-                               keep_neg = True)
+        #return SpectralElement(Empirical1D, 
+        #                       points=wave_grid, 
+        #                       lookup_table=red_factors,
+        #                       keep_neg = True)
+        return create_spectrum(wave_grid, red_factors, ifunit=False, keep_neg=True)
 
 class ReddeningCalculator:
+    """
+    There are mainly 3 types of reddening definitions:
+    1. defined with reflectance at two wavelengths
+    2. defined with flux observed through two filters
+    3. defined with countrate observed through two filters
+
+    the methods below can be classified into these types:
+    Type 1: from_reflectance_spectrum, from_sfluxd
+    Type 2: from_flux, from_flux_source_spectrum, from_color (when the color is derived with magnitudes, which are measured with fluxes through filters)
+    Type 3: from_countrate, from_countrate_source_spectrum
+    from_afrho may be Type 2 or Type 3, depending on the definition of afrho
+    """
     @staticmethod
     def basic_function(r1: Union[u.Quantity, float], r2: Union[u.Quantity, float], wave1: u.Quantity, wave2: u.Quantity,):
         wave1 = wave1.to(u.AA)
@@ -343,11 +364,12 @@ class ReddeningCalculator:
         reddening = ((r2 - r1) / (wave2 - wave1)) / ((r2 + r1) / 2) * 1000 * u.AA * 100 * u.percent
         return reddening, reddening_err
     
+    # reddening defined with r
     @staticmethod
-    def from_reflectance_spectrum(reflectance_spectrum: SourceSpectrum, wave1: u.Quantity, wave2: u.Quantity,
-                                  reflectance_spectrum_err: Optional[SourceSpectrum] = None):
-        r1 = reflectance_spectrum(wave1, flux_unit=su.FLAM) #TODO: refl spec has no unit?
-        r2 = reflectance_spectrum(wave2, flux_unit=su.FLAM)
+    def from_reflectance_spectrum(reflectance_spectrum: BaseUnitlessSpectrum, wave1: u.Quantity, wave2: u.Quantity,
+                                  reflectance_spectrum_err: Optional[BaseUnitlessSpectrum] = None):
+        r1 = reflectance_spectrum(wave1)
+        r2 = reflectance_spectrum(wave2)
         if reflectance_spectrum_err is None:
             reddening = ReddeningCalculator.basic_function(r1, r2, wave1, wave2)
             return reddening
@@ -357,86 +379,7 @@ class ReddeningCalculator:
             reddening, reddening_err = ReddeningCalculator.basic_function_err(r1, r2, wave1, wave2,
                                                                               r1_err, r2_err)
             return reddening, reddening_err
-
-    @staticmethod
-    def from_source_spectrum(source_spectrum: SourceSpectrum, solar_spectrum: Union[SolarSpectrum, SourceSpectrum],
-                             bandpass1: Union[str, SpectralElement], bandpass2: Union[str, SpectralElement],
-                             source_spectrum_err: Optional[SourceSpectrum] = None,
-                             solar_spectrum_err: Optional[SourceSpectrum] = None,):
-        bandpass1 = format_bandpass(bandpass1)
-        bandpass2 = format_bandpass(bandpass2)
-        wave1 = TypicalWaveSfluxd.average_wave(bandpass1) # TODO: to be checked
-        wave2 = TypicalWaveSfluxd.average_wave(bandpass2) # TODO: to be checked
-        if source_spectrum_err is None and solar_spectrum_err is None:
-            r1 = calculate_flux(source_spectrum, bandpass1)/calculate_flux(solar_spectrum, bandpass1)
-            r2 = calculate_flux(source_spectrum, bandpass2)/calculate_flux(solar_spectrum, bandpass2)
-            reddening = ReddeningCalculator.basic_function(r1, r2, wave1, wave2)
-            return reddening
-        else:
-            flux1 = calculate_flux(source_spectrum, bandpass1)
-            solar_flux1 = calculate_flux(solar_spectrum, bandpass1)
-            flux2 = calculate_flux(source_spectrum, bandpass2)
-            solar_flux2 = calculate_flux(solar_spectrum, bandpass2)
-            if source_spectrum_err is not None:
-                flux1_err = calculate_flux(source_spectrum_err, bandpass1)
-                flux2_err = calculate_flux(source_spectrum_err, bandpass2)
-            else:
-                flux1_err = 0*flux1
-                flux2_err = 0*flux2
-            if solar_spectrum_err is not None:
-                solar_flux1_err = calculate_flux(solar_spectrum_err, bandpass1)
-                solar_flux2_err = calculate_flux(solar_spectrum_err, bandpass2)
-            else:
-                solar_flux1_err = 0*solar_flux1
-                solar_flux2_err = 0*solar_flux2
-            
-            r1, r1_err = ErrorPropagation.divide(flux1, flux1_err, solar_flux1, solar_flux1_err)
-            r2, r2_err = ErrorPropagation.divide(flux2, flux2_err, solar_flux2, solar_flux2_err)
-             
-            # TODO: the r1 here is float instead of u.Quantity
-            reddening, reddening_err = ReddeningCalculator.basic_function_err(r1, r2, wave1, wave2,
-                                                                              r1_err, r2_err) 
-            return reddening, reddening_err
         
-    @staticmethod
-    def from_flux(flux1: u.Quantity, flux2: u.Quantity, solar_spectrum: Union[SolarSpectrum, SourceSpectrum],
-                  bandpass1: Union[str, SpectralElement], bandpass2: Union[str, SpectralElement],
-                  flux1_err: Optional[u.Quantity] = None,
-                  flux2_err: Optional[u.Quantity] = None,
-                  solar_spectrum_err: Optional[SourceSpectrum] = None,
-                  area=None):
-        bandpass1 = format_bandpass(bandpass1)
-        bandpass2 = format_bandpass(bandpass2)
-        wave1 = TypicalWaveSfluxd.average_wave(bandpass1) # TODO: to be checked
-        wave2 = TypicalWaveSfluxd.average_wave(bandpass2) # TODO: to be checked
-        if flux1_err is None and flux2_err is None and solar_spectrum_err is None:
-            solar_flux1 = calculate_flux(solar_spectrum, bandpass1, area)
-            r1 = flux1/solar_flux1
-            solar_flux2 = calculate_flux(solar_spectrum, bandpass2, area)
-            r2 = flux2/solar_flux2
-            reddening = ReddeningCalculator.basic_function(r1, r2, wave1, wave2)
-            return reddening
-        else:
-            solar_flux1 = calculate_flux(solar_spectrum, bandpass1)
-            solar_flux2 = calculate_flux(solar_spectrum, bandpass2)
-            if flux1_err is None:
-                flux1_err = 0*flux1
-            if flux2_err is None:
-                flux2_err = 0*flux2
-            if solar_spectrum_err is not None:
-                solar_flux1_err = calculate_flux(solar_spectrum_err, bandpass1)
-                solar_flux2_err = calculate_flux(solar_spectrum_err, bandpass2)
-            else:
-                solar_flux1_err = 0*solar_flux1
-                solar_flux2_err = 0*solar_flux2
-            r1, r1_err = ErrorPropagation.divide(flux1, flux1_err, solar_flux1, solar_flux1_err)
-            r2, r2_err = ErrorPropagation.divide(flux2, flux2_err, solar_flux2, solar_flux2_err)
-             
-            # TODO: the r1 here is float instead of u.Quantity
-            reddening, reddening_err = ReddeningCalculator.basic_function_err(r1, r2, wave1, wave2,
-                                                                              r1_err, r2_err) 
-            return reddening, reddening_err
-    
     @staticmethod
     def from_sfluxd(sfluxd1: u.Quantity, sfluxd2: u.Quantity, wave1: u.Quantity, wave2: u.Quantity, solar_spectrum: Union[SolarSpectrum, SourceSpectrum],
                    sfluxd_err1: Optional[u.Quantity] = None, sfluxd_err2: Optional[u.Quantity] = None,
@@ -459,10 +402,110 @@ class ReddeningCalculator:
             if sfluxd_err2 is None: sfluxd_err2 = 0*sfluxd2
             r1, r1_err = ErrorPropagation.divide(sfluxd1, sfluxd_err1, sfluxd1_sun, sfluxd1_sun_err)
             r2, r2_err = ErrorPropagation.divide(sfluxd2, sfluxd_err2, sfluxd2_sun, sfluxd2_sun_err)
+            if isinstance(r1, u.Quantity):
+                r1 = r1.value
+                r2 = r2.value
+            if isinstance(r1_err, u.Quantity):
+                r1_err = r1_err.value
+                r2_err = r2_err.value
             reddening, reddening_err = ReddeningCalculator.basic_function_err(r1, r2, wave1, wave2,
                                                                               r1_err, r2_err)
             return reddening, reddening_err
+        
+    # reddening defined with flux
+    @staticmethod
+    def from_flux(flux1: u.Quantity, flux2: u.Quantity, solar_spectrum: Union[SolarSpectrum, SourceSpectrum],
+                  bandpass1: Union[str, SpectralElement], bandpass2: Union[str, SpectralElement],
+                  flux1_err: Optional[u.Quantity] = None,
+                  flux2_err: Optional[u.Quantity] = None,
+                  solar_spectrum_err: Optional[SourceSpectrum] = None,
+                  area: Optional[u.Quantity] = None):
+        bandpass1 = format_bandpass(bandpass1)
+        bandpass2 = format_bandpass(bandpass2)
+        wave1 = TypicalWaveSfluxd.average_wave(bandpass1) # TODO: to be checked
+        wave2 = TypicalWaveSfluxd.average_wave(bandpass2) # TODO: to be checked
+        if flux1_err is None and flux2_err is None and solar_spectrum_err is None:
+            solar_flux1 = calculate_flux(solar_spectrum, bandpass1, area)
+            r1 = flux1/solar_flux1
+            solar_flux2 = calculate_flux(solar_spectrum, bandpass2, area)
+            r2 = flux2/solar_flux2
+            reddening = ReddeningCalculator.basic_function(r1, r2, wave1, wave2)
+            return reddening
+        else:
+            solar_flux1 = calculate_flux(solar_spectrum, bandpass1, area)
+            solar_flux2 = calculate_flux(solar_spectrum, bandpass2, area)
+            if flux1_err is None:
+                flux1_err = 0*flux1
+            if flux2_err is None:
+                flux2_err = 0*flux2
+            if solar_spectrum_err is not None:
+                solar_flux1_err = calculate_flux(solar_spectrum_err, bandpass1, area)
+                solar_flux2_err = calculate_flux(solar_spectrum_err, bandpass2, area)
+            else:
+                solar_flux1_err = 0*solar_flux1
+                solar_flux2_err = 0*solar_flux2
+            r1, r1_err = ErrorPropagation.divide(flux1, flux1_err, solar_flux1, solar_flux1_err)
+            r2, r2_err = ErrorPropagation.divide(flux2, flux2_err, solar_flux2, solar_flux2_err)
+             
+            if isinstance(r1, u.Quantity):
+                r1 = r1.value
+                r2 = r2.value
+            if isinstance(r1_err, u.Quantity):
+                r1_err = r1_err.value
+                r2_err = r2_err.value
+            reddening, reddening_err = ReddeningCalculator.basic_function_err(r1, r2, wave1, wave2,
+                                                                              r1_err, r2_err) 
+            return reddening, reddening_err
+        
+    @staticmethod
+    def from_flux_source_spectrum(source_spectrum: SourceSpectrum, solar_spectrum: Union[SolarSpectrum, SourceSpectrum],
+                                  bandpass1: Union[str, SpectralElement], bandpass2: Union[str, SpectralElement],
+                                  source_spectrum_err: Optional[SourceSpectrum] = None,
+                                  solar_spectrum_err: Optional[SourceSpectrum] = None,
+                                  ):
+        bandpass1 = format_bandpass(bandpass1)
+        bandpass2 = format_bandpass(bandpass2)
+        #wave1 = TypicalWaveSfluxd.average_wave(bandpass1) # TODO: to be checked
+        #wave2 = TypicalWaveSfluxd.average_wave(bandpass2) # TODO: to be checked
 
+        flux1 = calculate_flux(source_spectrum, bandpass1, area=None)
+        flux2 = calculate_flux(source_spectrum, bandpass2, area=None)
+        flux1_err = calculate_flux(source_spectrum_err, bandpass1, area=None)
+        flux2_err = calculate_flux(source_spectrum_err, bandpass2, area=None)
+        return ReddeningCalculator.from_flux(flux1, flux2, solar_spectrum, bandpass1, bandpass2, flux1_err, flux2_err, solar_spectrum_err, area=None)
+
+        #if source_spectrum_err is None and solar_spectrum_err is None:
+        #    r1 = calculate_flux(source_spectrum, bandpass1)/calculate_flux(solar_spectrum, bandpass1)
+        #    r2 = calculate_flux(source_spectrum, bandpass2)/calculate_flux(solar_spectrum, bandpass2)
+        #    reddening = ReddeningCalculator.basic_function(r1, r2, wave1, wave2)
+        #    return reddening
+        #else:
+        #    flux1 = calculate_flux(source_spectrum, bandpass1)
+        #    solar_flux1 = calculate_flux(solar_spectrum, bandpass1)
+        #    flux2 = calculate_flux(source_spectrum, bandpass2)
+        #    solar_flux2 = calculate_flux(solar_spectrum, bandpass2)
+        #    if source_spectrum_err is not None:
+        #        flux1_err = calculate_flux(source_spectrum_err, bandpass1)
+        #        flux2_err = calculate_flux(source_spectrum_err, bandpass2)
+        #    else:
+        #        flux1_err = 0*flux1
+        #        flux2_err = 0*flux2
+        #    if solar_spectrum_err is not None:
+        #        solar_flux1_err = calculate_flux(solar_spectrum_err, bandpass1)
+        #        solar_flux2_err = calculate_flux(solar_spectrum_err, bandpass2)
+        #    else:
+        #        solar_flux1_err = 0*solar_flux1
+        #        solar_flux2_err = 0*solar_flux2
+        #    
+        #    r1, r1_err = ErrorPropagation.divide(flux1, flux1_err, solar_flux1, solar_flux1_err)
+        #    r2, r2_err = ErrorPropagation.divide(flux2, flux2_err, solar_flux2, solar_flux2_err)
+        #     
+        #    # TODO: the r1 here is float instead of u.Quantity
+        #    reddening, reddening_err = ReddeningCalculator.basic_function_err(r1, r2, wave1, wave2,
+        #                                                                      r1_err, r2_err) 
+        #    return reddening, reddening_err
+
+    # reddening defined with flux: flux -> mag -> color
     @staticmethod
     def from_color(source_color: Union[u.Quantity, float], solar_color: Union[u.Quantity, float], wave1: u.Quantity, wave2: u.Quantity,
                    source_color_err: Optional[Union[u.Quantity, float]] = None, solar_color_err: Optional[Union[u.Quantity, float]] = None):
@@ -489,7 +532,62 @@ class ReddeningCalculator:
             reddening, reddening_err = ReddeningCalculator.basic_function_err(r1, r2, wave1, wave2,
                                                                               r1_err, r2_err)
             return reddening, reddening_err
+        
+    # reddening defined with flux
+    @staticmethod
+    def from_countrate(countrate1: float, countrate2: float, solar_spectrum: Union[SolarSpectrum, SourceSpectrum],
+                       bandpass1: Union[str, SpectralElement], bandpass2: Union[str, SpectralElement], area: u.Quantity,
+                       countrate1_err: Optional[float] = None,
+                       countrate2_err: Optional[float] = None,
+                       solar_spectrum_err: Optional[SourceSpectrum] = None,):
+        bandpass1 = format_bandpass(bandpass1)
+        bandpass2 = format_bandpass(bandpass2)
+        wave1 = TypicalWaveSfluxd.average_wave(bandpass1) # TODO: to be checked
+        wave2 = TypicalWaveSfluxd.average_wave(bandpass2) # TODO: to be checked
+        if countrate1_err is None and countrate2_err is None and solar_spectrum_err is None:
+            solar_countrate1 = calculate_count_rate(solar_spectrum, bandpass1, area).value
+            r1 = countrate1/solar_countrate1
+            solar_countrate2 = calculate_count_rate(solar_spectrum, bandpass2, area).value
+            r2 = countrate2/solar_countrate2
+            reddening = ReddeningCalculator.basic_function(r1, r2, wave1, wave2)
+            return reddening
+        else:
+            solar_countrate1 = calculate_count_rate(solar_spectrum, bandpass1, area).value
+            solar_countrate2 = calculate_count_rate(solar_spectrum, bandpass2, area).value
+            if countrate1_err is None:
+                countrate1_err = 0*countrate1
+            if countrate2_err is None:
+                countrate2_err = 0*countrate2
+            if solar_spectrum_err is not None:
+                solar_countrate1_err = calculate_count_rate(solar_spectrum_err, bandpass1, area).value
+                solar_countrate2_err = calculate_count_rate(solar_spectrum_err, bandpass2, area).value
+            else:
+                solar_countrate1_err = 0*solar_countrate1
+                solar_countrate2_err = 0*solar_countrate2
+            r1, r1_err = ErrorPropagation.divide(countrate1, countrate1_err, solar_countrate1, solar_countrate1_err)
+            r2, r2_err = ErrorPropagation.divide(countrate2, countrate2_err, solar_countrate2, solar_countrate2_err)
+             
+            reddening, reddening_err = ReddeningCalculator.basic_function_err(r1, r2, wave1, wave2,
+                                                                              r1_err, r2_err) 
+            return reddening, reddening_err
+        
+    @staticmethod
+    def from_countrate_source_spectrum(source_spectrum: SourceSpectrum, solar_spectrum: Union[SolarSpectrum, SourceSpectrum],
+                                       bandpass1: Union[str, SpectralElement], bandpass2: Union[str, SpectralElement],area: u.Quantity,
+                                       source_spectrum_err: Optional[SourceSpectrum] = None,
+                                       solar_spectrum_err: Optional[SourceSpectrum] = None):
+        bandpass1 = format_bandpass(bandpass1)
+        bandpass2 = format_bandpass(bandpass2)
+        #wave1 = TypicalWaveSfluxd.average_wave(bandpass1) # TODO: to be checked
+        #wave2 = TypicalWaveSfluxd.average_wave(bandpass2) # TODO: to be checked
 
+        countrate1 = calculate_count_rate(source_spectrum, bandpass1, area=area)
+        countrate2 = calculate_count_rate(source_spectrum, bandpass2, area=area)
+        countrate1_err = calculate_count_rate(source_spectrum_err, bandpass1, area=area)
+        countrate2_err = calculate_count_rate(source_spectrum_err, bandpass2, area=area)
+        return ReddeningCalculator.from_countrate(countrate1, countrate2, solar_spectrum, bandpass1, bandpass2, area, countrate1_err, countrate2_err, solar_spectrum_err)
+
+    # reddening defined with flux or countrate, depending on the definition of afrho
     @staticmethod
     def from_afrho(afrho1: u.Quantity, afrho2: u.Quantity, wave1: u.Quantity, wave2: u.Quantity,
                    afrho1_err: Optional[u.Quantity] = None, afrho2_err: Optional[u.Quantity] = None):
@@ -500,7 +598,7 @@ class ReddeningCalculator:
             reddening, reddening_err = ReddeningCalculator.basic_function_err(afrho1, afrho2, wave1, wave2,
                                                                               afrho1_err, afrho2_err)
             return reddening, reddening_err
-
+        
 class TypicalWaveSfluxd:
     @staticmethod
     def pivot_wave(bandpass: Union[str, SpectralElement]):
