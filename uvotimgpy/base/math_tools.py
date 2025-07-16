@@ -251,9 +251,11 @@ def obtain_n_samples(data: List[np.ndarray],
     valid_mask_list = [~np.isnan(d) for d in data]
     return np.sum(valid_mask_list, axis=axis)
 
-def calculate_median_error(data: Union[np.ndarray, List[np.ndarray], List[float]], 
-                           errors: Optional[Union[np.ndarray, List[np.ndarray], List[float]]] = None,
-                           axis: int = 0, method: str = 'mean') -> Tuple[Union[np.ndarray, float], Union[np.ndarray, float]]:
+def calculate_median_error(data: Union[List[float], np.ndarray, List[np.ndarray]], 
+                          errors: Optional[Union[List[float], np.ndarray, List[np.ndarray]]] = None,
+                          axis: Optional[int] = 0,
+                          method: str = 'mean',
+                          n_bootstrap: int = 1000) -> tuple:
     """Calculate median and its error along specified axis
     
     Parameters
@@ -274,198 +276,598 @@ def calculate_median_error(data: Union[np.ndarray, List[np.ndarray], List[float]
     median_err : ndarray or float
         Computed median errors
     """
-    # Convert list of floats to array if needed
+    # Validate method parameter
+    if method not in ['mean', 'std']:
+        raise ValueError("Method must be either 'mean' or 'std'")
+    
+    # Convert list of floats to numpy array
     if isinstance(data, list) and all(isinstance(x, (int, float)) for x in data):
         data = np.array(data)
-    if isinstance(errors, list) and all(isinstance(x, (int, float)) for x in errors):
-        errors = np.array(errors)
-        
-    # Validate input types and shapes
-    if type(data) != type(errors):
-        raise ValueError("Data and errors must have the same type")
-    if isinstance(data, np.ndarray) and data.shape != errors.shape:
-        raise ValueError("Data and error arrays must have the same shape")
-        
-    # Wrap single arrays in list
-    if isinstance(data, np.ndarray):
-        data = [data]
-        errors = [errors]
-    # Calculate median
-    median_val = np.nanmedian(data, axis=axis)
-    
-    # Calculate error using existing method
-    valid_mask_list = [~np.isnan(d) for d in data]
-    n_samples = np.sum(valid_mask_list, axis=axis)
-    if method == 'mean':
         if errors is not None:
-            valid_errors_square_list = [(err * mask)**2 for err, mask in zip(errors, valid_mask_list)]
-            median_err = 1.253 * np.sqrt(np.nansum(valid_errors_square_list, axis=axis)) / n_samples
+            errors = np.array(errors)
+    
+    # Convert list of arrays to 2D array
+    if isinstance(data, list) and isinstance(data[0], np.ndarray):
+        data = np.array(data)
+        if errors is not None:
+            errors = np.array(errors)
+    
+    def mean_error(sum_squared_errors, N):
+        return 1.253 * np.sqrt(sum_squared_errors) / N
+    
+    def std_error(std, N):
+        return 1.253 * std / np.sqrt(N)
+    
+    # Handle axis=None case (flattens the array)
+    if axis is None:
+        # Flatten both data and errors arrays
+        flat_data = data.flatten()
+        flat_errors = None if errors is None else errors.flatten()
+        
+        # Remove NaN values
+        valid_mask = ~np.isnan(flat_data)
+        valid_data = flat_data[valid_mask]
+        valid_errors = None if flat_errors is None else flat_errors[valid_mask]
+        
+        # If all values are nan, return nan for both median and error
+        if len(valid_data) == 0:
+            return np.nan, np.nan
+        
+        # Calculate median
+        median_val = np.median(valid_data)
+        
+        # Calculate error
+        if method == 'mean' and valid_errors is not None:
+            # Error propagation for median
+            N = len(valid_data)
+            sum_squared_errors = np.sum(valid_errors**2)
+            median_err = mean_error(sum_squared_errors, N)
+        elif method == 'std':
+            # Standard error of median
+            std = np.std(valid_data)
+            N = len(valid_data)
+            
+            if N == 1:
+                # Single value case
+                if valid_errors is not None:
+                    median_err = np.median(valid_errors)
+                else:
+                    median_err = np.abs(median_val)
+            else:
+                median_err = std_error(std, N)
+        
+        return median_val, median_err
+    
+    # Regular case with specific axis
+    # Calculate median ignoring nan values with a check for all-NaN slices
+    
+    # First check which slices contain only NaNs
+    # Create a mask for all-NaN slices
+    all_nan_mask = np.all(np.isnan(data), axis=axis)
+    
+    # Calculate median ignoring nan values
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        median_val = np.nanmedian(data, axis=axis)
+    
+    # Set median values to NaN where all-NaN slices were found
+    if np.any(all_nan_mask):
+        if np.isscalar(median_val):
+            if all_nan_mask:
+                median_val = np.nan
         else:
-            raise ValueError("Warning: errors is None using mean method; try std method instead")
+            median_val = np.where(all_nan_mask, np.nan, median_val)
+    
+    # If all values are nan, return nan for both median and error
+    if np.all(np.isnan(data)):
+        return np.nan, np.nan
+    
+    if method == 'mean' and errors is not None:
+        # Calculate error using error propagation
+        # First calculate mean error (sqrt(sum of error square)/N)
+        # Then multiply by 1.253 for median error
+        valid_mask = ~np.isnan(data)
+        N = np.sum(valid_mask, axis=axis)
+        squared_errors = np.where(valid_mask, errors**2, 0)
+        sum_squared_errors = np.sum(squared_errors, axis=axis)
+        
+        # Handle divisions by zero (where N = 0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            median_err = mean_error(sum_squared_errors, N)
+        
+        # Set error to NaN where all-NaN slices were found
+        if np.any(all_nan_mask):
+            if np.isscalar(median_err):
+                if all_nan_mask:
+                    median_err = np.nan
+            else:
+                median_err = np.where(all_nan_mask, np.nan, median_err)
+        
     elif method == 'std':
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            std_value = np.nanstd(data, axis=axis, ddof=1)
-            if any("Degrees of freedom <= 0 for slice" in str(warning.message) for warning in w):
-                std_value = np.nan_to_num(std_value, nan=0) 
-        median_err = 1.253 * std_value / np.sqrt(n_samples)
-    else:
-        raise ValueError("Invalid method: must be 'mean' or 'std'")
-
+        # Calculate standard deviation ignoring nan values
+        # Then calculate median error as 1.253 * std / sqrt(N)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            std = np.nanstd(data, axis=axis)
+        
+        N = np.sum(~np.isnan(data), axis=axis)
+        
+        # Initialize median_err with the standard calculation
+        # Avoid division by zero
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            median_err = std_error(std, N)
+        
+        # Set error to NaN where all-NaN slices were found
+        if np.any(all_nan_mask):
+            if np.isscalar(median_err):
+                if all_nan_mask:
+                    median_err = np.nan
+            else:
+                median_err = np.where(all_nan_mask, np.nan, median_err)
+        
+        # Find positions where std is zero (could be because N=1 or all values are identical)
+        zero_std_mask = (std == 0)
+        
+        # Skip positions that have all NaNs
+        if not np.isscalar(zero_std_mask) and not np.isscalar(all_nan_mask):
+            zero_std_mask = zero_std_mask & ~all_nan_mask
+        
+        # For positions where std is zero
+        if np.any(zero_std_mask):
+            # Handle these positions specially
+            if errors is not None:
+                # Function to get the median error from errors array for a specific position
+                def get_error_for_position(pos, pos_values):
+                    # Create index for the full data array
+                    full_idx = list(pos)
+                    # Insert a slice at the axis position to select all values along that axis
+                    full_idx.insert(axis, slice(None))
+                    
+                    # Get errors for this position
+                    pos_errors = errors[tuple(full_idx)]
+                    # Get mask for non-nan values in data
+                    valid_mask = ~np.isnan(data[tuple(full_idx)])
+                    # Get valid errors
+                    valid_errors = pos_errors[valid_mask]
+                    
+                    if len(valid_errors) > 0:
+                        return np.median(valid_errors)
+                    else:
+                        # If no valid errors, use the absolute value of the data
+                        return np.abs(pos_values)
+                
+                # Apply to each position where std is zero
+                if np.isscalar(zero_std_mask):
+                    # Handle scalar case
+                    if zero_std_mask:
+                        # For a 1D array, directly use the median of errors if available
+                        valid_errors = errors[~np.isnan(data)]
+                        if len(valid_errors) > 0:
+                            median_err = np.median(valid_errors)
+                        else:
+                            median_err = np.abs(median_val)
+                else:
+                    # Handle array case
+                    for pos in np.ndindex(zero_std_mask.shape):
+                        if zero_std_mask[pos]:
+                            median_err[pos] = get_error_for_position(list(pos), median_val[pos])
+            else:
+                # If no errors provided, use the absolute value of median_val
+                if np.isscalar(zero_std_mask):
+                    # Handle scalar case
+                    if zero_std_mask:
+                        median_err = np.abs(median_val)
+                else:
+                    # Handle array case
+                    median_err[zero_std_mask] = np.abs(median_val[zero_std_mask])
+        
     return median_val, median_err
+  
+
+#class ErrorPropagation:
+#    """误差传播计算类"""
+#    
+#    @staticmethod
+#    def propagate(func, *args, derivatives=None):
+#        values = [arg[0] for arg in args]
+#        errors = [arg[1] for arg in args]
+#        """统一处理数组和标量的误差传播"""
+#        if derivatives is None:
+#            # 使用 uncertainties 包计算
+#            
+#            # 如果是数组，需要向量化处理
+#            if any(isinstance(v, np.ndarray) for v in values):
+#                # 创建向量化函数
+#                make_ufloat = np.frompyfunc(lambda v, e: ufloat(v, e), 2, 1)
+#                get_nominal = np.frompyfunc(lambda x: x.nominal_value, 1, 1)
+#                get_std = np.frompyfunc(lambda x: x.std_dev, 1, 1)
+#
+#                uarrays = [make_ufloat(v, e) for v, e in zip(values, errors)]
+#                
+#                # 向量化原始函数
+#                vec_func = np.frompyfunc(lambda *args: func(*args), len(uarrays), 1)
+#                
+#                # 计算结果
+#                result = vec_func(*uarrays)
+#                
+#                # 提取标称值和标准差
+#                result_values = get_nominal(result).astype(float)
+#                result_errors = get_std(result).astype(float)
+#            else:
+#                # 标量计算
+#                uvals = [ufloat(v, e) for v, e in zip(values, errors)]
+#                result = func(*uvals)
+#                result_values = result.nominal_value
+#                result_errors = result.std_dev
+#                
+#        else:
+#            # 使用自定义导数计算
+#            result_values = func(*values)
+#            partial_derivatives = derivatives(*values)
+#            
+#            # 计算每个项的平方项
+#            squared_terms = []
+#            for deriv, err in zip(partial_derivatives, errors):
+#                term = np.multiply(deriv, err)
+#                squared_term = np.multiply(term, term)
+#                squared_terms.append(squared_term)
+#            
+#            # 计算平方和和平方根
+#            sum_squares = np.nansum(squared_terms, axis=0)
+#            result_errors = np.sqrt(sum_squares)
+#
+#            all_nan_mask = np.all(np.isnan(values), axis=0)
+#            if np.any(all_nan_mask):
+#                if np.isscalar(result_values):
+#                    if all_nan_mask:
+#                        result_values = np.nan
+#                        result_errors = np.nan
+#                else:
+#                    result_values = np.where(all_nan_mask, np.nan, result_values)
+#                    result_errors = np.where(all_nan_mask, np.nan, result_errors)
+#            
+#            all_nan_mask = np.all(np.isnan(squared_terms), axis=0)
+#            if np.any(all_nan_mask):
+#                if np.isscalar(result_errors):
+#                    if all_nan_mask:
+#                        result_errors = np.nan
+#                else:
+#                    result_errors = np.where(all_nan_mask, np.nan, result_errors)
+#            
+#        return result_values, result_errors
+#    
+#
+#    @staticmethod
+#    def add(*args):
+#        """加法误差传播
+#        
+#        Parameters
+#        ----------
+#        *args : tuple
+#            每个参数是一个 (value, error) 元组，支持数组和带单位的量
+#            
+#        Returns
+#        -------
+#        tuple
+#            (result_value, result_error)
+#        """
+#        def add_func(*values):
+#            return np.nansum(values, axis=0)
+#            
+#        def add_derivatives(*values):
+#            return [1] * len(values)  # 加法的偏导数都是1
+#        
+#        return ErrorPropagation.propagate(add_func, *args, derivatives=add_derivatives)
+#    
+#    @staticmethod
+#    def multiply(*args):
+#        """乘法误差传播"""
+#        def multiply_func(*values):  # 改为接收可变参数
+#            return np.nanprod(values, axis=0)
+#            
+#        def multiply_derivatives(*values):
+#            return [
+#                np.nanprod(values[:i] + values[i+1:], axis=0)
+#                for i in range(len(values))
+#            ]
+#        
+#        return ErrorPropagation.propagate(multiply_func, *args, derivatives=multiply_derivatives)
+#    
+#    @staticmethod
+#    def subtract(*args):
+#        """减法误差传播 (a1 - a2 - a3 - ...)"""
+#        def subtract_func(*values):
+#            return values[0] - np.nansum(values[1:], axis=0)
+#            
+#        def subtract_derivatives(*values):
+#            return [1] + [-1] * (len(values)-1)  # 第一个是1，其他都是-1
+#        
+#        return ErrorPropagation.propagate(subtract_func, *args, derivatives=subtract_derivatives)
+#    
+#    @staticmethod
+#    def divide(*args):
+#        """除法误差传播 (a1 / a2 / a3 / ...)"""
+#        def divide_func(*values):
+#            return values[0] / np.nanprod(values[1:], axis=0)
+#            
+#        def divide_derivatives(*values):
+#            prod_others = np.nanprod(values[1:], axis=0)  # 所有除数的乘积
+#            return [
+#                1/prod_others,  # 对被除数的偏导数
+#                *[-values[0]/(val * prod_others)  # 对每个除数的偏导数
+#                  for val in values[1:]]
+#            ]
+#        
+#        return ErrorPropagation.propagate(divide_func, *args, derivatives=divide_derivatives)
+#
+#    @staticmethod
+#    def median(*args, axis=0, method='mean'):
+#        """中位数误差计算
+#        
+#        Parameters
+#        ----------
+#        *args : tuple
+#            每个参数是一个 (value, error) 元组，支持数组
+#            
+#        Returns
+#        -------
+#        tuple
+#            (median_value, median_error)
+#        """
+#        if len(args) == 1 and isinstance(args[0], tuple) and len(args[0]) == 2:
+#            values = args[0][0]
+#            errors = args[0][1]
+#        else:
+#            values = [arg[0] for arg in args]
+#            errors = [arg[1] for arg in args]
+#        return calculate_median_error(data=values, errors=errors, axis=axis, method=method)
+#    
+#    def mean(*args, axis=0):
+#        if len(args) == 1 and isinstance(args[0], tuple) and len(args[0]) == 2:
+#            values = args[0][0]
+#            errors = args[0][1]
+#        else:
+#            values = [arg[0] for arg in args]
+#            errors = [arg[1] for arg in args]
+#        _, median_error = calculate_median_error(data=values, errors=errors, axis=axis, method='mean')
+#        mean_image = np.nanmean(values, axis=axis)
+#        mean_error = median_error/1.253
+#        return mean_image, mean_error
 
 class ErrorPropagation:
     """误差传播计算类"""
+    @staticmethod
+    def _check_shape_and_convert(x):
+        """
+        判断数据类型并统一转换为numpy array
+        
+        Parameters:
+        x: float/list/numpy.ndarray
+        
+        Returns:
+        data: numpy.ndarray 或 float
+        shape: int, 数据维度
+        """
+        
+        if isinstance(x, (int, float)):
+            return x, 0
+        elif isinstance(x, list):
+            x = np.array(x)
+        if isinstance(x, np.ndarray):
+            return x, x.shape #len(np.shape(x))
+        else:
+            raise TypeError("Input must be float, list or numpy.ndarray")
+
+    @staticmethod
+    def check_consistency(a, b):
+        """
+        检查数值和误差的一致性
+        
+        Parameters:
+        a: 数值数据
+        a_err: 误差数据
+        
+        Returns:
+        bool: True if consistent, False otherwise
+        """
+        # 先检查类型
+        a, a_shape = ErrorPropagation._check_shape_and_convert(a)
+        b, b_shape = ErrorPropagation._check_shape_and_convert(b)
+        
+        # 如果两者类型不一致（一个是标量一个是数组），返回False
+        if (a_shape == 0) != (b_shape == 0):
+            return False
+            
+        # 如果都是标量，返回True
+        if a_shape == 0 and b_shape == 0:
+            return True
+            
+        # 如果是数组，检查形状是否相同
+        if a_shape != b_shape:
+            return False
+            
+        # 检查nan的位置是否一致
+        nan_positions_a = np.isnan(a)
+        nan_positions_b = np.isnan(b)
+        return np.array_equal(nan_positions_a, nan_positions_b)
     
     @staticmethod
-    def propagate(func, *args, derivatives=None):
-        values = [arg[0] for arg in args]
-        errors = [arg[1] for arg in args]
-        """统一处理数组和标量的误差传播"""
-        if derivatives is None:
-            # 使用 uncertainties 包计算
-            
-            # 如果是数组，需要向量化处理
-            if any(isinstance(v, np.ndarray) for v in values):
-                # 创建向量化函数
-                make_ufloat = np.frompyfunc(lambda v, e: ufloat(v, e), 2, 1)
-                get_nominal = np.frompyfunc(lambda x: x.nominal_value, 1, 1)
-                get_std = np.frompyfunc(lambda x: x.std_dev, 1, 1)
+    def _initialize_inputs(a, a_err, b=None, b_err=None):
+        """初始化并检查输入数据的一致性"""
+        # 检查数据类型并转换
+        a, a_shape = ErrorPropagation._check_shape_and_convert(a)
+        a_err, _ = ErrorPropagation._check_shape_and_convert(a_err)
 
-                uarrays = [make_ufloat(v, e) for v, e in zip(values, errors)]
-                
-                # 向量化原始函数
-                vec_func = np.frompyfunc(lambda *args: func(*args), len(uarrays), 1)
-                
-                # 计算结果
-                result = vec_func(*uarrays)
-                
-                # 提取标称值和标准差
-                result_values = get_nominal(result).astype(float)
-                result_errors = get_std(result).astype(float)
+        if not (isinstance(b, type(None))) and not (isinstance(b_err, type(None))):
+            b, b_shape = ErrorPropagation._check_shape_and_convert(b)
+            b_err, _ = ErrorPropagation._check_shape_and_convert(b_err)
+
+            # 检查一致性
+            if not (ErrorPropagation.check_consistency(a, a_err) and ErrorPropagation.check_consistency(b, b_err)):
+                raise ValueError("Values and their errors must have consistent shapes and NaN positions")
+
+            # 检查两组数据的形状是否匹配
+            if a_shape != b_shape:
+                raise ValueError("Inputs of two values must have the same shape")
+
+            return a, a_err, b, b_err
+        else:
+            if not ErrorPropagation.check_consistency(a, a_err):
+                raise ValueError("Values and their errors must have consistent shapes and NaN positions")
+            return a, a_err
+    
+    # fun3: 定义4个函数：add, multiply, subtract, divide；每个函数输入a, a_err, b, b_err，对这些数据初始化‘
+    # 判断是否是相同数据类型，判断a和a_err，b,和b_err的nan是否在相同位置；返回结果和误差 
+            
+    @staticmethod
+    def add(a, a_err, b, b_err):
+        """加法运算及其误差传播"""
+        a, a_err, b, b_err = ErrorPropagation._initialize_inputs(a, a_err, b, b_err)
+        return a + b, np.sqrt(a_err**2 + b_err**2)
+    
+    @staticmethod    
+    def subtract(a, a_err, b, b_err):
+        """减法运算及其误差传播"""
+        a, a_err, b, b_err = ErrorPropagation._initialize_inputs(a, a_err, b, b_err)
+        return a - b, np.sqrt(a_err**2 + b_err**2)
+    
+    @staticmethod
+    def multiply(a, a_err, b, b_err):
+        """乘法运算及其误差传播"""
+        a, a_err, b, b_err = ErrorPropagation._initialize_inputs(a, a_err, b, b_err)
+        result = a * b
+        with np.errstate(divide='ignore', invalid='ignore'):
+            error = np.sqrt((a_err*b)**2 + (a*b_err)**2)
+        return result, error
+    
+    @staticmethod
+    def divide(a, a_err, b, b_err):
+        """除法运算及其误差传播"""
+        a, a_err, b, b_err = ErrorPropagation._initialize_inputs(a, a_err, b, b_err)
+        result = a / b
+        with np.errstate(divide='ignore', invalid='ignore'):
+            error = np.sqrt((a_err/b)**2 + (a*b_err/(b**2))**2)
+        return result, error
+    
+    @staticmethod
+    def max(err, axis=None):
+        """最大值及其误差"""
+        err, _ = ErrorPropagation._check_shape_and_convert(err)
+        return np.nanmax(err, axis=axis)
+    
+    # fun4: 定义mean
+    @staticmethod
+    def mean(a, a_err, axis=None, ignore_nan=True):
+        """
+        计算平均值及其误差
+
+        Parameters:
+        a: array_like, 输入数据
+        a_err: array_like, 输入数据的误差
+        axis: int or None, 计算平均值的轴
+        ignore_nan: bool, 是否忽略nan值
+
+        Returns:
+        mean_value: float or ndarray, 平均值
+        mean_error: float or ndarray, 平均值的误差
+        """
+        # 检查数据一致性
+        a, a_err = ErrorPropagation._initialize_inputs(a, a_err)
+
+        if ignore_nan:
+            # 使用nanmean和nansum直接处理nan
+            n = np.sum(~np.isnan(a), axis=axis)
+            mean_value = np.nanmean(a, axis=axis)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                mean_error = np.sqrt(np.nansum(a_err**2, axis=axis)) / n
+        else:
+            # 不忽略nan，如果有nan则结果为nan
+            n = np.sum(np.ones_like(a), axis=axis)
+            mean_value = np.mean(a, axis=axis)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                mean_error = np.sqrt(np.sum(a_err**2, axis=axis)) / n
+
+        return mean_value, mean_error
+    
+    @staticmethod
+    def sum(a, a_err, axis=None, ignore_nan=True):
+        """
+        计算总和及其误差
+
+        Parameters:
+        a: array_like, 输入数据
+        a_err: array_like, 输入数据的误差
+        axis: int or None, 计算总和的轴
+        ignore_nan: bool, 是否忽略nan值
+
+        Returns:
+        sum_value: float or ndarray, 总和
+        sum_error: float or ndarray, 总和的误差
+        """
+        a, a_err = ErrorPropagation._initialize_inputs(a, a_err)
+        if ignore_nan:
+            sum_value = np.nansum(a, axis=axis)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                sum_error = np.sqrt(np.nansum(a_err**2, axis=axis))
+        else:
+            sum_value = np.sum(a, axis=axis)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                sum_error = np.sqrt(np.sum(a_err**2, axis=axis))
+        return sum_value, sum_error
+    
+    @staticmethod
+    def median(a, a_err, axis=None, ignore_nan=True, method='mean', mask=True):
+        """
+        计算中位数及其误差
+
+        Parameters:
+        """
+        a, a_err = ErrorPropagation._initialize_inputs(a, a_err)
+
+        # 检查method参数
+        if method not in ['mean', 'std']:
+            raise ValueError("method must be 'mean' or 'std'")
+        
+        if method == 'mean':
+            _, mean_error = ErrorPropagation.mean(a, a_err, axis=axis, ignore_nan=ignore_nan)
+            median_error = mean_error*1.253
+
+            if ignore_nan:
+                median_value = np.nanmedian(a, axis=axis)
             else:
-                # 标量计算
-                uvals = [ufloat(v, e) for v, e in zip(values, errors)]
-                result = func(*uvals)
-                result_values = result.nominal_value
-                result_errors = result.std_dev
-                
-        else:
-            # 使用自定义导数计算
-            result_values = func(*values)
-            partial_derivatives = derivatives(*values)
-            
-            # 计算每个项的平方项
-            squared_terms = []
-            for deriv, err in zip(partial_derivatives, errors):
-                term = np.multiply(deriv, err)
-                squared_term = np.multiply(term, term)
-                squared_terms.append(squared_term)
-            
-            # 计算平方和和平方根
-            sum_squares = np.nansum(squared_terms, axis=0)
-            result_errors = np.sqrt(sum_squares)
-            
-        return result_values, result_errors
-    
+                median_value = np.median(a, axis=axis)
 
-    @staticmethod
-    def add(*args):
-        """加法误差传播
-        
-        Parameters
-        ----------
-        *args : tuple
-            每个参数是一个 (value, error) 元组，支持数组和带单位的量
-            
-        Returns
-        -------
-        tuple
-            (result_value, result_error)
-        """
-        def add_func(*values):
-            return np.nansum(values, axis=0)
-            
-        def add_derivatives(*values):
-            return [1] * len(values)  # 加法的偏导数都是1
-        
-        return ErrorPropagation.propagate(add_func, *args, derivatives=add_derivatives)
-    
-    @staticmethod
-    def multiply(*args):
-        """乘法误差传播"""
-        def multiply_func(*values):  # 改为接收可变参数
-            return np.nanprod(values, axis=0)
-            
-        def multiply_derivatives(*values):
-            return [
-                np.nanprod(values[:i] + values[i+1:], axis=0)
-                for i in range(len(values))
-            ]
-        
-        return ErrorPropagation.propagate(multiply_func, *args, derivatives=multiply_derivatives)
-    
-    @staticmethod
-    def subtract(*args):
-        """减法误差传播 (a1 - a2 - a3 - ...)"""
-        def subtract_func(*values):
-            return values[0] - np.nansum(values[1:], axis=0)
-            
-        def subtract_derivatives(*values):
-            return [1] + [-1] * (len(values)-1)  # 第一个是1，其他都是-1
-        
-        return ErrorPropagation.propagate(subtract_func, *args, derivatives=subtract_derivatives)
-    
-    @staticmethod
-    def divide(*args):
-        """除法误差传播 (a1 / a2 / a3 / ...)"""
-        def divide_func(*values):
-            return values[0] / np.nanprod(values[1:], axis=0)
-            
-        def divide_derivatives(*values):
-            prod_others = np.nanprod(values[1:], axis=0)  # 所有除数的乘积
-            return [
-                1/prod_others,  # 对被除数的偏导数
-                *[-values[0]/(val * prod_others)  # 对每个除数的偏导数
-                  for val in values[1:]]
-            ]
-        
-        return ErrorPropagation.propagate(divide_func, *args, derivatives=divide_derivatives)
+        elif method == 'std':
+            if ignore_nan:
+                median_value = np.nanmedian(a, axis=axis)
+                #n = np.sum(~np.isnan(a), axis=axis)
+                std = np.nanstd(a, axis=axis)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    median_error = std #* 1.253 / np.sqrt(n)
+            else:
+                median_value = np.median(a, axis=axis)
+                #n = np.sum(np.ones_like(a), axis=axis)
+                std = np.std(a, axis=axis)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    median_error = std #* 1.253 / np.sqrt(n)
 
-    @staticmethod
-    def median(*args, axis=0, method='mean'):
-        """中位数误差计算
-        
-        Parameters
-        ----------
-        *args : tuple
-            每个参数是一个 (value, error) 元组，支持数组
-            
-        Returns
-        -------
-        tuple
-            (median_value, median_error)
-        """
-        if len(args) == 1 and isinstance(args[0], tuple) and len(args[0]) == 2:
-            values = args[0][0]
-            errors = args[0][1]
-        else:
-            values = [arg[0] for arg in args]
-            errors = [arg[1] for arg in args]
-        return calculate_median_error(data=values, errors=errors, axis=axis, method=method)
-    
-    def mean(*args, axis=0):
-        if len(args) == 1 and isinstance(args[0], tuple) and len(args[0]) == 2:
-            values = args[0][0]
-            errors = args[0][1]
-        else:
-            values = [arg[0] for arg in args]
-            errors = [arg[1] for arg in args]
-        _, median_error = calculate_median_error(data=values, errors=errors, axis=axis, method='mean')
-        mean_image = np.nanmean(values, axis=axis)
-        mean_error = median_error/1.253
-        return mean_image, mean_error
-    
+            if mask:
+                max_error = ErrorPropagation.max(a_err, axis=axis)
+                mask = np.nanmax(a,axis=axis) == np.nanmin(a,axis=axis)
+                if isinstance(median_error, np.ndarray) and isinstance(max_error, np.ndarray):
+                    median_error[mask] = max_error[mask]
+                    if not ignore_nan:
+                        median_error[np.isnan(median_value)] = np.nan
+                elif isinstance(median_error, float) and isinstance(max_error, float):
+                    if mask:
+                        median_error = max_error
+                    if not ignore_nan and np.isnan(median_value):
+                        median_error = np.nan
+
+        return median_value, median_error
+
 
 class UnitConverter:
     """天文单位转换工具类"""
@@ -510,4 +912,4 @@ class UnitConverter:
     def pixel_to_arcsec(pixel, scale):
         """将像素转换为角秒
         """
-        return pixel * scale
+        return pixel * scale 

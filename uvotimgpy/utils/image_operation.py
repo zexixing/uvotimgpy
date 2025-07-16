@@ -8,9 +8,12 @@ from matplotlib.patches import Circle
 from regions import CircleAnnulusPixelRegion, CirclePixelRegion, PixCoord
 from scipy.interpolate import interp1d
 from uvotimgpy.base.math_tools import ErrorPropagation
-from uvotimgpy.base.region import mask_image, RegionStatistics
+from uvotimgpy.base.region import mask_image, RegionStatistics, expand_shrink_region
 import warnings
 from astropy.wcs import FITSFixedWarning
+from astropy.nddata import block_reduce
+from astropy.convolution import Gaussian2DKernel, convolve
+from scipy.ndimage import binary_dilation
 warnings.filterwarnings('ignore', category=FITSFixedWarning)
 
 class DS9Converter:
@@ -95,6 +98,20 @@ class DS9Converter:
             python_row = int(np.floor(python_row + 0.5))
             
         return ds9_x, ds9_y, python_column, python_row
+
+def exposure_mask_with_nan(image: np.ndarray, 
+                           exposure_map: np.ndarray, 
+                           exposure_threshold: Optional[float] = None) -> np.ndarray:
+    """
+    将曝光图中小于0/小于等于threshold的像素对应的图像值替换为nan
+    """
+    if image.shape != exposure_map.shape:
+        raise ValueError("image and exposure_map must have the same shape")
+    if exposure_threshold is None:
+        image[exposure_map <= 0] = np.nan
+    else:
+        image[exposure_map < exposure_threshold] = np.nan
+    return image
 
 def rescale_images(images: Union[np.ndarray, List[np.ndarray]], 
                   current_scales: Union[float, List[float]], 
@@ -186,13 +203,13 @@ def rotate_image(image: np.ndarray,
     """
     if image.dtype.byteorder == '>':
         image = image.byteswap().newbyteorder()
-    return rotate(image, 
-                  -angle,
-                  center=target_coord,
-                  preserve_range=True,
-                  mode='constant',
-                  cval=fill_value,    # 指定填充值
-                  clip=True)
+    rotated_img =  rotate(image, 
+                          -angle,
+                          center=target_coord,
+                          preserve_range=True,
+                          mode='constant',
+                          cval=fill_value,    # 指定填充值
+                          clip=True)
     if image_err is None:
         return rotated_img
     else:
@@ -240,7 +257,7 @@ def crop_image(image: np.ndarray,
     if image_err is None:
         return new_image
     else:
-        cropped_err = crop_image(image_err, target_coord, new_target_coord, np.nan)
+        cropped_err = crop_image(image_err, target_coord, new_target_coord, fill_value=fill_value)
         return new_image, cropped_err
 
 
@@ -265,10 +282,9 @@ def align_images(images: List[np.ndarray],
         return aligned_images, aligned_errs
 
 def stack_images(images: List[np.ndarray], 
-                method: str = 'median',
-                err_data: Optional[List[np.ndarray]] = None,
-                axis: int = 0,
-                median_err_method: str = 'mean') -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+                 method: str = 'median',
+                 image_err: Optional[List[np.ndarray]] = None,
+                 median_err_params: Optional[dict] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     叠加图像
     
@@ -276,39 +292,72 @@ def stack_images(images: List[np.ndarray],
     ----------
     images : 图像列表
     method : 'median' 或 'mean'
+    median_err_params: dict, optional
+        median_err_params for ErrorPropagation.median: method ('mean' or 'std'), mask (True/False)
     """
     if method not in ['median', 'mean']:
         raise ValueError("method must be 'median' or 'mean'")
     if method == 'mean':
         warnings.warn("Some pixels may be not well exposed, please check the exposure map with sum_exposure_map.")
-    if err_data is None:
+    if image_err is None:
         if method == 'median':
             return np.nanmedian(images, axis=0)
         elif method == 'mean':
             return np.nanmean(images, axis=0)
     else:
-        values_with_errors = [(image, err) for image, err in zip(images, err_data)]
         if method == 'mean':
-            mean_image, mean_error = ErrorPropagation.mean(*values_with_errors, axis=0)
+            mean_image, mean_error = ErrorPropagation.mean(images, image_err, axis=0, ignore_nan=True)
             return mean_image, mean_error
         elif method == 'median':
-            median_image, median_error = ErrorPropagation.median(*values_with_errors, axis=0, method=median_err_method)
+            median_image, median_error = ErrorPropagation.median(images, image_err, axis=0, ignore_nan=True,
+                                                                 **median_err_params)
             return median_image, median_error
 
-def sum_exposure_map(images: List[np.ndarray], 
-                     exposures: List[float],
-                     exposure_maps: Optional[List[np.ndarray]] = None) -> Union[np.ndarray]:
+def shrink_valid_image(image: np.ndarray, shrink_pixels: int = 2, mask: Optional[np.ndarray] = None, speed: str = 'normal') -> np.ndarray:
+    """
+    将图像中的有效区域向内收缩指定像素数，
+    也就是将原始的 np.nan 区域 (或mask) 向外扩展 shrink_pixels 个像素。
+    
+    参数:
+        image (np.ndarray): 输入的二维图像数组，必须包含 np.nan 表示无效区域
+        shrink_pixels (int): 收缩像素数量（即扩展 NaN 的像素数量）
+
+    返回:
+        np.ndarray: 处理后的图像，扩展后的 NaN 区域
+    """
+    if image.ndim != 2:
+        raise ValueError("输入必须是二维图像")
+
+    # 构造 nan 区域掩码
+    if mask is None:
+        shrink_mask = np.isnan(image)
+    else:
+        shrink_mask = mask
+
+    # 将 NaN 区域扩展（向内侵蚀有效区域）
+    expanded_mask = expand_shrink_region(shrink_mask, radius=shrink_pixels, method='expand', speed=speed)
+
+    # 创建新的图像副本
+    new_image = image.copy()
+    new_image[expanded_mask] = np.nan
+
+    return new_image
+
+def sum_exposure_map(exposure_maps: Optional[List[np.ndarray]] = None,
+                     images: Optional[List[np.ndarray]] = None,
+                     exposures: Optional[List[float]] = None) -> np.ndarray:
     """
     叠加曝光图
     """
+   # if isinstance(exposure_maps, type(None)):
     if exposure_maps is None:
         exposure_maps = []
         for image, exposure in zip(images, exposures):
             image_copy = image.copy()
             image_copy[~np.isnan(image_copy)] = 1. # TODO: check pixels with values as 0
             exposure_maps.append(image_copy * exposure)
-    else: # for Swift which has exposure map fits files
-        pass
+    #else: # for Swift which has exposure map fits files
+    #    pass
     summed_exposure_map = np.nansum(exposure_maps, axis=0)
     summed_exposure_map = np.nan_to_num(summed_exposure_map, 0)
     return summed_exposure_map
@@ -463,19 +512,20 @@ class DistanceMap:
     
     def get_index_map(self, step) -> np.ndarray:
         """获取距离的索引图"""            
-        index_map = np.round(self.dist_map / step).astype(int)
-        index_map = np.maximum(index_map, 1)
+        #index_map = np.round(self.dist_map / step).astype(int)
+        #index_map = np.maximum(index_map, 1)
+        index_map = np.floor(self.dist_map / step).astype(int)
         return index_map
 
 def calc_radial_profile(image: np.ndarray, 
                        center: tuple, 
                        step: float,
-                       image_error: Optional[np.ndarray] = None,
+                       image_err: Optional[np.ndarray] = None,
                        bad_pixel_mask: Optional[np.ndarray] = None,
                        start: Optional[float] = None,
                        end: Optional[float] = None,
                        method: str = 'median',
-                       median_err_method: str = 'mean') -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+                       median_err_params: Optional[dict] = None) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """计算径向profile及其误差
 
     Parameters
@@ -486,7 +536,7 @@ def calc_radial_profile(image: np.ndarray,
         中心点坐标 (col, row)
     step : float
         环宽度
-    image_error : np.ndarray, optional
+    image_err : np.ndarray, optional
         图像误差数组
     bad_pixel_mask : np.ndarray, optional
         坏像素掩模，True表示被mask的像素
@@ -495,7 +545,7 @@ def calc_radial_profile(image: np.ndarray,
     end : float, optional
         结束半径，默认为图像中心到角落的距离
     method : str
-        计算方法，'median'或'mean'
+        计算方法，'median'或'mean'或'max'
 
     Returns
     -------
@@ -504,12 +554,12 @@ def calc_radial_profile(image: np.ndarray,
     values : np.ndarray
         对应的profile值
     errors : np.ndarray, optional
-        如果提供了image_error，返回对应的误差值
+        如果提供了image_err，返回对应的误差值
     """
     # 处理输入图像和掩模
     image = mask_image(image, bad_pixel_mask)
-    image_error = mask_image(image_error, bad_pixel_mask) if image_error is not None else None
-    
+    #image_err = mask_image(image_err, bad_pixel_mask) if not isinstance(image_err, type(None)) else None
+    image_err = mask_image(image_err, bad_pixel_mask) if image_err is not None else None
     # 处理中心坐标
     if isinstance(center, PixCoord):
         center_coord = center
@@ -525,7 +575,7 @@ def calc_radial_profile(image: np.ndarray,
     radii_range = np.arange(start, end, step)
     radii = []
     values = []
-    errors = [] if image_error is not None else None
+    errors = [] if image_err is not None else None
 
     # 计算每个半径处的值
     for r in radii_range:
@@ -550,82 +600,114 @@ def calc_radial_profile(image: np.ndarray,
         if len(valid_pixels) == 0:
             continue
 
-        if image_error is not None:
-            region_errors = mask.get_values(image_error)
+        if image_err is not None:
+            region_errors = mask.get_values(image_err)
             valid_errors = region_errors[~np.isnan(region_pixels)]
 
+        radii.append(r+step/2)
         if method == 'median':
-            if image_error is not None:
-                value, error = ErrorPropagation.median((valid_pixels, valid_errors), axis=None, method=median_err_method)
-                if value is not None:
-                    radii.append(r+step/2)
-                    values.append(value)
-                    errors.append(error)
+            if image_err is not None:
+                value, error = ErrorPropagation.median(valid_pixels, valid_errors, axis=None, ignore_nan=True, 
+                                                       **median_err_params)
+                values.append(value)
+                errors.append(error)
             else:
-                value = np.median(valid_pixels)
-                radii.append(r+step/2)
+                value = np.nanmedian(valid_pixels)
                 values.append(value)
         else:  # mean
-            value = np.mean(valid_pixels)
-            radii.append(r+step/2)
-            values.append(value)
-
-            if image_error is not None:
-                error = np.sqrt(np.sum(valid_errors**2)) / len(valid_pixels)
+            if image_err is not None:
+                value, error = ErrorPropagation.mean(valid_pixels, valid_errors, axis=None, ignore_nan=True)
+                values.append(value)
                 errors.append(error)
+            else:
+                value = np.nanmean(valid_pixels)
+                values.append(value)
 
     # 转换为numpy数组并返回结果
     radii = np.array(radii)
     values = np.array(values)
-    if errors is not None:
+    if image_err is not None:
         errors = np.array(errors)
         return radii, values, errors
     return radii, values
 
-class ImageEnhancer:
-    @staticmethod
-    def by_azimuthal_median(image: np.ndarray,
-                            center: Tuple[float, float],
-                            step: float = 1.0,
-                            image_error: Optional[np.ndarray] = None,
-                            bad_pixel_mask: Optional[np.ndarray] = None,
-                            start: Optional[float] = None,
-                            end: Optional[float] = None,
-                            method: str = 'median',
-                            median_err_method: str = 'mean') -> np.ndarray:
-        """
-        使用方位角中值剖面增强彗星图像
-        """
-        # 获取径向剖面
-        radial_profile = calc_radial_profile(
-            image=image,
-            center=center,
-            step=step,
-            image_error=image_error,
-            bad_pixel_mask=bad_pixel_mask,
-            start=start,
-            end=end,
-            method=method,
-            median_err_method=median_err_method
-        )
+def bin_image(image: np.ndarray, 
+              block_size: Union[int, Tuple[int, int]], 
+              image_err: Optional[np.ndarray] = None,
+              method: str = 'mean',
+              median_err_params: Optional[dict] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+    """
+    对图像进行binning操作
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        输入图像
+    block_size : int or tuple of int
+        binning的块大小。如果是整数，则在两个方向使用相同的大小；
+        如果是元组，则分别指定(y, x)方向的块大小
+    method : str, optional
+        用于binning的函数，默认为np.nanmean
+    image_err : np.ndarray, optional
+        图像误差数组
         
-        if image_error is not None:
-            radii, values, errors = radial_profile
+    Returns
+    -------
+    np.ndarray or tuple of np.ndarray
+        binning后的图像，如果提供了image_err，则同时返回binning后的误差
+    """
+    if method == 'mean':
+        func = np.nanmean
+        def error_func(a_err):
+            _, error = ErrorPropagation.mean(a_err, a_err, axis=None, ignore_nan=True)
+            return error
+        
+    elif method == 'median':
+        func = np.nanmedian
+        def error_func(a_err):
+            _, error = ErrorPropagation.median(a_err, a_err, axis=None, ignore_nan=True, **median_err_params)
+            return error
+    else:
+        raise ValueError(f"Unsupported method: {method}")
+    
+    if isinstance(block_size, int):
+        block_size = (block_size, block_size)
+        
+    binned_image = block_reduce(image, block_size, func=func)
+    
+    if image_err is None:
+        return binned_image
+    else:
+        if ErrorPropagation.check_consistency(image, image_err):
+            binner_err = block_reduce(image_err, block_size, func=error_func)
+            return binned_image, binner_err
         else:
-            radii, values = radial_profile
-        
-        # 创建插值函数
-        profile_interp = interp1d(radii, values, 
-                                  bounds_error=False, 
-                                  fill_value=np.nan)
-        
-        # 创建距离图像
-        r = DistanceMap(image, center).get_distance_map()
+            raise ValueError("image and image_err must have consistent shapes and NaN positions")
 
-        # 使用插值函数创建2D模型图像
-        model_image = profile_interp(r)
-        
-        # 计算增强后的图像，对于模型为0的位置设为nan
-        enhanced_image = np.where(model_image <= 0, np.nan, image / model_image)
-        
-        return enhanced_image
+def smooth_image(image: np.ndarray, kernel_size: int = 3, method: str = 'gaussian',
+                 image_err: Optional[np.ndarray] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+    """
+    对图像进行平滑处理
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        输入图像
+    kernel_size : int
+        卷积核大小
+    method : str
+        平滑方法，'gaussian'
+    """
+    if method == 'gaussian':
+        kernel = Gaussian2DKernel(kernel_size)
+        smoothed_image = convolve(image, kernel)
+        if image_err is None:
+            return smoothed_image
+        else:
+            if ErrorPropagation.check_consistency(image, image_err):
+                smoothed_err = np.sqrt(convolve(image_err**2, kernel**2))
+                return smoothed_image, smoothed_err
+            else:
+                raise ValueError("image and image_err must have consistent shapes and NaN positions")
+    else:
+        raise ValueError(f"Unsupported method: {method}")

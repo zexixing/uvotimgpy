@@ -3,6 +3,9 @@ import tarfile
 import glob
 import re
 import numpy as np
+import pandas as pd
+from pathlib import Path
+from typing import List, Dict, Any, Union
 from astropy.table import hstack, QTable
 from astropy.wcs import WCS
 from astropy import units as u
@@ -10,8 +13,8 @@ from astropy.time import Time
 from astropy.io import fits
 from sbpy.data import Ephem
 from uvotimgpy.query import StarCoordinateQuery
-from uvotimgpy.base.file_io import process_astropy_table
-from uvotimgpy.utils.filters import normalize_filter_name
+from uvotimgpy.base.file_io import show_or_save_astropy_table
+from uvotimgpy.base.filters import normalize_filter_name
 
 class AstroDataOrganizer:
     def __init__(self, target_name, data_root_path=None):
@@ -81,7 +84,8 @@ class AstroDataOrganizer:
         Returns:
         list: List of observation ID folder names.
         """
-        return [f for f in os.listdir(self.project_path) if f.isdigit() and len(f) == 11]
+        folders = [f for f in os.listdir(self.project_path) if f.isdigit() and len(f) == 11]
+        return sorted(folders)
 
     def _process_obsid_folder(self, obsid_folder):
         """
@@ -108,16 +112,15 @@ class AstroDataOrganizer:
             #filter_name = normalize_filter_name(filter_name, output_format='display')
             self.data_table.add_row([obsid_folder, i, filter_name, image_data])
 
-    def process_data(self, output_path=None, save_format='csv'):
+    def process_data(self, output_path=None):
         """
         Process the data table by either saving it to a file or printing it to console.
 
         Parameters:
-        output_path (str, optional): Path for the output file if saving. Absolute path is recommended.
-        format (str, optional): Output file format if saving. Default is 'csv'.
+        output_path (str, optional): Absolute path for the output file if saving. 
         """
         self.organize_data()
-        process_astropy_table(self.data_table, output_path, save_format)
+        show_or_save_astropy_table(self.data_table, output_path=output_path)
 
 class ObservationLogger:
     """
@@ -292,6 +295,19 @@ class ObservationLogger:
             Time points for orbit calculation.
         orbital_keywords : list
             Keywords for orbital parameters to calculate
+            list of keywords:
+            https://astroquery.readthedocs.io/en/latest/api/astroquery.jplhorizons.HorizonsClass.html#astroquery.jplhorizons.HorizonsClass.ephemerides
+            'targetname', 'M1', 'solar_presence', 'k1', 'interfering_body', 'RA', 'DEC', 'RA_app', 'DEC_app',
+            'RA*cos(Dec)_rate', 'DEC_rate', 'AZ', 'EL', 'AZ_rate', 'EL_rate', 'sat_X', 'sat_Y',
+            'sat_PANG', 'siderealtime', 'airmass', 'magextinct', 'Tmag', 'Nmag', 'illumination', 'illum_defect',
+            'sat_sep', 'sat_vis', 'ang_width', 'PDObsLon', 'PDObsLat', 'PDSunLon', 'PDSunLat',
+            'SubSol_ang', 'SubSol_dist', 'NPole_ang', 'NPole_dist', 'EclLon', 'EclLat', 'r', 'r_rate',
+            'delta', 'delta_rate', 'lighttime', 'vel_sun', 'vel_obs', 'elong', 'elongFlag',
+            'alpha', 'IB_elong', 'IB_illum', 'sat_alpha', 'sunTargetPA', 'velocityPA', 'OrbPlaneAng',
+            'constellation', 'TDB-UT', 'ObsEclLon', 'ObsEclLat', 'NPole_RA', 'NPole_DEC', 'GlxLon', 'GlxLat',
+            'solartime', 'earth_lighttime', 'RA_3sigma', 'DEC_3sigma', 'SMAA_3sigma', 'SMIA_3sigma', 'Theta_3sigma',
+            'Area_3sigma', 'RSS_3sigma', 'r_3sigma', 'r_rate_3sigma', 'SBand_3sigma', 'XBand_3sigma', 'DoppDelay_3sigma',
+            'true_anom', 'hour_angle', 'alpha_true', 'PABLon', 'PABLat', 'epoch'
 
         Returns
         -------
@@ -439,6 +455,9 @@ class ObservationLogger:
                 wcs_key = f"{row['OBSID']}_{row['FILTER']}_{row['EXT_NO']}"
                 wcs = wcs_dict[wcs_key]
                 try:
+                    # 下面的1是origin： origin is the coordinate in the upper left corner of the image. 
+                    # In FITS and Fortran standards, this is 1. In Numpy and C standards this is 0.
+                    # 所以这里得到的坐标是ds9的坐标
                     x, y = wcs.all_world2pix(row['RA'], row['DEC'], 1)
                     x_pixels.append(x)
                     y_pixels.append(y)
@@ -456,14 +475,13 @@ class ObservationLogger:
             #print(f"Error processing motion target: {str(e)}")
             return processed_table
         
-    def process_data(self, output_path=None, save_format='csv', selected_columns=None, return_table=False,
+    def process_data(self, output_path=None, selected_columns=None, return_table=False,
                      orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation']):
         """
         Process observation data and create output table.
 
         Parameters
         output_path (str, optional): Path to save processed data.
-        save_format (str, optional): Format to save data ('csv', 'ascii.ecsv', 'fits', etc.).
         selected_columns (list, optional): Columns to include in output.
         return_table (bool): Whether to return processed table.
         orbital_keywords (list, optional): Keywords for orbital parameters to calculate
@@ -497,9 +515,9 @@ class ObservationLogger:
         if return_table:
             return final_table
         else:
-            process_astropy_table(final_table, output_path, save_format)
+            show_or_save_astropy_table(final_table, output_path=output_path)
 
-def load_obs_dict(file_path):
+def load_obs_dict(file_path): # deprecated 
     # 读取数据
     obs_log = np.genfromtxt(file_path,
                            delimiter=',',
@@ -521,16 +539,208 @@ def load_obs_dict(file_path):
         obs_list.append(obs_dict)
     
     return obs_list
-# Usage example
+
+class ObservationLogLoader:
+    """
+    观测日志加载和筛选类，基于pandas DataFrame
+    """
+    
+    def __init__(self, file_path: Union[str, Path]):
+        """
+        初始化观测日志
+        
+        Args:
+            file_path: CSV文件路径
+        """
+        # 指定OBSID列为字符串类型，保留前导0
+        dtype_dict = {'OBSID': str}
+        self.df = pd.read_csv(file_path, dtype=dtype_dict)
+        self.file_path = file_path
+    
+    def get_all_data(self) -> pd.DataFrame:
+        """获取所有数据"""
+        return self.df
+    
+    def filter(self, **kwargs) -> pd.DataFrame:
+        """
+        根据任意条件筛选数据
+        
+        Args:
+            **kwargs: 筛选条件，支持以下格式：
+                - df: 要筛选的DataFrame，如果未提供则使用self.df
+                - column_name=value: 精确匹配
+                - column_name=[value1, value2]: 匹配任意一个值
+                - column_name__gte=value: 大于等于（>=）
+                - column_name__gt=value: 大于（>）
+                - column_name__lte=value: 小于等于（<=）
+                - column_name__lt=value: 小于（<）
+                - column_name__ne=value: 不等于（!=）
+        
+        Returns:
+            pd.DataFrame: 筛选后的数据
+        """
+        # 提取df参数
+        df = kwargs.pop('df', None)
+        
+        if df is None:
+            result = self.df.copy()
+        else:
+            result = df.copy()
+        
+        for key, value in kwargs.items():
+            # 处理比较操作符
+            if '__' in str(key):
+                column, operator = str(key).rsplit('__', 1)
+                if column not in result.columns:
+                    continue
+                    
+                if operator == 'gte':
+                    result = result[result[column] >= value]
+                elif operator == 'gt':
+                    result = result[result[column] > value]
+                elif operator == 'lte':
+                    result = result[result[column] <= value]
+                elif operator == 'lt':
+                    result = result[result[column] < value]
+                elif operator == 'ne':
+                    result = result[result[column] != value]
+            else:
+                # 处理普通筛选
+                if key not in result.columns:
+                    continue
+                    
+                if isinstance(value, list):
+                    result = result[result[key].isin(value)]
+                else:
+                    result = result[result[key] == value]
+        
+        return result
+    
+    def where(self, *conditions, df: pd.DataFrame = None) -> pd.DataFrame:
+        """
+        使用字符串表达式筛选数据（更直观的写法）
+        
+        Args:
+            *conditions: 一个或多个筛选条件字符串，多个条件会用 'and' 连接
+            df: 要筛选的DataFrame，如果为None则使用self.df
+        
+        Examples:
+            # 单个条件
+            obs_log.where("EXPOSURE >= 190")
+            
+            # 多个条件（自动用and连接）
+            obs_log.where("EXPOSURE >= 190", "EXPOSURE < 200", "FILTER == 'V'")
+            
+            # 基于已筛选的DataFrame继续筛选
+            first_filter = obs_log.where("FILTER == 'V'")
+            second_filter = obs_log.where("EXPOSURE >= 190", df=first_filter)
+        
+        Returns:
+            pd.DataFrame: 筛选后的数据
+        """
+        if df is None:
+            target_df = self.df
+        else:
+            target_df = df
+            
+        # 如果有多个条件，用 'and' 连接
+        if len(conditions) == 1:
+            condition_str = conditions[0]
+        else:
+            condition_str = ' and '.join(f'({cond})' for cond in conditions)
+        
+        # 使用pandas的query方法，支持字符串表达式
+        return target_df.query(condition_str)
+    
+    def get_column_info(self) -> Dict[str, Dict[str, Any]]:
+        """
+        获取所有列的数据类型信息和示例值
+        
+        Returns:
+            Dict: 包含列名、数据类型和示例值的字典
+        """
+        info = {}
+        for column in self.df.columns:
+            sample_value = self.df[column].iloc[0] if len(self.df) > 0 else None
+            info[column] = {
+                'dtype': str(self.df[column].dtype),
+                'python_type': type(sample_value).__name__ if sample_value is not None else 'None',
+                'sample_value': sample_value
+            }
+        return info
+    
+    def print_column_info(self):
+        """
+        打印所有列的数据类型信息（便于查看）
+        """
+        info = self.get_column_info()
+        print("Column information:")
+        print("-" * 80)
+        print(f"{'Column name':<20} {'Pandas type':<15} {'Python type':<15} {'example value'}")
+        print("-" * 80)
+        for column, details in info.items():
+            sample_str = str(details['sample_value'])
+            if len(sample_str) > 30:
+                sample_str = sample_str[:27] + "..."
+            print(f"{column:<20} {details['dtype']:<15} {details['python_type']:<15} {sample_str}")
+    
+    def has_data(self, data: Union[pd.DataFrame, List]) -> bool:
+        """
+        判断输入的DataFrame或list是否为空
+        
+        Args:
+            data: 要检查的数据，可以是pandas DataFrame或list
+        
+        Returns:
+            bool: 如果数据为空返回False，否则返回True
+        """
+        if isinstance(data, pd.DataFrame):
+            return len(data) > 0
+        elif isinstance(data, list):
+            return len(data) > 0
+        else:
+            # 如果传入的既不是DataFrame也不是list，返回False
+            return False
+        
+    def count_observations(self, data: Union[pd.DataFrame, List]) -> int:
+        """
+        计算DataFrame或list中的观测记录数量
+        
+        Args:
+            data: 要计算的数据，可以是pandas DataFrame或list
+        
+        Returns:
+            int: 观测记录的数量（0表示为空，1表示单条记录，>1表示多条记录）
+        """
+        if isinstance(data, pd.DataFrame):
+            return len(data)
+        elif isinstance(data, list):
+            return len(data)
+        else:
+            # 如果传入的既不是DataFrame也不是list，返回0
+            return 0
+
 
 if __name__ == "__main__":
+    pass
     #organizer = AstroDataOrganizer('C_2017K2',data_root_path='/Volumes/ZexiWork/data/Swift')
     #organizer = AstroDataOrganizer('1P',data_root_path='/Volumes/ZexiWork/data/Swift')
     #organizer.process_data()
     #organizer.process_data(output_path='1p_uvot_data.csv')
     #organizer.process_data()
     #print(logger.data_table)
-    logger = ObservationLogger('c2023a3',data_root_path='/Volumes/ZexiWork/data/Swift', target_alternate='90004773')
-    output_path = '/Users/zexixing/Downloads/c2023a3_uvot_data_test.csv'
+
+    logger = ObservationLogger('C_2025N1',data_root_path='/Users/zexixing/Library/CloudStorage/OneDrive-Personal/ZexiWork/data/Swift', target_alternate='90004918')
+    output_path = '/Users/zexixing/Downloads/C_2025N1_uvot_data.csv'
     logger.process_data(output_path=output_path,
-                        orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation', 'alpha'])
+                        orbital_keywords=['RA', 'RA*cos(Dec)_rate', 'DEC', 'DEC_rate', 'delta', 'r', 'elongation', 'alpha', 'sunTargetPA', 'velocityPA'])
+
+    #obs_log_path = '/Users/zexixing/Library/CloudStorage/OneDrive-Personal/ZexiWork/projects/C_2025N1/docs/C_2025N1_obs_log.csv'
+    #obs_log_loader = ObservationLogLoader(obs_log_path)
+    #obs_log.print_column_info()
+    #obs_log_filtered = obs_log_loader.where('OBSID == 5000504002', 'FILTER == "V"')
+    #obs_log_filtered2 = obs_log_loader.where('EXT_NO == 1',df=obs_log_filtered)
+    #obs_log_filtered3 = obs_log_loader.filter(r__gte=4.2,df=obs_log_filtered2)
+    #print(obs_log_filtered2)
+    #print(obs_log_loader.has_data(obs_log_filtered3))
+    #print(obs_log_loader.count_observations(obs_log_filtered))

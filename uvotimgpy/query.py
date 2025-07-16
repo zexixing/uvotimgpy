@@ -141,27 +141,27 @@ class StarCoordinateQuery:
         #    raise ValueError("output_format must be 'deg' or 'hmsdms'")
 
 class StarCatalogQuery:
-    """处理不同星表查询的类"""
+    """Class for querying different star catalogs"""
     
     def __init__(self, center_sky, radius, mag_limit, verbose=True):
         """
         Parameters
         ----------
         center_sky : SkyCoord
-            搜索中心的天球坐标
+            Sky coordinates of the search center
         radius : Quantity
-            搜索半径
+            Search radius
         mag_limit : float
-            星等上限
+            Magnitude upper limit
         verbose : bool, optional
-            是否显示查询状态提醒，默认为True
+            Whether to display query status messages, default is True
         """
         self.center_sky = center_sky
         self.radius = radius
         self.mag_limit = mag_limit
         self.verbose = verbose
         
-        # 预计算坐标范围
+        # Precompute coordinate range
         radius_deg = self.radius.to(u.deg).value
         ra = self.center_sky.ra.deg
         dec = self.center_sky.dec.deg
@@ -172,7 +172,7 @@ class StarCatalogQuery:
         self.dec_max = dec + radius_deg
         
     def _get_vizier_with_constraints(self, mag_column):
-        """创建带有标准约束的Vizier对象"""
+        """Create a Vizier object with standard constraints"""
         vizier = Vizier(
             column_filters={
                 "RAJ2000": f">{self.ra_min} & <{self.ra_max}",
@@ -184,7 +184,7 @@ class StarCatalogQuery:
         return vizier
     
     def query_gsc(self):
-        """查询GSC 2.3星表"""
+        """Query the GSC 2.3 catalog"""
         if self.verbose:
             print("Querying GSC 2.3 catalog...")
         vizier = self._get_vizier_with_constraints("Vmag")
@@ -198,7 +198,7 @@ class StarCatalogQuery:
         return catalogs[0], 'RAJ2000', 'DEJ2000'
     
     def query_gaia(self):
-        """查询GAIA DR3星表"""
+        """Query the GAIA DR3 catalog"""
         if self.verbose:
             print("Querying Gaia DR3 catalog...")
         vizier = self._get_vizier_with_constraints("Gmag")
@@ -217,7 +217,7 @@ class StarCatalogQuery:
         return stars, 'ra', 'dec'
     
     def query_ucac4(self):
-        """查询UCAC4星表"""
+        """Query the UCAC4 catalog"""
         if self.verbose:
             print("Querying UCAC4 catalog...")
         vizier = self._get_vizier_with_constraints("Vmag")
@@ -231,7 +231,7 @@ class StarCatalogQuery:
         return catalogs[0], 'RAJ2000', 'DEJ2000'
     
     def query_apass(self):
-        """查询APASS DR9星表"""
+        """Query the APASS DR9 catalog"""
         if self.verbose:
             print("Querying APASS DR9 catalog...")
         vizier = self._get_vizier_with_constraints("Vmag")
@@ -245,7 +245,7 @@ class StarCatalogQuery:
         return catalogs[0], 'RAJ2000', 'DEJ2000'
     
     def query_usnob(self):
-        """查询USNO-B1.0星表"""
+        """Query the USNO-B1.0 catalog"""
         if self.verbose:
             print("Querying USNO-B1.0 catalog...")
         vizier = self._get_vizier_with_constraints("R1mag")
@@ -259,7 +259,7 @@ class StarCatalogQuery:
         return catalogs[0], 'RAJ2000', 'DEJ2000'
 
     def query_simbad(self):
-        """查询SIMBAD数据库"""
+        """Query the SIMBAD database"""
         if self.verbose:
             print("Querying SIMBAD database...")
         Simbad.add_votable_fields('flux(V)', 'ra(d)', 'dec(d)')
@@ -278,7 +278,7 @@ class StarCatalogQuery:
         return stars, 'ra', 'dec'
     
     def query(self, catalog):
-        """根据指定的星表名称进行查询"""
+        """Query according to the specified catalog name"""
         catalog = catalog.upper()
         query_methods = {
             'GSC': self.query_gsc,
@@ -294,14 +294,14 @@ class StarCatalogQuery:
         
         return query_methods[catalog]()
 
-## 测试更小的区域
+## Test with a smaller region
 #center = SkyCoord(ra=180, dec=0, unit='deg')
-#radius = 0.1 * u.deg  # 缩小搜索半径到0.1度
+#radius = 0.1 * u.deg  # Reduce search radius to 0.1 degree
 #query = StarCatalogQuery(center, radius, mag_limit=15)
 #
-## 获取查询结果
+## Get query results
 #stars, ra_key, dec_key = query.query('apass')
-## 使用结果
+## Use results
 #coords = SkyCoord(ra=stars[ra_key], dec=stars[dec_key])
 #print(coords)
 

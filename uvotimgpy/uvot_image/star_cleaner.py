@@ -4,6 +4,7 @@ from astropy.io import fits
 from astropy.stats import sigma_clip
 from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
+from astropy.convolution import Gaussian2DKernel, interpolate_replace_nans
 import matplotlib.pyplot as plt
 from regions import CirclePixelRegion, PixCoord, PixelRegion
 from photutils.aperture import ApertureMask
@@ -11,38 +12,82 @@ from uvotimgpy.utils.image_operation import calc_radial_profile, DistanceMap, Im
 from uvotimgpy.query import StarCatalogQuery
 from uvotimgpy.base.region import RegionConverter, RegionCombiner, RegionSelector, save_regions
 from scipy import ndimage
+from scipy.interpolate import griddata
+from scipy.ndimage import generic_filter
 from skimage import restoration
 
 class StarIdentifier:
-    """识别图像中的stars, cosmic rays等需要移除的像素"""
+    """Identify stars, cosmic rays and other pixels that need to be removed from the image"""
     
     def __init__(self):
-        self.last_mask = None  # 存储最近一次识别的mask
+        self.last_mask = None  # Store the most recently identified mask
     
     def by_comparison(self, image1: np.ndarray, image2: np.ndarray,
                      threshold: float = 0.) -> Tuple[np.ndarray, np.ndarray]:
-        """通过比较两张图像识别"""
+        """Identify by comparing two images"""
         diff = image1 - image2
         mask_pos = diff > threshold
         mask_neg = diff < -threshold
         self.last_mask = mask_pos | mask_neg
-        return mask_pos, mask_neg # mask是star
+        return mask_pos, mask_neg # mask represents stars
+    
+    #def by_sigma_clip(self, image: np.ndarray, sigma: float = 3.,
+    #                 maxiters: Optional[int] = 3,
+    #                 exclude_region: Optional[Union[np.ndarray, ApertureMask, PixelRegion]] = None) -> np.ndarray:
+    #    """Identify using sigma-clip method"""
+    #    mask = np.zeros_like(image, dtype=bool)
+    #    if exclude_region is not None:
+    #        region_mask = RegionConverter.to_bool_array(exclude_region, image.shape)
+    #        valid_pixels = ~region_mask
+    #        clipped = sigma_clip(image[valid_pixels], sigma=sigma, maxiters=maxiters, masked=True)
+    #        mask[valid_pixels] = clipped.mask
+    #    else:
+    #        clipped = sigma_clip(image, sigma=sigma, maxiters=maxiters, masked=True)
+    #        mask = clipped.mask
+    #    self.last_mask = mask
+    #    return mask # mask represents stars
     
     def by_sigma_clip(self, image: np.ndarray, sigma: float = 3.,
-                     maxiters: Optional[int] = 3,
-                     exclude_region: Optional[Union[np.ndarray, ApertureMask, PixelRegion]] = None) -> np.ndarray:
-        """用sigma-clip方法识别"""
+                      maxiters: Optional[int] = 3,
+                      exclude_region: Optional[Union[np.ndarray, ApertureMask, PixelRegion]] = None,
+                      tile_size: Optional[int] = None) -> np.ndarray:
+        """Identify cosmic rays using sigma-clip, optionally in tiles."""
         mask = np.zeros_like(image, dtype=bool)
+        ny, nx = image.shape
+
+        # 如果需要 exclude 区域
         if exclude_region is not None:
             region_mask = RegionConverter.to_bool_array(exclude_region, image.shape)
-            valid_pixels = ~region_mask
+        else:
+            region_mask = np.zeros_like(image, dtype=bool)
+
+        nan_mask = np.isnan(image)
+
+        if tile_size is None:
+            # 全图 clip
+            valid_pixels = (~region_mask) & (~nan_mask)
             clipped = sigma_clip(image[valid_pixels], sigma=sigma, maxiters=maxiters, masked=True)
             mask[valid_pixels] = clipped.mask
         else:
-            clipped = sigma_clip(image, sigma=sigma, maxiters=maxiters, masked=True)
-            mask = clipped.mask
+            # 分块 clip
+            for y0 in range(0, ny, tile_size):
+                for x0 in range(0, nx, tile_size):
+                    y1 = min(y0 + tile_size, ny)
+                    x1 = min(x0 + tile_size, nx)
+                    tile = image[y0:y1, x0:x1]
+                    tile_mask = region_mask[y0:y1, x0:x1]
+                    tile_nan = np.isnan(tile)
+                    valid_pixels = (~tile_mask) & (~tile_nan)
+
+                    if np.any(valid_pixels):
+                        clipped = sigma_clip(tile[valid_pixels], sigma=sigma, maxiters=maxiters, masked=True)
+                        submask = np.zeros_like(tile, dtype=bool)
+                        submask[valid_pixels] = clipped.mask
+                        mask[y0:y1, x0:x1] = submask
+                    # 否则该 tile 无有效 pixel，跳过
+
         self.last_mask = mask
-        return mask # mask是star
+        return mask  # True 表示检测为异常值，NaN 像素恒为 False
     
     def by_manual(self, image: np.ndarray, 
                   row_range: Optional[Tuple[int, int]] = None,
@@ -50,34 +95,34 @@ class StarIdentifier:
                   vmin = 0, vmax=2,
                   save_path: Optional[str] = None,
                   region_plot: Optional[Union[PixelRegion, List[PixelRegion]]] = None) -> np.ndarray:
-        """手动输入位置识别"""
+        """Identify by manual input"""
         print("Creating selector...")
         
-        # 确保之前的窗口都已关闭
+        # Ensure all previous windows are closed
         plt.close('all')
         
-        # 创建选择器
+        # Create selector
         selector = RegionSelector(image, vmin=vmin, vmax=vmax, 
                                 row_range=row_range, 
                                 col_range=col_range,
                                 region_plot=region_plot)
         
         print("Getting regions...")
-        # 显式调用 show 并等待窗口关闭
+        # Explicitly call show and wait for window to close
         plt.show(block=True)
         
-        # 获取区域
+        # Get regions
         regions = selector.get_regions()
         print("Regions obtained.")#, regions)
         
-        if not regions:  # 如果没有选择任何区域
+        if not regions:  # If no regions were selected
             return np.zeros_like(image, dtype=bool)
         
-        # 合并所有选择的区域
+        # Combine all selected regions
         if save_path is not None:
             save_regions(regions=regions, file_path=save_path, correct=1)
         
-        # 转换为布尔数组
+        # Convert to boolean array
         combined_regions = RegionCombiner.union(regions)
         mask = RegionConverter.region_to_bool_array(combined_regions, image_shape=image.shape)
         
@@ -86,28 +131,29 @@ class StarIdentifier:
     
     def by_catalog(self, image: np.ndarray, wcs: WCS, mag_limit: float = 15,
                   catalog: str = 'GSC', aperture_radius: float = 5) -> np.ndarray:
-        """创建恒星掩膜"""
+        """Create star mask"""
+        # catalog: GSC, GAIA, UCAC4, APASS, USNOB, SIMBAD
 
-        # 计算图像四个角的天球坐标
+        # Calculate celestial coordinates for the four corners of the image
         n_rows, n_cols = image.shape
         center = np.array([n_cols/2, n_rows/2])  # (col, row)
         center_sky = wcs.pixel_to_world(center[0], center[1])
 
-        # 计算中心到边的最大距离（像素坐标，假设row和col方向的）
+        # Calculate maximum distance from center to edge (in pixels, assuming row and col directions)
         max_dist = ImageDistanceCalculator.from_edges(image, center, distance_method='max', wcs=wcs)
 
         radius = 1.1 * max_dist
 
-        # 查询星表
+        # Query star catalog
         catalog_query = StarCatalogQuery(center_sky, radius, mag_limit)
         stars, ra_key, dec_key = catalog_query.query(catalog)
 
-        # 创建天球坐标对象，转换坐标并创建掩膜
+        # Create SkyCoord object, transform coordinates and create mask
         coords = SkyCoord(ra=stars[ra_key], dec=stars[dec_key])
         pixel_coords = wcs.world_to_pixel(coords)
         positions = np.array(pixel_coords).T
 
-        # 筛选在图像范围内的星
+        # Filter stars within image boundaries
         valid_stars = (
             (positions[:, 0] >= 0) & 
             (positions[:, 0] < image.shape[1]) & 
@@ -116,14 +162,14 @@ class StarIdentifier:
         )
         positions = positions[valid_stars]
 
-        # 创建圆形孔径
+        # Create circular aperture
         #apertures = CircularAperture(positions, r=aperture_radius)
-        # 创建掩膜
+        # Create mask
         #mask = np.zeros(image.shape, dtype=bool)
         #masks = apertures.to_mask(method='center')
 
         #for mask_obj in masks:
-        #    # 获取掩膜的位置信息
+        #    # Get mask position information
         #    slices = mask_obj.get_overlap_slices(image.shape)
         #    if slices is not None:
         #        data_slc, mask_slc = slices
@@ -139,11 +185,11 @@ class StarIdentifier:
         return mask
 
 class PixelFiller:
-    """填充被标记的像素"""
+    """Fill marked pixels"""
     
     def by_comparison(self, image1: np.ndarray, image2: np.ndarray,
                      mask_pos: np.ndarray, mask_neg: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """用两张图像互相填充"""
+        """Fill using mutual comparison of two images"""
         filled1 = image1.copy()
         filled2 = image2.copy()
         
@@ -156,31 +202,31 @@ class PixelFiller:
                  center: tuple, step: float, 
                  method: str = 'median',
                  start: Optional[float] = None,
-                 end: Optional[float] = None) -> np.ndarray:
+                 end: Optional[float] = None,) -> np.ndarray:
         """
-        按环形区域填充被mask的像素
+        Fill masked pixels using ring-shaped regions
 
         Parameters
         ----------
         image : np.ndarray
-            输入图像
+            Input image
         mask : np.ndarray
-            坏像素掩膜，True表示被mask的像素
+            Bad pixel mask, True represents masked pixels
         center : tuple
-            圆环中心坐标 (col, row)
+            Ring center coordinates (col, row)
         step : float
-            圆环步长
+            Ring step size
         method : str
-            计算方法，'median'或'mean'
+            Calculation method, 'median' or 'mean'
         start, end : float, optional
-            圆环的起始和结束半径
+            Start and end radii of rings
 
         Returns
         -------
         np.ndarray
-            填充后的图像
+            Filled image
         """
-        # 参数检查
+        # Parameter checks
         if mask.shape != np.asarray(image).shape:
             raise ValueError("image and mask must have the same shape")
         if method not in ['median', 'mean']:
@@ -188,28 +234,28 @@ class PixelFiller:
         if step <= 0:
             raise ValueError("step must be positive")
 
-        # 如果没有被mask的像素，直接返回原图
+        # If no masked pixels, return original image
         if not np.any(mask):
             return image.copy()
         
-        # 初始化
+        # Initialize
         filled_image = image.copy()
 
-        # 使用calc_radial_profile计算每个环的值
+        # Use calc_radial_profile to calculate values for each ring
         profile = calc_radial_profile(image, center=center, step=step, bad_pixel_mask=mask,
                                       start=start, end=end, method=method)
         radii, values = profile.get_radial_profile()
         dist_map = DistanceMap(image, center)
 
-        # 对每个有效的环进行处理
+        # Process each valid ring
         for r, v in zip(radii, values):
-            # 创建当前环的掩膜
+            # Create mask for current ring
             ring_mask = dist_map.get_range_mask(r-step/2, r+step/2)
 
-            # 找到环内被mask的像素
+            # Find masked pixels in this ring
             masked_pixels = mask & ring_mask
 
-            # 如果环内有被mask的像素，用计算得到的值填充
+            # If there are masked pixels in this ring, fill with calculated value
             if np.any(masked_pixels):
                 filled_image[masked_pixels] = v
 
@@ -217,29 +263,29 @@ class PixelFiller:
     
     def _iterative_fill(self, data: np.ndarray, mask: np.ndarray, 
                         filter_func, footprint: np.ndarray) -> np.ndarray:
-        """通用的迭代填充函数
+        """Generic iterative filling function
         
         Parameters
         ----------
         data : np.ndarray
-            需要填充的数据（可以是图像或误差数组）
+            Data to be filled (can be image or error array)
         mask : np.ndarray
-            需要填充的像素掩膜
+            Pixel mask for areas to be filled
         filter_func : callable
-            用于计算填充值的函数（如np.nanmedian或error_propagation）
+            Function used to calculate fill values (e.g., np.nanmedian or error_propagation)
         footprint : np.ndarray
-            用于定义邻域的结构元素
+            Structuring element that defines the neighborhood
             
         Returns
         -------
         np.ndarray
-            填充后的数组
+            Filled array
         """
-        # 初始化带NaN的数组
+        # Initialize array with NaN
         working_data = data.copy()
         working_data[mask] = np.nan
         
-        # 迭代填充直到没有更多变化或达到最大迭代次数
+        # Iterate filling until no more changes or maximum iterations reached
         max_iters = 10
         for _ in range(max_iters):
             filled_values = ndimage.generic_filter(
@@ -250,16 +296,16 @@ class PixelFiller:
                 cval=np.nan
             )
             
-            # 只更新mask的区域
+            # Only update masked regions
             new_data = working_data.copy()
             new_data[mask] = filled_values[mask]
             
-            # 检查是否收敛（是否所有值都被填充）
+            # Check for convergence (if all values are filled)
             if not np.any(np.isnan(new_data[mask])):
                 working_data = new_data
                 break
                 
-            # 检查是否有变化
+            # Check if there are any changes
             if np.allclose(new_data, working_data, equal_nan=True):
                 break
                 
@@ -270,44 +316,44 @@ class PixelFiller:
     def by_neighbors(self, image: np.ndarray, mask: np.ndarray, 
                     radius: int = 4, method: str = 'nearest',
                     error: Optional[np.ndarray] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
-        """使用邻近像素填充被mask的像素
+        """Fill masked pixels using neighboring pixels
         
         Parameters
         ----------
         image : np.ndarray
-            输入图像
+            Input image
         mask : np.ndarray
-            坏像素掩膜，True表示被mask的像素
+            Bad pixel mask, True represents masked pixels
         radius : int
-            邻域半径（仅在method='nearest'时使用），默认为4
+            Neighborhood radius (used only when method='nearest'), default is 4
         method : str
-            填充方法，可选：
-            - 'nearest': 最近邻插值（默认），使用邻域中值填充
-            - 'biharmonic': 双调和插值，适合平滑填充
+            Filling method, options:
+            - 'nearest': Nearest neighbor interpolation (default), fills using neighborhood median
+            - 'biharmonic': Biharmonic interpolation, suitable for smooth filling
         error : np.ndarray, optional
-            输入图像的误差数组。如果提供，将计算填充像素的误差传播
+            Error array for input image. If provided, will calculate error propagation for filled pixels
             
         Returns
         -------
         Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]
-            如果没有提供error参数，返回填充后的图像；
-            如果提供了error参数，返回(filled_image, filled_error)元组
+            If error parameter is not provided, returns filled image;
+            If error parameter is provided, returns (filled_image, filled_error) tuple
         """
-        # 参数检查
+        # Parameter checks
         if mask.shape != image.shape:
             raise ValueError("image and mask must have the same shape")
-        if method not in ['nearest', 'biharmonic']:
-            raise ValueError("method must be one of: 'nearest', 'biharmonic'")
+        if method not in ['nearest', 'biharmonic', 'median_filter','convolution']:
+            raise ValueError("method must be one of: 'nearest', 'biharmonic', 'median_filter', 'convolution'")
         if error is not None and error.shape != image.shape:
             raise ValueError("error array must have the same shape as image")
         
-        # 如果没有被mask的像素，直接返回原图
+        # If no masked pixels, return original image
         if not np.any(mask):
             if error is not None:
                 return image.copy(), error.copy()
             return image.copy()
         
-        # 初始化输出
+        # Initialize output
         filled_image = image.copy()
         filled_error = error.copy() if error is not None else None
         
@@ -315,25 +361,56 @@ class PixelFiller:
             footprint = ndimage.generate_binary_structure(2, 1)
             footprint = ndimage.iterate_structure(footprint, radius)
             
-            # 使用通用填充函数填充图像
+            # Use generic filling function to fill the image
             filled_image = self._iterative_fill(
                 image, mask, np.nanmedian, footprint
             )
             
-            # 计算误差（如果需要）
+            # Calculate error (if needed)
             if error is not None:
                 filled_error = self._by_neighbors_calculate_error(
                     error, mask, method='nearest', footprint=footprint
                 )
-            
+        elif method == 'median_filter':
+            filtered = ndimage.median_filter(image, size=2 * radius + 1)
+            filled_image = image.copy()
+            filled_image[mask] = filtered[mask]
+            if error is not None:
+                filled_error = self._by_neighbors_calculate_error(
+                    error, mask, method='nearest', footprint=footprint
+                )
+        elif method == 'convolution':
+            image_with_nans = image.copy()
+            image_with_nans[mask] = np.nan
+            kernel = Gaussian2DKernel(x_stddev=radius)
+            filled_image = interpolate_replace_nans(image_with_nans, kernel)
+            if error is not None:
+                filled_error = self._by_neighbors_calculate_error(
+                    error, mask, method='nearest', footprint=footprint
+                )
+        elif 'griddata' in method: # e.g., griddata_nearest
+            griddata_method = method.split('_')[1]
+            row, col = np.indices(self.image.shape)
+            points = np.array((col[~mask], row[~mask])).T
+            values = image[~mask]
+            filled_image = griddata(points, values, (col, row), method=griddata_method)
+            return filled_image
+        elif method == 'generic_filter':
+            def nan_median_filter(values):
+                valid_values = values[~np.isnan(values)]
+                return np.median(valid_values) if len(valid_values) > 0 else np.nan
+            image_with_nans = self.image.copy()
+            image_with_nans[self.mask] = np.nan
+            filled_image = generic_filter(image_with_nans, nan_median_filter, size=size)
+            return filled_image
         else:  # 'biharmonic'
             from skimage.restoration import inpaint
-            # 双调和插值，适合平滑填充
+            # Biharmonic interpolation, suitable for smooth filling
             filled_image = inpaint.inpaint_biharmonic(
                 image, mask
             )
             
-            # 计算误差（如果需要）
+            # Calculate error (if needed)
             if error is not None:
                 filled_error = self._by_neighbors_calculate_error(
                     error, mask, method='biharmonic'
@@ -345,7 +422,7 @@ class PixelFiller:
     
     def _by_neighbors_calculate_error(self, error: np.ndarray, mask: np.ndarray, 
                                         method: str = 'nearest', **kwargs) -> np.ndarray:
-        """计算填充像素的误差传播"""
+        """Calculate error propagation for filled pixels"""
         if method not in ['nearest', 'biharmonic']:
             raise ValueError("method must be one of: 'nearest', 'biharmonic'")
         
@@ -357,8 +434,8 @@ class PixelFiller:
                 valid_mask = ~np.isnan(values)
                 if not np.any(valid_mask):
                     return np.nan
-                # 不再除以n_valid，因为我们使用中值填充
-                # 保守估计：使用邻域内误差的均方根
+                # No longer divide by n_valid since we use median filling
+                # Conservative estimate: use root mean square of errors in neighborhood
                 return np.sqrt(np.nanmean(values[valid_mask]**2))
             
             filled_errors = self._iterative_fill(
@@ -366,7 +443,7 @@ class PixelFiller:
             )
             
         else:  # 'biharmonic'
-            # 使用mask边界上的误差的最大值作为填充区域的误差
+            # Use maximum error from mask boundary as the error for filled region
             boundary_mask = ndimage.binary_dilation(mask) & ~mask
             max_boundary_error = np.max(error[boundary_mask])
             
@@ -377,13 +454,54 @@ class PixelFiller:
     
     def by_median_map(self, image: np.ndarray, mask: np.ndarray,
                      median_map: np.ndarray) -> np.ndarray:
-        """用median map填充"""
+        """Fill using median map"""
         filled = image.copy()
         filled[mask] = median_map[mask]
         return filled
+    
+    def by_tile_median(self, image: np.ndarray, tile_size: int, 
+                       mask: np.ndarray = None, return_template: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """
+        将图像按 tile 分块，每块用该块的中位数值填充。
+
+        参数：
+            image (np.ndarray): 2D 图像数组，可包含 NaN。
+            tile_size (int): tile 大小（正方形 tile）。
+
+        返回：
+            np.ndarray: 用 tile 中值填充的图像。
+        """
+        ny, nx = image.shape
+        template = image.copy()
+        if mask is None:
+            mask = np.zeros_like(image, dtype=bool)
+        template[mask] = np.nan
+
+        for y0 in range(0, ny, tile_size):
+            for x0 in range(0, nx, tile_size):
+                y1 = min(y0 + tile_size, ny)
+                x1 = min(x0 + tile_size, nx)
+                tile = template[y0:y1, x0:x1]
+
+                # 提取非 NaN 有效值
+                valid_values = tile[~np.isnan(tile)]
+                if valid_values.size > 0:
+                    median_val = np.median(valid_values)
+                    template[y0:y1, x0:x1] = median_val
+                    # 可选：tile 中的 NaN 保持为 NaN，不做替换
+                else:
+                    # 整个 tile 都是 NaN，保持为 NaN
+                    continue
+                
+        filled = image.copy()
+        filled[mask] = template[mask]
+        if return_template:
+            return filled, template
+        else:
+            return filled
 
 class BackgroundCleaner:
-    """组合StarIdentifier和PixelFiller的高层接口"""
+    """High-level interface combining StarIdentifier and PixelFiller"""
     
     def __init__(self):
         self.identifier = StarIdentifier()
@@ -393,8 +511,8 @@ class BackgroundCleaner:
                            identify_method: str = 'sigma_clip',
                            fill_method: str = 'neighbors',
                            **kwargs) -> np.ndarray:
-        """处理单张图像的完整流程"""
-        # 选择识别方法
+        """Complete workflow for processing a single image"""
+        # Choose identification method
         if identify_method == 'sigma_clip':
             mask = self.identifier.by_sigma_clip(image, **kwargs)
         elif identify_method == 'manual':
@@ -402,7 +520,7 @@ class BackgroundCleaner:
         else:
             raise ValueError(f"Unsupported identify method: {identify_method}")
         
-        # 选择填充方法
+        # Choose filling method
         if fill_method == 'neighbors':
             cleaned = self.filler.by_neighbors(image, mask, **kwargs)
         elif fill_method == 'ring':
@@ -416,7 +534,7 @@ class BackgroundCleaner:
     
     def process_image_pair(self, image1: np.ndarray, image2: np.ndarray,
                           threshold: float = 0.) -> Tuple[np.ndarray, np.ndarray]:
-        """处理图像对的完整流程"""
+        """Complete workflow for processing an image pair"""
         mask_pos, mask_neg = self.identifier.by_comparison(image1, image2, threshold)
         cleaned1, cleaned2 = self.filler.by_comparison(image1, image2, mask_pos, mask_neg)
         return cleaned1, cleaned2

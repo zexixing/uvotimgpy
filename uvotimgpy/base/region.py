@@ -6,6 +6,8 @@ from matplotlib.patches import Circle, Rectangle
 from regions import PixelRegion, PixCoord, CirclePixelRegion, RectanglePixelRegion, CircleAnnulusPixelRegion
 from functools import reduce
 from operator import or_, and_
+from scipy.ndimage import median_filter, label, find_objects
+from scipy.ndimage import binary_dilation, binary_erosion
 
 class RegionConverter:
     @staticmethod
@@ -224,7 +226,7 @@ class RegionCombiner:
             return reduce(and_, masks)
 
 def mask_image(image: np.ndarray,
-               bad_pixel_mask: Optional[Union[np.ndarray, ApertureMask, PixelRegion]]) -> np.ndarray:
+               bad_pixel_mask: Union[np.ndarray, ApertureMask, PixelRegion, None]) -> np.ndarray:
     """
     处理输入图像和掩模
     
@@ -564,6 +566,55 @@ def adjust_regions(regions_list, old_coord, new_coord):
         new_regions.append(new_reg)
     return new_regions
 
+def select_mask_regions(mask, min_area=5, max_area=None):
+    # according to surrounding pixel numbers 
+    labeled, n = label(mask)
+    objects = find_objects(labeled)
+
+    final_mask = np.zeros_like(mask, dtype=bool)
+    for i, sl in enumerate(objects):
+        region = (labeled[sl] == (i + 1))
+        area = np.sum(region)
+        if min_area is not None and max_area is not None:
+            if min_area <= area <= max_area:
+                final_mask[sl][region] = True
+        elif min_area is not None:
+            if min_area <= area:
+                final_mask[sl][region] = True
+        elif max_area is not None:
+            if area <= max_area:
+                final_mask[sl][region] = True
+        else:
+            raise ValueError("area_range must be a tuple of two elements")
+    return final_mask
+
+def expand_shrink_region(mask, radius=2, method='expand', speed='normal'):
+    if speed == 'normal':
+        if method == 'expand':
+            mask = binary_dilation(mask, iterations=radius)
+        elif method == 'shrink':
+            mask = binary_erosion(mask, iterations=radius)
+    elif speed == 'fast':
+        if method == 'expand':
+            ny, nx = mask.shape
+            base = mask.astype(float)
+            acc = np.zeros_like(base)
+
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    shifted = np.zeros_like(base)
+
+                    y_src = slice(max(0, -dy), min(ny, ny - dy))
+                    y_dst = slice(max(0, dy), min(ny, ny + dy))
+                    x_src = slice(max(0, -dx), min(nx, nx - dx))
+                    x_dst = slice(max(0, dx), min(nx, nx + dx))
+
+                    shifted[y_dst, x_dst] = base[y_src, x_src]
+                    acc += shifted
+
+            return acc > 0
+    return mask
+
 def get_total_bounds(region_list):
     # 获取每个圆形region的边界框
     bounds = [region.bounding_box for region in region_list]
@@ -710,7 +761,7 @@ def create_circle_region(center, radius):
     circle_region = CirclePixelRegion(center=center, radius=radius)
     return circle_region
 
-def create_crcle_annulus_region(center, inner_radius, outer_radius):
+def create_circle_annulus_region(center, inner_radius, outer_radius):
     # center in (col, row)
     center = PixCoord(x=center[0], y=center[1])
     annulus_region = CircleAnnulusPixelRegion(center=center, 

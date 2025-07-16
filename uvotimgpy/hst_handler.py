@@ -8,11 +8,12 @@ from astropy.time import Time
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 from sbpy.data import Ephem
-from uvotimgpy.base.file_io import process_astropy_table
+from uvotimgpy.base.file_io import show_astropy_table
 from uvotimgpy.base.math_tools import GaussianFitter2D
 from uvotimgpy.base.region import RegionSelector
 import matplotlib.pyplot as plt
 from IPython import get_ipython
+from uvotimgpy.config import paths
 
 
 
@@ -222,7 +223,8 @@ class HstObservationLogger:
         return processed_table, targettimes, wcs_dict
     
     def _add_fitted_center_pixel(self, processed_table):
-        center_pixel_path = '/Volumes/ZexiWork/projects/29p/HST/comet_position_hst.csv'
+        project_29p_hst_path = paths.project_29p_hst
+        center_pixel_path = paths.get_subpath(project_29p_hst_path, 'docs', 'comet_position_hst.csv')
         data = np.genfromtxt(center_pixel_path, delimiter=',', skip_header=1)
         fitted_x_pixel = data[:,2]
         fitted_y_pixel = data[:,3]
@@ -242,6 +244,9 @@ class HstObservationLogger:
             wcs_key = f"{row['date']}_{row['file_name']}"
             wcs = wcs_dict[wcs_key]
             try:
+                # 下面的1是origin： origin is the coordinate in the upper left corner of the image. 
+                # In FITS and Fortran standards, this is 1. In Numpy and C standards this is 0.
+                # 所以这里得到的坐标是ds9的坐标
                 x, y = wcs.all_world2pix(row['RA'], row['DEC'], 1)
                 x_pixels.append(x)
                 y_pixels.append(y)
@@ -255,7 +260,7 @@ class HstObservationLogger:
 
         return merged_table
 
-    def process_data(self, output_path=None, save_format='csv', selected_columns=None, return_table=False,
+    def process_data(self, output_path=None, selected_columns=None, return_table=False,
                      orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation', 'alpha']):
         processed_table, targettimes, wcs_dict = self._process_fits_file()
         processed_table = self._add_fitted_center_pixel(processed_table)
@@ -268,7 +273,7 @@ class HstObservationLogger:
         if return_table:
             return final_table
         else:
-            process_astropy_table(final_table, output_path, save_format)
+            show_astropy_table(final_table, output_path)
 
 def fit_peak_in_region(image, region):
     """
@@ -369,12 +374,13 @@ def fit_peak_in_region(image, region):
     return (col_orig, row_orig, theta)
 
 def obtain_real_position(obs_table, i):
-    data_root_path = '/Volumes/ZexiWork/data/HST'
+    data_root_path = paths.data
+    data_root_path = paths.get_subpath(data_root_path, 'HST')
     target_name = '29P'
     obs_info = obs_table[i]
     date = obs_info['date']
     file_name = obs_info['file_name']
-    filepath = os.path.join(data_root_path, target_name, date, f'{file_name}.fits')
+    filepath = paths.get_subpath(data_root_path, target_name, date, f'{file_name}.fits')
     x_pixel = obs_info['x_pixel']
     y_pixel = obs_info['y_pixel']
     col_pixel = x_pixel - 1 
@@ -405,9 +411,13 @@ def obtain_real_position(obs_table, i):
     print(date, file_name, theta, x_pixel, y_pixel, x_ds9, y_ds9)
 
 if __name__ == '__main__':
-    data_root_path = '/Volumes/ZexiWork/data/HST'
+    data_root_path = paths.data
+    data_root_path = paths.get_subpath(data_root_path, 'HST')
     target_name = '29P'
     logger = HstObservationLogger(target_name, data_root_path, target_alternate='90000395')
-    obs_table = logger.process_data(save_format='csv', output_path='/Volumes/ZexiWork/projects/29p/HST/obs_log_29p_hst.csv')
+    project_29p_hst_path = paths.project_29p_hst
+    output_path = paths.get_subpath(project_29p_hst_path, 'docs', 'obs_log_29p_hst_2.csv')
+    orbital_keywords=['ra', 'dec', 'delta', 'r', 'elongation', 'alpha', 'sunTargetPA', 'velocityPA']
+    obs_table = logger.process_data(output_path=output_path, orbital_keywords=orbital_keywords)
     #obtain_real_position(obs_table, 1)
     #print(obs_table)
