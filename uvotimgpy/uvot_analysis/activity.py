@@ -9,12 +9,46 @@ from sbpy.data import Phys
 import csv
 import re
 
-
 from uvotimgpy.config import paths
 from uvotimgpy.base.math_tools import UnitConverter
 from uvotimgpy.utils.image_operation import DistanceMap
-from uvotimgpy.utils.spectrum_operation import ReddeningSpectrum, SolarSpectrum, calculate_flux, calculate_count_rate
+from uvotimgpy.utils.spectrum_operation import ReddeningSpectrum, SolarSpectrum, calculate_flux, calculate_count_rate, ReddeningCalculator
 from uvotimgpy.base.filters import get_effective_area
+
+def transform_reddening_from_other_papers(reddening, bp1, bp2, measure_method, return_reddened_spectrum=False,
+                                          bp1_my=None, bp2_my=None, area=None, my_method='countrate'):
+    """
+    transform the reddening from other papers to the reddening in our waveband.
+
+    Parameters:
+    -----------
+    reddening: measured by other papers;
+    bp1, bp2: the filters used to measure the reddening in other papers;
+    measure_method: 'flux' or 'countrate';
+    bp1_my, bp2_my: the filters used in our waveband.
+
+    Returns:
+    --------
+    reddening: the reddening in our waveband.
+    """
+    if measure_method == 'flux' or 'countrate':
+        reddening_spectrum = ReddeningSpectrum.linear_reddening(reddening, reddening_defination=measure_method, bp1=bp1, bp2=bp2)
+    else:
+        raise ValueError(f"Not supported measure_method for now: {measure_method}")
+    
+    gray_dust = SolarSpectrum.from_model()
+    reddened_dust = gray_dust*reddening_spectrum
+
+    if return_reddened_spectrum:
+        return reddened_dust
+    else:
+        if my_method == 'countrate':
+            reddening_my = ReddeningCalculator.from_countrate_source_spectrum(reddened_dust, gray_dust, bp1_my, bp2_my, area, None, None)
+        elif my_method == 'flux':
+            reddening_my = ReddeningCalculator.from_flux_source_spectrum(reddened_dust, gray_dust, bp1_my, bp2_my, None, None)
+        else:
+            raise ValueError(f"Not supported my_method for now: {my_method}")
+        return reddening_my
 
 class RatioCalculator_V_UV:
     """

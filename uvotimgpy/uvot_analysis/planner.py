@@ -145,7 +145,7 @@ if __name__ == "__main__":
     obs_config = 'mid'
 
     # path
-    obs_path = paths.get_subpath(paths.projects, '2024e1', 'obs')
+    obs_path = paths.get_subpath(paths.projects, 'C_2024E1', 'obs')
     option_path = paths.get_subpath(obs_path, '2025july.txt')
     reg_path = paths.get_subpath(obs_path, '2025july.reg')
 
