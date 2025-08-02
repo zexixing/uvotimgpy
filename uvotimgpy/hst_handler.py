@@ -8,7 +8,7 @@ from astropy.time import Time
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 from sbpy.data import Ephem
-from uvotimgpy.base.file_io import show_astropy_table
+from base.file_and_table import show_or_save_astropy_table
 from uvotimgpy.base.math_tools import GaussianFitter2D
 from uvotimgpy.base.region import RegionSelector
 import matplotlib.pyplot as plt
@@ -273,7 +273,7 @@ class HstObservationLogger:
         if return_table:
             return final_table
         else:
-            show_astropy_table(final_table, output_path)
+            show_or_save_astropy_table(final_table, output_path)
 
 def fit_peak_in_region(image, region):
     """

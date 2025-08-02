@@ -90,7 +90,7 @@ class RegionPlanner:
                 ra_init_obs = self.ra_init[i]
                 dec_init_obs = self.dec_init[i]
                 roll_obs = self.roll_list[i]
-                if obs_config == 'mid':
+                if obs_config == 'middle':
                     self._write_mid_observation(f, i, aper, grism, roll_obs)
                 else:
                     self._write_multi_observations(f, obs_config, ra_init_obs, dec_init_obs, roll_obs, base, aper)
@@ -142,14 +142,15 @@ if __name__ == "__main__":
     #              'v': 200, 'break': 20, 'v': 200, 'break': 20,
     #              'uvw1': 200, 'break': 20, 'uvw1': 200, 'break': 20, 'uvw1': 200,
     #              'break': 20, 'uvw1': 200, 'break': 20, 'uvw1': 200}   
-    obs_config = 'mid'
+    obs_config = 'middle'
 
     # path
-    obs_path = paths.get_subpath(paths.projects, 'C_2024E1', 'obs')
-    option_path = paths.get_subpath(obs_path, '2025july.txt')
-    reg_path = paths.get_subpath(obs_path, '2025july.reg')
+    obs_path = paths.get_subpath(paths.projects, 'C_2025N1', 'obs')
+    option_path = paths.get_subpath(obs_path, '2025july2.txt')
+    reg_path = paths.get_subpath(obs_path, '2025july2.reg')
+    print(option_path)
 
     # Create region file
-    delta = 2.92
+    delta = 2.82
     planner = RegionPlanner(option_path)
     planner.create_reg(delta, obs_config, reg_path)

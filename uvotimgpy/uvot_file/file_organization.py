@@ -13,13 +13,15 @@ from astropy.time import Time
 from astropy.io import fits
 from sbpy.data import Ephem
 from uvotimgpy.query import StarCoordinateQuery
-from uvotimgpy.base.file_io import show_or_save_astropy_table
+from uvotimgpy.base.file_and_table import show_or_save_astropy_table
 from uvotimgpy.base.filters import normalize_filter_name
+from uvotimgpy.base.math_tools import calculate_motion_pa
 
 class AstroDataOrganizer:
     def __init__(self, target_name, data_root_path=None):
         """
         Initialize the AstroDataOrganizer.
+        Designed for Swift data.
 
         Parameters:
         target_name (str): Name of the target (e.g., '29P').
@@ -147,6 +149,7 @@ class ObservationLogger:
             'DATE-END': {'dtype': str, 'unit': None}, 
             'MIDTIME': {'dtype': str, 'unit': None},
             'EXPOSURE': {'dtype': float, 'unit': u.second},
+            'TELAPSE': {'dtype': float, 'unit': u.second},
             'WHEELPOS': {'dtype': int, 'unit': None},
             'RA_PNT': {'dtype': float, 'unit': u.degree},
             'DEC_PNT': {'dtype': float, 'unit': u.degree}, 
@@ -445,6 +448,9 @@ class ObservationLogger:
 
             # Merge table
             orbit_table = orbit_ephem.table
+            if 'RA*cos(Dec)_rate' in orbital_keywords and 'DEC_rate' in orbital_keywords:
+                orbit_table['Sky_motion'] = np.sqrt(orbit_table['RA*cos(Dec)_rate'].value**2 + orbit_table['DEC_rate'].value**2)/60 # arcsec/min
+                orbit_table['Sky_mot_PA'] = calculate_motion_pa(orbit_table['RA*cos(Dec)_rate'].value, orbit_table['DEC_rate'].value)
             merged_table = hstack([processed_table, orbit_table])
 
             # Calculate pixel positions
@@ -730,10 +736,17 @@ if __name__ == "__main__":
     #organizer.process_data()
     #print(logger.data_table)
 
+    #logger = ObservationLogger('C_2025N1',data_root_path='/Users/zexixing/Library/CloudStorage/OneDrive-Personal/ZexiWork/data/Swift', target_alternate='90004918')
+    #output_path = '/Users/zexixing/Downloads/C_2025N1_uvot_data.csv'
+    #logger.process_data(output_path=output_path,
+    #                    orbital_keywords=['RA', 'DEC', 'delta', 'r', 'r_rate', 'elongation', 'alpha', 'sunTargetPA', 'velocityPA', ])
+    
     logger = ObservationLogger('C_2025N1',data_root_path='/Users/zexixing/Library/CloudStorage/OneDrive-Personal/ZexiWork/data/Swift', target_alternate='90004918')
     output_path = '/Users/zexixing/Downloads/C_2025N1_uvot_data.csv'
+    #logger = ObservationLogger('46P',data_root_path='/Users/zexixing/Library/CloudStorage/OneDrive-Personal/ZexiWork/data/Swift', target_alternate='90000548')
+    #output_path = '/Users/zexixing/Downloads/46P_uvot_data.csv'
     logger.process_data(output_path=output_path,
-                        orbital_keywords=['RA', 'RA*cos(Dec)_rate', 'DEC', 'DEC_rate', 'delta', 'r', 'elongation', 'alpha', 'sunTargetPA', 'velocityPA'])
+                        orbital_keywords=['RA', 'DEC', 'RA*cos(Dec)_rate', 'DEC_rate', 'delta', 'r', 'r_rate', 'elongation', 'alpha', 'sunTargetPA', 'velocityPA', ])
 
     #obs_log_path = '/Users/zexixing/Library/CloudStorage/OneDrive-Personal/ZexiWork/projects/C_2025N1/docs/C_2025N1_obs_log.csv'
     #obs_log_loader = ObservationLogLoader(obs_log_path)

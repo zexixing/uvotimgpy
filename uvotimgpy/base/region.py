@@ -8,6 +8,7 @@ from functools import reduce
 from operator import or_, and_
 from scipy.ndimage import median_filter, label, find_objects
 from scipy.ndimage import binary_dilation, binary_erosion
+from astropy import units as u
 
 class RegionConverter:
     @staticmethod
@@ -757,14 +758,54 @@ class RegionStatistics:
         return RegionStatistics.calculate_stats(data, regions, np.max, combine_regions, mask)
     
 def create_circle_region(center, radius):
+    """
+    center in (col, row)
+    """
     center = PixCoord(x=center[0], y=center[1])
     circle_region = CirclePixelRegion(center=center, radius=radius)
     return circle_region
 
 def create_circle_annulus_region(center, inner_radius, outer_radius):
-    # center in (col, row)
+    """
+    center in (col, row)
+    """
     center = PixCoord(x=center[0], y=center[1])
     annulus_region = CircleAnnulusPixelRegion(center=center, 
                                              inner_radius=inner_radius,
                                              outer_radius=outer_radius)
     return annulus_region
+
+def create_smeared_region(center, radius, motion, motion_pa):
+    """
+    center in (col, row)
+    motion: motion in pixels
+    pa: position angle of the motion in degrees, 0 is north, 90 is east
+    """
+    rect_center = PixCoord(x=center[0], y=center[1])
+    rect_angle = (motion_pa - 90)*u.deg
+    rect_region = RectanglePixelRegion(center=rect_center, width=motion, height=2*radius, angle=rect_angle)
+
+    angle_rad = np.radians(rect_angle)
+    dx = np.cos(angle_rad)
+    dy = np.sin(angle_rad)
+    half_width = motion / 2
+    circle1_center = PixCoord(x=center[0] - half_width * dx, y=center[1] - half_width * dy)
+    circle2_center = PixCoord(x=center[0] + half_width * dx, y=center[1] + half_width * dy)
+    circle1_region = CirclePixelRegion(center=circle1_center, radius=radius)
+    circle2_region = CirclePixelRegion(center=circle2_center, radius=radius)
+
+    all_regions = [rect_region, circle1_region, circle2_region]
+    smeared_region = reduce(or_, all_regions)
+    # plt.contour(smeared_region_bool, levels=[0.5], colors='red', linewidths=0.5)
+    return smeared_region
+
+def create_smeared_region_from_obs(center, radius, segment_elapsed_time, motion_rate, motion_pa):
+    """
+    center in (col, row)
+    radius: radius in pixels
+    segment_elapsed_time: segment elapsed time in seconds
+    motion_rate: motion rate in arcsec/min
+    motion_pa: position angle of the motion in degrees, 0 is north, 90 is east
+    """
+    motion = motion_rate/60 * segment_elapsed_time
+    return create_smeared_region(center, radius, motion, motion_pa)

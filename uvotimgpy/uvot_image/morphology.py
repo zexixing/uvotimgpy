@@ -1,7 +1,7 @@
 from typing import Tuple, Optional
 import numpy as np
 from scipy.interpolate import interp1d
-from uvotimgpy.utils.image_operation import calc_radial_profile, DistanceMap
+from uvotimgpy.utils.image_operation import calc_radial_profile, DistanceMap, profile_to_image
 import matplotlib.pyplot as plt
 class ImageEnhancer:
     @staticmethod
@@ -12,11 +12,13 @@ class ImageEnhancer:
                             bad_pixel_mask: Optional[np.ndarray] = None,
                             start: Optional[float] = None,
                             end: Optional[float] = None,
-                            method: str = 'median',
+                            method: str = 'division',
                             median_err_params: Optional[dict] = None,
                             return_radial_profile: bool = False) -> np.ndarray:
         """
         使用方位角中值剖面增强彗星图像
+        method: 'division' or 'subtraction'
+        TODO: add angle limit to get radial_profile
         """
         # 获取径向剖面
         radial_profile = calc_radial_profile(
@@ -27,7 +29,7 @@ class ImageEnhancer:
             bad_pixel_mask=bad_pixel_mask,
             start=start,
             end=end,
-            method=method,
+            method='median',
             median_err_params=median_err_params
         )
         
@@ -37,19 +39,14 @@ class ImageEnhancer:
             radii, values = radial_profile
         
         value_center = image[center[1], center[0]] # center[0]:col, center[1]:row
-        radii = np.insert(radii, 0, 0) # 在radii的第一个位置插入0
-        values = np.insert(values, 0, value_center) # 在values的第一个位置插入value_center
-
-        # 创建插值函数
-        profile_interp = interp1d(radii, values, 
-                                  bounds_error=False, 
-                                  fill_value=np.nan)
+        # radii = np.insert(radii, 0, 0) # 在radii的第一个位置插入0
+        # values = np.insert(values, 0, value_center) # 在values的第一个位置插入value_center
         
         # 创建距离图像
         r = DistanceMap(image, center).get_distance_map()
 
         # 使用插值函数创建2D模型图像
-        model_image = profile_interp(r)
+        model_image = profile_to_image(radii, values, r, fill_value=np.nan, start_r=0, start_value=value_center)
 
         ## 使用DistanceMap获取索引图
         #distance_map = DistanceMap(image, center)
@@ -64,7 +61,13 @@ class ImageEnhancer:
         #model_image = lut[index_map]
         
         # 计算增强后的图像，对于模型为0的位置设为nan
-        enhanced_image = np.where(model_image <= 0, np.nan, image / model_image)
+        if method == 'division':
+            #enhanced_image = np.where(model_image <= 0, np.nan, image / model_image)
+            enhanced_image = image / model_image
+        elif method == 'subtraction':
+            enhanced_image = image - model_image
+        else:
+            raise ValueError(f"Unsupported method: {method}")
         if not return_radial_profile:
             return enhanced_image
         else:

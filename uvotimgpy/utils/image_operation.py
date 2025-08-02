@@ -22,6 +22,9 @@ class DS9Converter:
         初始化对象
         """
         pass
+    @staticmethod
+    def round_to_int(x) -> int:
+        return int(np.floor(x + 0.5))
     
     @staticmethod
     def ds9_to_coords(ds9_x: Union[float, int], 
@@ -42,8 +45,6 @@ class DS9Converter:
             
         Returns
         -------
-        ds9_x, ds9_y : int or float
-            DS9中的坐标（从1开始）
         python_column, python_row : int or float
             Python数组中的索引（从0开始）
             python_column对应ds9_x（array的第二个索引）
@@ -51,8 +52,8 @@ class DS9Converter:
         """
         if to_int:
             # DS9坐标范围[m-0.5, m+0.5)对应整数m
-            ds9_out_x = int(np.floor(ds9_x + 0.5))
-            ds9_out_y = int(np.floor(ds9_y + 0.5))
+            ds9_out_x = DS9Converter.round_to_int(ds9_x)
+            ds9_out_y = DS9Converter.round_to_int(ds9_y)
         else:
             ds9_out_x = ds9_x
             ds9_out_y = ds9_y
@@ -61,7 +62,7 @@ class DS9Converter:
         python_column = ds9_out_x - 1
         python_row = ds9_out_y - 1
         
-        return ds9_out_x, ds9_out_y, python_column, python_row
+        return python_column, python_row
     
     @staticmethod
     def coords_to_ds9(python_column: Union[float, int],
@@ -84,20 +85,16 @@ class DS9Converter:
         -------
         ds9_x, ds9_y : int or float
             DS9中的坐标（从1开始）
-        python_column, python_row : int or float
-            Python数组中的索引（从0开始）
         """
         # DS9坐标从1开始
         ds9_x = python_column + 1
         ds9_y = python_row + 1
         
         if to_int:
-            ds9_x = int(np.floor(ds9_x + 0.5))
-            ds9_y = int(np.floor(ds9_y + 0.5))
-            python_column = int(np.floor(python_column + 0.5))
-            python_row = int(np.floor(python_row + 0.5))
+            ds9_x = DS9Converter.round_to_int(ds9_x)
+            ds9_y = DS9Converter.round_to_int(ds9_y)
             
-        return ds9_x, ds9_y, python_column, python_row
+        return ds9_x, ds9_y
 
 def exposure_mask_with_nan(image: np.ndarray, 
                            exposure_map: np.ndarray, 
@@ -197,7 +194,7 @@ def rotate_image(image: np.ndarray,
     Parameters
     ----------
     image : 输入图像
-    target_coord : (row, column)源的坐标
+    target_coord : (col, row)源的坐标
     angle : 旋转角度（度）
     fill_value : 填充值
     """
@@ -217,7 +214,7 @@ def rotate_image(image: np.ndarray,
         return rotated_img, rotated_err
 
 def crop_image(image: np.ndarray, 
-              target_coord: Tuple[Union[float, int], Union[float, int]], 
+              old_target_coord: Tuple[Union[float, int], Union[float, int]], 
               new_target_coord: Tuple[Union[float, int], Union[float, int]],
               fill_value: Union[float, None] = np.nan,
               image_err: Optional[np.ndarray] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
@@ -231,11 +228,13 @@ def crop_image(image: np.ndarray,
     new_target_coord : (column, row)源在新图中的期望坐标
     fill_value : 填充值
     """
-    col, row = target_coord
+    col, row = old_target_coord
     new_col, new_row = new_target_coord
     
     # 计算新图像大小
     new_size = (2 * new_row + 1, 2 * new_col + 1)
+    if isinstance(fill_value, int):
+        fill_value = float(fill_value)
     new_image = np.full(new_size, fill_value)
     
     # 计算裁剪范围
@@ -257,7 +256,7 @@ def crop_image(image: np.ndarray,
     if image_err is None:
         return new_image
     else:
-        cropped_err = crop_image(image_err, target_coord, new_target_coord, fill_value=fill_value)
+        cropped_err = crop_image(image_err, old_target_coord, new_target_coord, fill_value=fill_value)
         return new_image, cropped_err
 
 
@@ -284,26 +283,30 @@ def align_images(images: List[np.ndarray],
 def stack_images(images: List[np.ndarray], 
                  method: str = 'median',
                  image_err: Optional[List[np.ndarray]] = None,
-                 median_err_params: Optional[dict] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+                 median_err_params: Optional[dict] = {'method':'mean', 'mask':True},
+                 verbose: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     叠加图像
     
     Parameters
     ----------
     images : 图像列表
-    method : 'median' 或 'mean'
+    method : 'median' 或 'mean' 或 'sum'
     median_err_params: dict, optional
         median_err_params for ErrorPropagation.median: method ('mean' or 'std'), mask (True/False)
     """
-    if method not in ['median', 'mean']:
-        raise ValueError("method must be 'median' or 'mean'")
-    if method == 'mean':
-        warnings.warn("Some pixels may be not well exposed, please check the exposure map with sum_exposure_map.")
+    if method not in ['median', 'mean', 'sum']:
+        raise ValueError("method must be 'median' or 'mean' or 'sum'")
+    if method == 'mean' or method == 'sum':
+        if verbose:
+            warnings.warn("Some pixels may be not well exposed, please check the exposure map with sum_exposure_map().")
     if image_err is None:
         if method == 'median':
             return np.nanmedian(images, axis=0)
         elif method == 'mean':
             return np.nanmean(images, axis=0)
+        elif method == 'sum':
+            return np.nansum(images, axis=0)
     else:
         if method == 'mean':
             mean_image, mean_error = ErrorPropagation.mean(images, image_err, axis=0, ignore_nan=True)
@@ -312,6 +315,9 @@ def stack_images(images: List[np.ndarray],
             median_image, median_error = ErrorPropagation.median(images, image_err, axis=0, ignore_nan=True,
                                                                  **median_err_params)
             return median_image, median_error
+        elif method == 'sum':
+            sum_image, sum_error = ErrorPropagation.sum(images, image_err, axis=0, ignore_nan=True)
+            return sum_image, sum_error
 
 def shrink_valid_image(image: np.ndarray, shrink_pixels: int = 2, mask: Optional[np.ndarray] = None, speed: str = 'normal') -> np.ndarray:
     """
@@ -525,7 +531,7 @@ def calc_radial_profile(image: np.ndarray,
                        start: Optional[float] = None,
                        end: Optional[float] = None,
                        method: str = 'median',
-                       median_err_params: Optional[dict] = None) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+                       median_err_params: Optional[dict] = {'method':'mean', 'mask':True}) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """计算径向profile及其误差
 
     Parameters
@@ -635,7 +641,7 @@ def bin_image(image: np.ndarray,
               block_size: Union[int, Tuple[int, int]], 
               image_err: Optional[np.ndarray] = None,
               method: str = 'mean',
-              median_err_params: Optional[dict] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+              median_err_params: Optional[dict] = {'method':'mean', 'mask':True}) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     对图像进行binning操作
     
@@ -658,14 +664,19 @@ def bin_image(image: np.ndarray,
     """
     if method == 'mean':
         func = np.nanmean
-        def error_func(a_err):
-            _, error = ErrorPropagation.mean(a_err, a_err, axis=None, ignore_nan=True)
+        def error_func(a_err, axis=None):
+            _, error = ErrorPropagation.mean(a_err, a_err, axis=axis, ignore_nan=True)
             return error
         
     elif method == 'median':
         func = np.nanmedian
-        def error_func(a_err):
-            _, error = ErrorPropagation.median(a_err, a_err, axis=None, ignore_nan=True, **median_err_params)
+        def error_func(a_err, axis=None):
+            _, error = ErrorPropagation.median(a_err, a_err, axis=axis, ignore_nan=True, **median_err_params)
+            return error
+    elif method == 'sum':
+        func = np.nansum
+        def error_func(a_err, axis=None):
+            _, error = ErrorPropagation.sum(a_err, a_err, axis=axis, ignore_nan=True)
             return error
     else:
         raise ValueError(f"Unsupported method: {method}")
@@ -711,3 +722,20 @@ def smooth_image(image: np.ndarray, kernel_size: int = 3, method: str = 'gaussia
                 raise ValueError("image and image_err must have consistent shapes and NaN positions")
     else:
         raise ValueError(f"Unsupported method: {method}")
+
+def profile_to_image(profile_r, profile_value, r_2d, fill_value=np.nan,
+                     start_r = None, start_value = None):
+    """
+    将径向profile转换为图像
+    fill_value: np.nan, 0, 'extrapolate'
+    """
+    if start_r is not None:
+        profile_r = np.insert(profile_r, 0, start_r)
+    if start_value is not None:
+        profile_value = np.insert(profile_value, 0, start_value)
+
+    profile_interp = interp1d(profile_r, profile_value, 
+                              bounds_error=False, 
+                              fill_value=fill_value)
+    image = profile_interp(r_2d)
+    return image

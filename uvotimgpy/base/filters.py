@@ -4,6 +4,7 @@ import numpy as np
 from astropy.io import fits
 from synphot import SpectralElement, Empirical1D
 from typing import Union
+import stsynphot as stsyn
 
 def normalize_filter_name(filter_input, output_format='filename'):
     """
@@ -61,6 +62,11 @@ def create_bandpass(wave: u.Quantity, thru: Union[u.Quantity, np.ndarray]) -> Sp
     if isinstance(thru, u.Quantity):
         thru = thru.value
     return SpectralElement(Empirical1D, points=wave, lookup_table=thru, fill_value=0)
+
+def format_bandpass(bandpass: Union[str, SpectralElement]):
+    if isinstance(bandpass, str):
+        bandpass = stsyn.band(bandpass)
+    return bandpass
 
 def get_effective_area(filter_name, transmission=True, bandpass=True):
     """

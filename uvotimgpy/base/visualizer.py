@@ -236,4 +236,14 @@ def draw_scalebar(ax,
 
     return ax
 
-
+def smart_float_format(x):
+    abs_x = abs(x)
+    # 特别大或特别小：用科学计数法
+    if abs_x != 0 and (abs_x < 1e-3 or abs_x > 1e5):
+        return f"{x:.3e}"
+    # 大于 1000 的普通数：保留三位小数
+    elif abs_x >= 10:
+        return f"{x:.3f}"
+    # 其他情况：保留 4 位有效数字
+    else:
+        return f"{x:.4g}"  # g 格式自动切换科学计数法和浮点数

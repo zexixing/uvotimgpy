@@ -6,13 +6,15 @@ import warnings
 import astropy.units as u
 from sbpy.activity.gas import VectorialModel
 from sbpy.data import Phys
+from synphot import SpectralElement
+import synphot.units as su
 import csv
 import re
 
 from uvotimgpy.config import paths
 from uvotimgpy.base.math_tools import UnitConverter
 from uvotimgpy.utils.image_operation import DistanceMap
-from uvotimgpy.utils.spectrum_operation import ReddeningSpectrum, SolarSpectrum, calculate_flux, calculate_count_rate, ReddeningCalculator
+from uvotimgpy.utils.spectrum_operation import ReddeningSpectrum, SolarSpectrum, calculate_flux, calculate_count_rate, ReddeningCalculator, read_OH_spectrum, FluxConverter
 from uvotimgpy.base.filters import get_effective_area
 
 def transform_reddening_from_other_papers(reddening, bp1, bp2, measure_method, return_reddened_spectrum=False,
@@ -83,8 +85,9 @@ class RatioCalculator_V_UV:
             bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
             bp_v = get_effective_area('v', transmission=True, bandpass=True)
             sun = SolarSpectrum.from_model()
-            countrate_uv_gray_dust = calculate_count_rate(sun, bp_uv)
-            countrate_v_gray_dust = calculate_count_rate(sun, bp_v)
+            area = np.pi*15*15*u.cm**2
+            countrate_uv_gray_dust = calculate_count_rate(sun, bp_uv, area)
+            countrate_v_gray_dust = calculate_count_rate(sun, bp_v, area)
             gray_dust_countrate_ratio = countrate_uv_gray_dust/countrate_v_gray_dust
         """
         if gray_dust_spectrum == 'sun':
@@ -105,7 +108,7 @@ class RatioCalculator_V_UV:
         This is suitable for reddening defined from fluxes, 
             or is an approximation for reddening defined from countrates.
 
-        To get gray_dust_countrate_ratio
+        To get gray_dust_flux_ratio
         Obtained with steps below:
             bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
             bp_v = get_effective_area('v', transmission=True, bandpass=True)
@@ -153,37 +156,61 @@ class RatioCalculator_V_UV:
         dust_countrate_ratio = (cr2flux_v/cr2flux_uvw1) * gray_dust_flux_ratio * RatioCalculator_V_UV.reddening_correction(reddening)
         return dust_countrate_ratio
 
-def flux_to_column_density(flux: Union[float, np.ndarray], 
-                        flux_err: Union[float, np.ndarray], 
-                        r: float, delta: float,
-                        rv: float) -> Tuple[Union[float, np.ndarray], Union[float, np.ndarray]]:
+def countrate_to_emission_flux_for_oh(countrate: Union[float, np.ndarray], 
+                                      countrate_err: Union[float, np.ndarray]=None,
+                                      ):
     """
-    Convert flux measurements to molecular column density using OH fluorescence g-factors.
+    Convert countrate measurements to flux OH. Default is for Swift UVOT UVW1.
+    The flux is the true flux emitted by coma, instead of observed flux. Unit: erg/s/cm2.
+    The flux and countrate are both for the region of measurement (which perhaps is an aperture or even a pixel).
+
+    The factor is obtained with steps below:
+        bp = get_effective_area('uvw1', transmission=True, bandpass=True)
+        area = np.pi*15*15*u.cm**2
+        oh_spectrum = read_OH_spectrum()
+        count_rate_in_theory = calculate_count_rate(oh_spectrum, bp, area=area)
+        emission_flux_in_theory = oh_spectrum.integrate(flux_unit=su.FLAM)
+        factor = emission_flux_in_theory.value/count_rate_in_theory.value 
+    """
+    factor = 1.2750922625672172e-12
+    flux = countrate * factor
+    if countrate_err is not None:
+        flux_err = countrate_err * factor
+        return flux, flux_err
+    else:
+        return flux
+
+def emission_flux_to_total_number(emission_flux: Union[float, np.ndarray],  
+                                  rh: float, delta: float,
+                                  rhv: float,
+                                  emission_flux_err: Union[float, np.ndarray]=None):
+    """
+    Convert flux measurements to molecular total number using OH fluorescence g-factors.
     
     Parameters
     ----------
     flux : float or np.ndarray
         Observed flux in erg/s/cm2
-    flux_err : float or np.ndarray
-        Uncertainty in flux measurements
-    r : float
+    rh : float
         Heliocentric distance in AU
     delta : float
         Distance to observer in AU
-    rv : float
+    rhv : float
         Radial velocity in km/s (relative to Sun)
+    flux_err : float or np.ndarray
+        Uncertainty in flux measurements, default is None
         
     Returns
     -------
-    column_density : float or np.ndarray
-        Molecular column density
-    column_density_err : float or np.ndarray
-        Uncertainty in molecular column density
+    total_number : float or np.ndarray
+        Molecular total number
+    total_number_err : float or np.ndarray
+        Uncertainty in molecular total number
         
     Notes
     -----
     This function uses OH fluorescence g-factors from Schleicher's thesis to convert
-    observed fluxes to molecular column densities. The g-factors are interpolated
+    observed fluxes to molecular total number. The g-factors are interpolated
     based on the radial velocity and scaled for heliocentric distance.
     
     The luminosity is calculated as:
@@ -219,18 +246,21 @@ def flux_to_column_density(flux: Union[float, np.ndarray],
     delta_cm = UnitConverter.au_to_km(delta) * 1000 * 100
     
     # Calculate luminosity: L = flux * 4 * pi * delta^2
-    luminosity = flux * 4 * np.pi * np.power(delta_cm, 2)
-    luminosity_err = flux_err * 4 * np.pi * np.power(delta_cm, 2)
+    luminosity = emission_flux * 4 * np.pi * np.power(delta_cm, 2)
+    if emission_flux_err is not None:
+        luminosity_err = emission_flux_err * 4 * np.pi * np.power(delta_cm, 2)
     
     # Calculate scaled g-factor: g = g_1AU(rv) / r^2
-    g_1au_value = g_1au_interp(rv)
-    g_value = g_1au_value / np.power(r, 2)
+    g_1au_value = g_1au_interp(rhv)
+    g_value = g_1au_value / np.power(rh, 2)
     
     # Calculate molecular number: N = L / g
-    column_density = luminosity / g_value
-    column_density_err = luminosity_err / g_value
-    
-    return column_density, column_density_err
+    total_number = luminosity / g_value
+    if emission_flux_err is None:
+        return total_number
+    else:
+        total_number_err = luminosity_err / g_value
+        return total_number, total_number_err
 
 
 def create_vectorial_model(
@@ -900,6 +930,27 @@ class TotalNumberCalculator:
         total_number = number_per_pixel[mask].sum()
         return total_number
     
+    @staticmethod # TODO
+    def from_profile():
+        pass
+
+def oh_countrate_to_column_density(countrate_per_pixel, pixel_scale, delta, r, rv, countrate_per_pixel_err=None): #TODO
+    # cnts/s/pixel
+    arcsec = UnitConverter.pixel_to_arcsec(1.0, pixel_scale)
+    km_per_pixel = UnitConverter.arcsec_to_km(arcsec, delta)
+    cm_per_pixel = km_per_pixel * 1000 * 100
+    cm2_per_pixel = cm_per_pixel**2
+    countrate_per_cm2 = countrate_per_pixel / cm2_per_pixel
+    if countrate_per_pixel_err is not None:
+        countrate_per_cm2_err = countrate_per_pixel_err / cm2_per_pixel
+        emission_flux, emission_flux_err = countrate_to_emission_flux_for_oh(countrate_per_cm2, countrate_per_cm2_err)
+        number, number_err = emission_flux_to_total_number(emission_flux, r, delta, rv, emission_flux_err)
+        return number, number_err
+    else:
+        emission_flux = countrate_to_emission_flux_for_oh(countrate_per_cm2)
+        number = emission_flux_to_total_number(emission_flux, r, delta, rv)
+    return number
+
 def scale_from_total_number(total_number_data: float, 
                             total_number_model: float, 
                             base_q: float) -> float:
