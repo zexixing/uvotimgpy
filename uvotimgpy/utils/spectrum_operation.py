@@ -15,7 +15,7 @@ from synphot.specio import read_fits_spec
 from stsynphot.config import conf
 from uvotimgpy.config import paths
 from uvotimgpy.base.math_tools import ErrorPropagation
-from uvotimgpy.base.filters import format_bandpass
+from uvotimgpy.base.instruments import format_bandpass
 
 def create_spectrum(wave: u.Quantity, spec: Union[u.Quantity, np.ndarray], ifunit=True, **kwargs) -> Union[SourceSpectrum, BaseUnitlessSpectrum]:
     '''

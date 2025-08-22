@@ -9,7 +9,7 @@ from astropy.coordinates import SkyCoord
 from astropy import units as u
 from sbpy.data import Ephem
 from base.file_and_table import show_or_save_astropy_table
-from uvotimgpy.base.math_tools import GaussianFitter2D
+from uvotimgpy.base.math_tools import GaussianFitter2D, fit_peak_in_region
 from uvotimgpy.base.region import RegionSelector
 import matplotlib.pyplot as plt
 from IPython import get_ipython
@@ -274,104 +274,6 @@ class HstObservationLogger:
             return final_table
         else:
             show_or_save_astropy_table(final_table, output_path)
-
-def fit_peak_in_region(image, region):
-    """
-    在给定region内拟合带旋转角度的高斯函数并返回峰值位置在原始图像中的坐标
-    
-    Parameters
-    ----------
-    image : np.ndarray
-        输入的2D图像
-    region : regions.PixelRegion
-        要分析的区域
-        
-    Returns
-    -------
-    tuple
-        峰值在原始图像中的坐标和旋转角度 (col, row, theta)
-    """
-    # 获取region的mask和cutout
-    mask = region.to_mask()
-    cutout = mask.cutout(image)
-    mask_data = mask.data
-    
-    # 创建有效数据掩模
-    valid_mask = mask_data > 0
-    
-    # 获取有效像素的信息
-    rows, cols = np.where(valid_mask)
-    values = cutout[valid_mask]
-    
-
-    # 获取bounding_box信息用于坐标转换
-    bbox = region.bounding_box
-    row_min, row_max, col_min, col_max = bbox.iymin, bbox.iymax, bbox.ixmin, bbox.ixmax
-
-    # 计算更合理的初始参数
-    height, width = cutout.shape
-    max_value = np.max(values)
-    background = np.percentile(values, 10)  # 使用较低百分位数作为背景估计
-    
-    # 使用最大值位置作为中心的初始猜测
-    max_pos = np.unravel_index(np.argmax(cutout), cutout.shape)
-    initial_row, initial_col = max_pos
-    
-    # 估计初始sigma（使用区域大小的1/4到1/6）
-    initial_sigma = min(width, height) / 5
-    
-    # 确保sigma不会太小
-    initial_sigma = max(initial_sigma, 1.0)
-    
-    # 初始旋转角度设为0
-    initial_theta = 0.0
-    
-    # 创建旋转高斯拟合器
-    gaussian_fitter = GaussianFitter2D()
-    
-    try:
-        # 设置更合理的初始参数
-        fitted_model, _ = gaussian_fitter.fit(
-            cutout,
-            n_gaussians=1,
-            threshold=background,  # 使用估计的背景值作为阈值
-            position_list=[(initial_col, initial_row)],
-            amplitude_list=[max_value - background],  # 减去背景值
-            sigma_list=[initial_sigma],
-            theta_list=[initial_theta],  # 添加初始旋转角度
-        )
-        
-    except Exception as e:
-        print("\n拟合出错:", str(e))
-        print("\n详细诊断信息:")
-        print("初始参数:")
-        print(f"- 中心位置 (col, row): ({initial_col}, {initial_row})")
-        print(f"- 振幅: {max_value - background}")
-        print(f"- Sigma: {initial_sigma}")
-        print(f"- Theta: {initial_theta}")
-        print(f"- 背景: {background}")
-        print("\n数据统计:")
-        print(f"- 最大值: {max_value}")
-        print(f"- 最小值: {np.min(values)}")
-        print(f"- 平均值: {np.mean(values)}")
-        print(f"- 中位数: {np.median(values)}")
-        print(f"- 标准差: {np.std(values)}")
-        raise
-
-    # 获取拟合后的高斯函数参数（在cutout坐标系中）
-    g = fitted_model[0]  # 第一个高斯分量
-    col_cutout = g.x_mean.value  # 在cutout中的col坐标
-    row_cutout = g.y_mean.value  # 在cutout中的row坐标
-    theta = g.theta.value  # 旋转角度（弧度）
-    
-    # 转换到原始图像坐标系
-    col_orig = col_cutout + col_min
-    row_orig = row_cutout + row_min
-
-    fig = gaussian_fitter.plot_results(cutout, fitted_model)
-    plt.show()
-    
-    return (col_orig, row_orig, theta)
 
 def obtain_real_position(obs_table, i):
     data_root_path = paths.data

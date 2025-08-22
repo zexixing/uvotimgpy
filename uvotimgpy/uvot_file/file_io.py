@@ -14,6 +14,7 @@ def save_stacked_fits(images_to_save: dict,
                       comment: str = None,
                       other_header_info: dict = None,
                       compressed: bool = False,
+                      stack_unit: str = 'counts/s',
                       hst: bool = False):
     """
     将stacked image保存为fits文件
@@ -84,7 +85,7 @@ def save_stacked_fits(images_to_save: dict,
     primary_header['DATE_END'] = (last_date_end_str, 'End time of last observation')
     primary_header['MIDTIME'] = (midtime_iso, 'Middle time between first and last observation')
     primary_header['EXPTIME'] = (total_exptime, 'Total exposure time [s]')
-    primary_header['BUNIT'] = ('COUNTS/S', 'Physical unit of array values')
+    primary_header['BUNIT'] = (stack_unit, 'Physical unit of array values')
     primary_header['COLPIXEL'] = (target_pos[0], 'Target X position in Python coordinates')
     primary_header['ROWPIXEL'] = (target_pos[1], 'Target Y position in Python coordinates')
     primary_header['DS9XPIX'] = (target_pos[0] + 1, 'Target X position in DS9 coordinates')
@@ -181,7 +182,7 @@ def save_cleaned_fits(images_to_save: dict,
     
     target_pos = target_position
     
-    primary_header['BUNIT'] = ('ELECTRONS/S', 'Physical unit of array values')
+    primary_header['BUNIT'] = ('COUNTS/S', 'Physical unit of array values')
     primary_header['COLPIXEL'] = (target_pos[0], 'Target column position in Python coordinates')
     primary_header['ROWPIXEL'] = (target_pos[1], 'Target row position in Python coordinates')
     primary_header['DS9XPIX'] = (target_pos[0] + 1, 'Target X position in DS9 coordinates')

@@ -14,8 +14,8 @@ import re
 from uvotimgpy.config import paths
 from uvotimgpy.base.math_tools import UnitConverter
 from uvotimgpy.utils.image_operation import DistanceMap
-from uvotimgpy.utils.spectrum_operation import ReddeningSpectrum, SolarSpectrum, calculate_flux, calculate_count_rate, ReddeningCalculator, read_OH_spectrum, FluxConverter
-from uvotimgpy.base.filters import get_effective_area
+from uvotimgpy.utils.spectrum_operation import TypicalWaveSfluxd, ReddeningSpectrum, SolarSpectrum, calculate_flux, calculate_count_rate, ReddeningCalculator, read_OH_spectrum, FluxConverter
+from uvotimgpy.base.instruments import get_effective_area
 
 def transform_reddening_from_other_papers(reddening, bp1, bp2, measure_method, return_reddened_spectrum=False,
                                           bp1_my=None, bp2_my=None, area=None, my_method='countrate'):
@@ -57,23 +57,33 @@ class RatioCalculator_V_UV:
     for swift image subtraction
     """
     @staticmethod
-    def reddening_correction(reddening):
+    def reddening_correction(reddening, obs_time=None):
         """
         To get (1+t)/(1-t), where t = (Lambda_2-Lambda_1)*R/(2*1000A*100%)
 
         Obtained with steps below:
-            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
-            bp_v = get_effective_area('v', transmission=True, bandpass=True)
-            average_wave_uv = TypicalWaveSfluxd.average_wave(bp_uv).to(u.AA).value
-            average_wave_v = TypicalWaveSfluxd.average_wave(bp_v).to(u.AA).value
+            #bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+            #bp_v = get_effective_area('v', transmission=True, bandpass=True, obs_time=obs_time)
+            #average_wave_uv = TypicalWaveSfluxd.average_wave(bp_uv).to(u.AA).value
+            #average_wave_v = TypicalWaveSfluxd.average_wave(bp_v).to(u.AA).value
+            #average_wave_uv = 2616.72 # 2616.728247883734 A for UVW1
+            #average_wave_v = 5429.57 # 5429.569566258718 A for V
+            sun = SolarSpectrum.from_model()
+            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+            bp_v = get_effective_area('v', transmission=True, bandpass=True, obs_time=obs_time)
+            effective_wave_uv = TypicalWaveSfluxd.effective_wave_photon_weighted(sun, bp_uv).to(u.AA).value
+            effective_wave_v = TypicalWaveSfluxd.effective_wave_photon_weighted(sun, bp_v).to(u.AA).value
         """
-        average_wave_uv = 2616.72 # 2616.728247883734 A for UVW1
-        average_wave_v = 5429.57 # 5429.569566258718 A for V
-        t = (average_wave_uv - average_wave_v)*reddening/(2*1000*100)
-        return (1+t)/(1-t)
+        sun = SolarSpectrum.from_model()
+        bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+        bp_v = get_effective_area('v', transmission=True, bandpass=True, obs_time=obs_time)
+        effective_wave_uv = TypicalWaveSfluxd.effective_wave_photon_weighted(sun, bp_uv).to(u.AA).value
+        effective_wave_v = TypicalWaveSfluxd.effective_wave_photon_weighted(sun, bp_v).to(u.AA).value
+        t = (effective_wave_uv - effective_wave_v)*reddening/(2*1000*100)
+        return (1+t)/(1-t)  
 
     @staticmethod
-    def dust_countrate_ratio_from_reddening_CR(reddening, gray_dust_spectrum='sun'):
+    def dust_countrate_ratio_from_reddening_CR(reddening, gray_dust_spectrum='sun', obs_time=None):
         """
         To get CountRate(UV,dust)/CountRate(V,dust) for swift image subtraction.
         Equals to (1+t)/(1-t) * CountRate(UV,gray dust)/CountRate(V,gray dust)
@@ -82,8 +92,8 @@ class RatioCalculator_V_UV:
 
         To get gray_dust_countrate_ratio
         Obtained with steps below:
-            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
-            bp_v = get_effective_area('v', transmission=True, bandpass=True)
+            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+            bp_v = get_effective_area('v', transmission=True, bandpass=True, obs_time=obs_time)
             sun = SolarSpectrum.from_model()
             area = np.pi*15*15*u.cm**2
             countrate_uv_gray_dust = calculate_count_rate(sun, bp_uv, area)
@@ -91,17 +101,23 @@ class RatioCalculator_V_UV:
             gray_dust_countrate_ratio = countrate_uv_gray_dust/countrate_v_gray_dust
         """
         if gray_dust_spectrum == 'sun':
-            # gray_dust_countrate_ratio = countrate_uv_gray_dust/countrate_v_gray_dust
-            gray_dust_countrate_ratio = 0.09020447142191476 # sun = SolarSpectrum.from_model()
+            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+            bp_v = get_effective_area('v', transmission=True, bandpass=True, obs_time=obs_time)
+            sun = SolarSpectrum.from_model()
+            area = np.pi*15*15*u.cm**2
+            countrate_uv_gray_dust = calculate_count_rate(sun, bp_uv, area)
+            countrate_v_gray_dust = calculate_count_rate(sun, bp_v, area)
+            gray_dust_countrate_ratio = countrate_uv_gray_dust.value/countrate_v_gray_dust.value
+            # gray_dust_countrate_ratio = 0.09020447142191476 # sun = SolarSpectrum.from_model()
             # gray_dust_countrate_ratio = 0.09276191549759981 # sun = SolarSpectrum.from_colina96()
         else:
             raise ValueError(f"Not supported for now: {gray_dust_spectrum}")
 
-        correction_factor = RatioCalculator_V_UV.reddening_correction(reddening)
+        correction_factor = RatioCalculator_V_UV.reddening_correction(reddening, obs_time)
         return correction_factor * gray_dust_countrate_ratio
     
     @staticmethod
-    def dust_flux_ratio_from_reddening_flux(reddening, gray_dust_spectrum='sun'):
+    def dust_flux_ratio_from_reddening_flux(reddening, gray_dust_spectrum='sun', obs_time=None):
         """
         To get Flux(UV,dust)/Flux(V,dust) for swift image subtraction.
         Equals to (1+t)/(1-t) * Flux(UV,gray dust)/Flux(V,gray dust)
@@ -110,25 +126,30 @@ class RatioCalculator_V_UV:
 
         To get gray_dust_flux_ratio
         Obtained with steps below:
-            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
-            bp_v = get_effective_area('v', transmission=True, bandpass=True)
+            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+            bp_v = get_effective_area('v', transmission=True, bandpass=True, obs_time=obs_time)
             sun = SolarSpectrum.from_model()
             flux_uv_gray_dust = calculate_flux(sun, bp_uv)
             flux_v_gray_dust = calculate_flux(sun, bp_v)
             gray_dust_flux_ratio = flux_uv_gray_dust/flux_v_gray_dust
         """
         if gray_dust_spectrum == 'sun':
-            # gray_dust_flux_ratio = flux_uv_gray_dust/flux_v_gray_dust
-            gray_dust_flux_ratio = 0.15373407817907703 # sun = SolarSpectrum.from_model()
+            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+            bp_v = get_effective_area('v', transmission=True, bandpass=True, obs_time=obs_time)
+            sun = SolarSpectrum.from_model()
+            flux_uv_gray_dust = calculate_flux(sun, bp_uv)
+            flux_v_gray_dust = calculate_flux(sun, bp_v)
+            gray_dust_flux_ratio = flux_uv_gray_dust.value/flux_v_gray_dust.value
+            # gray_dust_flux_ratio = 0.15373407817907703 # sun = SolarSpectrum.from_model()
             # gray_dust_flux_ratio = 0.15838868851932458 # sun = SolarSpectrum.from_colina96()
         else:
             raise ValueError(f"Not supported for now: {gray_dust_spectrum}")
 
-        correction_factor = RatioCalculator_V_UV.reddening_correction(reddening)
+        correction_factor = RatioCalculator_V_UV.reddening_correction(reddening, obs_time)
         return correction_factor * gray_dust_flux_ratio
     
     @staticmethod
-    def dust_countrate_ratio_from_reddening_flux(reddening, bp1=None, bp2=None, gray_dust_spectrum='sun'):
+    def dust_countrate_ratio_from_reddening_flux(reddening, bp1=None, bp2=None, gray_dust_spectrum='sun', obs_time=None):
         """
         To get CountRate(UV,dust)/CountRate(V,dust) for swift image subtraction.
         Equals to (1+t)/(1-t) * CountRate(UV,gray dust)/CountRate(V,gray dust)
@@ -138,13 +159,18 @@ class RatioCalculator_V_UV:
         """
         if gray_dust_spectrum == 'sun':
             gray_dust_spectrum = SolarSpectrum.from_model()
-            # gray_dust_flux_ratio = flux_uv_gray_dust/flux_v_gray_dust
-            gray_dust_flux_ratio = 0.15373407817907703 # sun = SolarSpectrum.from_model()
+            bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+            bp_v = get_effective_area('v', transmission=True, bandpass=True, obs_time=obs_time)
+            sun = SolarSpectrum.from_model()
+            flux_uv_gray_dust = calculate_flux(sun, bp_uv)
+            flux_v_gray_dust = calculate_flux(sun, bp_v)
+            gray_dust_flux_ratio = flux_uv_gray_dust.value/flux_v_gray_dust.value
+            # gray_dust_flux_ratio = 0.15373407817907703 # sun = SolarSpectrum.from_model()
             # gray_dust_flux_ratio = 0.15838868851932458 # sun = SolarSpectrum.from_colina96()
         else:
             raise ValueError(f"Not supported for now: {gray_dust_spectrum}")
-        bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True)
-        bp_v = get_effective_area('v', transmission=True, bandpass=True)
+        bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+        bp_v = get_effective_area('v', transmission=True, bandpass=True, obs_time=obs_time)
         if bp1 is None and bp2 is None:
             bp1 = bp_uv
             bp2 = bp_v
@@ -158,21 +184,27 @@ class RatioCalculator_V_UV:
 
 def countrate_to_emission_flux_for_oh(countrate: Union[float, np.ndarray], 
                                       countrate_err: Union[float, np.ndarray]=None,
-                                      ):
+                                      obs_time=None):
     """
     Convert countrate measurements to flux OH. Default is for Swift UVOT UVW1.
     The flux is the true flux emitted by coma, instead of observed flux. Unit: erg/s/cm2.
     The flux and countrate are both for the region of measurement (which perhaps is an aperture or even a pixel).
 
     The factor is obtained with steps below:
-        bp = get_effective_area('uvw1', transmission=True, bandpass=True)
+        bp = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
         area = np.pi*15*15*u.cm**2
         oh_spectrum = read_OH_spectrum()
         count_rate_in_theory = calculate_count_rate(oh_spectrum, bp, area=area)
         emission_flux_in_theory = oh_spectrum.integrate(flux_unit=su.FLAM)
         factor = emission_flux_in_theory.value/count_rate_in_theory.value 
     """
-    factor = 1.2750922625672172e-12
+    bp = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+    area = np.pi*15*15*u.cm**2
+    oh_spectrum = read_OH_spectrum()
+    count_rate_in_theory = calculate_count_rate(oh_spectrum, bp, area=area)
+    emission_flux_in_theory = oh_spectrum.integrate(flux_unit=su.FLAM)
+    factor = emission_flux_in_theory.value/count_rate_in_theory.value 
+    #factor = 1.2750922625672172e-12
     flux = countrate * factor
     if countrate_err is not None:
         flux_err = countrate_err * factor

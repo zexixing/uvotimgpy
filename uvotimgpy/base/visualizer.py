@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import Optional, Tuple
+from typing import Union, List, Dict, Any, Optional, Tuple
+import math
+
 
 class MaskInspector:
     def __init__(self, image: np.ndarray, mask: np.ndarray):
@@ -125,6 +127,9 @@ def draw_direction_compass(ax,
                            colors='white',
                            position=(0.9, 0.9),
                            arrow_length=0.08,
+                           arrow_width=0.5,
+                           headwidth=4,
+                           headlength=3,
                            text_offset=0.02,
                            fontsize=10):
     """
@@ -163,7 +168,7 @@ def draw_direction_compass(ax,
         c = colors[label]
 
         ax.annotate('', xy=(x1, y1), xytext=(x0, y0),
-                    arrowprops=dict(facecolor=c, edgecolor=c, width=1, headwidth=6, headlength=5),
+                    arrowprops=dict(facecolor=c, edgecolor=c, width=arrow_width, headwidth=headwidth, headlength=headlength),
                     xycoords='axes fraction')
 
         xt = x0 + (arrow_length + text_offset) * dx
@@ -200,38 +205,30 @@ def draw_scalebar(ax,
     返回：
     - ax: 修改后的 matplotlib Axes 对象
     """
-    # 将 position 从 Axes 坐标 → Data 坐标
-    x0_ax, y0_ax = position
-    x0_data, y0_data = ax.transAxes.transform((x0_ax, y0_ax))
-    
-    # 横线像素起止（屏幕坐标）
-    half_len = length / 2
-    x_start_pix = x0_data - half_len
-    x_end_pix = x0_data + half_len
-    y_pix = y0_data
+    # 取中心点（Axes → Data）
+    x0_data, y0_data = ax.transAxes.transform(position)
+    x0_data, y0_data = ax.transData.inverted().transform((x0_data, y0_data))
 
-    # 上下标签位置（屏幕坐标）
-    y_top = y_pix + text_offset
-    y_bottom = y_pix - text_offset
-
-    # 反变换为数据坐标
-    inv = ax.transData.inverted()
-    x_start_data, y_data = inv.transform((x_start_pix, y_pix))
-    x_end_data, _ = inv.transform((x_end_pix, y_pix))
-    _, y_top_data = inv.transform((x0_data, y_top))
-    _, y_bottom_data = inv.transform((x0_data, y_bottom))
+    # 横线起止 (data coords)
+    x_start = x0_data - length / 2
+    x_end   = x0_data + length / 2
 
     # 画横线
-    ax.plot([x_start_data, x_end_data], [y_data, y_data], color=color, linewidth=linewidth)
+    ax.plot([x_start, x_end], [y0_data, y0_data],
+            color=color, linewidth=linewidth)
 
-    # 上标签
+    # 文本位置：在显示坐标中做偏移
+    x0_disp, y0_disp = ax.transData.transform((x0_data, y0_data))
+    y_top_disp = y0_disp + text_offset
+    y_bottom_disp = y0_disp - text_offset
+    _, y_top_data = ax.transData.inverted().transform((x0_disp, y_top_disp))
+    _, y_bottom_data = ax.transData.inverted().transform((x0_disp, y_bottom_disp))
+
     if label_top:
-        ax.text((x_start_data + x_end_data)/2, y_top_data, label_top,
+        ax.text((x_start+x_end)/2, y_top_data, label_top,
                 ha='center', va='bottom', color=color, fontsize=fontsize)
-
-    # 下标签
     if label_bottom:
-        ax.text((x_start_data + x_end_data)/2, y_bottom_data, label_bottom,
+        ax.text((x_start+x_end)/2, y_bottom_data, label_bottom,
                 ha='center', va='top', color=color, fontsize=fontsize)
 
     return ax
@@ -247,3 +244,112 @@ def smart_float_format(x):
     # 其他情况：保留 4 位有效数字
     else:
         return f"{x:.4g}"  # g 格式自动切换科学计数法和浮点数
+    
+def multi_show(image_list, max_cols=4, vrange: Union[None, Tuple[float, float], List[Tuple[float, float]]] = None, 
+               xrange: Union[None, Tuple[float, float], List[Tuple[float, float]]] = None, 
+               yrange: Union[None, Tuple[float, float], List[Tuple[float, float]]] = None,
+               title_list: Union[None, List[str]] = None, 
+               target_position_range: Union[None, Tuple[float, float], List[Tuple[float, float]]] = None,):
+    """
+    Display multiple images in a grid.
+
+    Parameters
+    ----------
+    image_list : list
+        List of images to display
+    xrange: list
+    yrange: list
+    """
+    n_images = len(image_list)
+    n_cols = min(max_cols, n_images)
+    n_rows = math.ceil(n_images / n_cols)
+
+    # 创建和显示
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols*3, n_rows*3))
+    if n_rows == 1: axes = [axes]
+    if n_cols == 1: axes = [[ax] for ax in axes]
+
+    if isinstance(xrange, Tuple):
+        xrange_low = xrange[0]
+        xrange_high = xrange[1]
+        update_xrange = False
+    elif isinstance(xrange, list) and isinstance(xrange[0], Tuple):
+        if len(xrange) == len(image_list):
+            update_xrange = True
+        else:
+            print('xrange length does not match image_list length')
+    else:
+        update_xrange = False
+
+    if isinstance(yrange, Tuple):
+        yrange_low = yrange[0]
+        yrange_high = yrange[1]
+        update_yrange = False
+    elif isinstance(yrange, list) and isinstance(yrange[0], Tuple):
+        if len(yrange) == len(image_list):
+            update_yrange = True
+        else:
+            print('yrange length does not match image_list length')
+    else:
+        update_yrange = False
+    
+    if isinstance(vrange, Tuple):
+        vrange_low = vrange[0]
+        vrange_high = vrange[1]
+        update_vrange = False
+    elif isinstance(vrange, list) and isinstance(vrange[0], Tuple):
+        if len(vrange) == len(image_list):
+            update_vrange = True
+        else:
+            print('vrange length does not match image_list length')
+    else:
+        update_vrange = False
+
+    if isinstance(target_position_range, Tuple):
+        target_col = target_position_range[0]
+        target_row = target_position_range[1]
+        update_target_position_range = False
+    elif isinstance(target_position_range, list) and isinstance(target_position_range[0], Tuple):
+        if len(target_position_range) == len(image_list):
+            update_target_position_range = True
+        else:
+            print('target_position_range length does not match image_list length')
+    else:
+        update_target_position_range = False
+
+    for i, img in enumerate(image_list):
+        row, col = i // n_cols, i % n_cols
+        if update_xrange:
+            xrange_low = xrange[i][0]
+            xrange_high = xrange[i][1]
+        if update_yrange:
+            yrange_low = yrange[i][0]
+            yrange_high = yrange[i][1]
+        if update_vrange:
+            vrange_low = vrange[i][0]
+            vrange_high = vrange[i][1]
+        if update_target_position_range:
+            target_col = target_position_range[i][0]
+            target_row = target_position_range[i][1]
+        if vrange is None:
+            axes[row][col].imshow(img, origin='lower')
+        else:
+            axes[row][col].imshow(img, vmin=vrange_low, vmax=vrange_high, origin='lower')
+        axes[row][col].axis('off')
+        if xrange is not None:
+            axes[row][col].set_xlim(xrange_low, xrange_high)
+        if yrange is not None:
+            axes[row][col].set_ylim(yrange_low, yrange_high)
+        if title_list is not None:
+            axes[row][col].set_title(title_list[i])
+        #axes[row][col].grid(color='w', linestyle='--', linewidth=0.5, alpha=0.5)
+        if target_position_range is not None:
+            axes[row][col].plot(target_col, target_row, 'rx', markersize=5)
+
+    # 隐藏多余子图
+    for i in range(n_images, n_rows * n_cols):
+        row, col = i // n_cols, i % n_cols
+        axes[row][col].set_visible(False)
+    plt.tight_layout(pad=0.1)
+    return fig, axes
+    

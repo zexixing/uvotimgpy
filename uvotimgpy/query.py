@@ -4,8 +4,13 @@ from difflib import get_close_matches
 from astroquery.vizier import Vizier
 from astroquery.simbad import Simbad
 import numpy as np
+import requests
+from io import BytesIO
+from astropy.io import fits
+from astroquery.skyview import SkyView
 import warnings
 warnings.filterwarnings('ignore')  # Suppress astropy warnings
+from typing import Optional
 
 class StarCoordinateQuery:
     """
@@ -306,3 +311,49 @@ class StarCatalogQuery:
 #print(coords)
 
 
+class SkyImageFetcher:
+    @staticmethod
+    def from_skyview(ra: float, 
+                     dec: float, 
+                     radius: u.Quantity, 
+                     survey: str = 'DSS',
+                     pixels: int = 1024):
+        """
+        Load sky image from SkyView
+        """
+        hdul = SkyView.get_images(position=f"{ra}, {dec}", survey=[survey], radius=radius, pixels=pixels)[0]
+        image = hdul[0].data
+        return image
+    
+    @staticmethod
+    def from_hips(ra: float, dec: float, 
+                  radius_arcsec: float = 10, 
+                  scale: Optional[float] = None):
+        """
+        HiPS 
+        ra, dec: degree
+        radius_arcsec: arcsec
+        scale: arcsec/pixel
+        """
+        pixels = int(radius_arcsec / scale)
+        base_url = "http://alasky.cds.unistra.fr/hips-image-services/hips2fits"
+        params = {
+            'hips': 'CDS/P/DSS2/blue',  # or 'CDS/P/DSS2/red'
+            'ra': ra,
+            'dec': dec,
+            'fov': 2*radius_arcsec/60/60,  # convert to degree
+            'width': 2*pixels,
+            'height': 2*pixels,
+            'projection': 'TAN',
+            'coordsys': 'icrs',
+            'format': 'fits'
+        }
+        try:
+            response = requests.get(base_url, params=params, timeout=60)
+            if response.status_code == 200:
+                with fits.open(BytesIO(response.content)) as hdul:
+                    image = hdul[0].data.copy()
+                return image
+        except Exception as e:
+            print(f"HIPS2FITS failure: {e}")
+    

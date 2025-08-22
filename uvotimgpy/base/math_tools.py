@@ -7,6 +7,10 @@ from uncertainties import ufloat
 from astropy import constants as const
 from astropy import units as u
 import warnings
+from astropy.coordinates import SkyCoord, FK5
+from astropy import units as u
+from astropy.time import Time
+
 
 class GaussianFitter2D:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
     def __init__(self):
@@ -135,7 +139,7 @@ class GaussianFitter2D:
             amplitude = amplitude_list[i] if amplitude_list[i] is not None else peaks[i]
             sigma = sigma_list[i] if sigma_list[i] is not None else 2.0
             theta = theta_list[i] if theta_list[i] is not None else 0.0  # Default angle is 0
-                        
+            
             gaussian = models.Gaussian2D(
                 amplitude=amplitude,
                 x_mean=col_mean,
@@ -170,13 +174,24 @@ class GaussianFitter2D:
                 model += gaussian
         
         # Add constant background
-        model += models.Const2D(amplitude=np.min(image))
-        
+        if threshold is not None:   
+            model += models.Const2D(amplitude=threshold)
+        else:
+            model += models.Const2D(amplitude=np.nanmedian(image))
+
         # Create fitter
-        fitter = fitting.LevMarLSQFitter()
+        #fitter = fitting.LevMarLSQFitter()
+        fitter = fitting.TRFLSQFitter()
         
         # Execute fitting
-        fitted_model = fitter(model, col, row, image)
+        try:
+            fitted_model = fitter(model, col, row, image)
+        except Exception as e:
+            print(f"Fitting failed: {e}")
+            print(f"模型参数: {model.parameters}")
+            if hasattr(fitter, 'fit_info'):
+                print(f"拟合信息: {fitter.fit_info}")
+            raise
         
         return fitted_model, fitter
 
@@ -517,9 +532,10 @@ class ErrorPropagation:
             return False
             
         # check if the nan positions are the same
-        nan_positions_a = np.isnan(a)
-        nan_positions_b = np.isnan(b)
-        return np.array_equal(nan_positions_a, nan_positions_b)
+        #nan_positions_a = np.isnan(a)
+        #nan_positions_b = np.isnan(b)
+        #return np.array_equal(nan_positions_a, nan_positions_b)
+        return True
     
     @staticmethod
     def _initialize_inputs(a, a_err, b=None, b_err=None):
@@ -534,7 +550,7 @@ class ErrorPropagation:
 
             # check consistency
             if not (ErrorPropagation.check_consistency(a, a_err) and ErrorPropagation.check_consistency(b, b_err)):
-                raise ValueError("Values and their errors must have consistent shapes and NaN positions")
+                raise ValueError("Values and their errors must have consistent shapes") # and NaN positions
 
             # check if the shapes of the two datasets match
             if a_shape != b_shape:
@@ -543,7 +559,7 @@ class ErrorPropagation:
             return a, a_err, b, b_err
         else:
             if not ErrorPropagation.check_consistency(a, a_err):
-                raise ValueError("Values and their errors must have consistent shapes and NaN positions")
+                raise ValueError("Values and their errors must have consistent shapes") # and NaN positions
             return a, a_err
             
     @staticmethod
@@ -785,3 +801,119 @@ def calculate_motion_pa(ra_rate, dec_rate):
     pa_deg = pa_deg % 360
     
     return pa_deg
+
+def icrf_to_fk5(ra, dec):
+    """
+    Convert ICRF coordinates to FK5 coordinates. Both are for J2000.0 equinox
+    ra, dec: float or array or list
+    """
+    icrf_coord = SkyCoord(ra=ra*u.degree, dec=dec*u.degree, frame='icrs')
+    #fk5_coord = icrf_coord.transform_to('fk5')
+    fk5_j2000 = icrf_coord.transform_to(FK5(equinox='J2000'))
+    return fk5_j2000.ra.degree, fk5_j2000.dec.degree
+
+def fk5_to_icrf(ra, dec):
+    """
+    Convert FK5 coordinates to ICRF coordinates. Both are for J2000.0 equinox
+    ra, dec: float or array or list
+    """
+    fk5_j2000 = SkyCoord(ra=ra*u.degree, dec=dec*u.degree, frame='fk5', equinox='J2000')
+    icrf_coord = fk5_j2000.transform_to('icrs')
+    return icrf_coord.ra.degree, icrf_coord.dec.degree
+
+def fit_peak_in_region(image, region, plot=False):
+    """
+    在给定region内拟合带旋转角度的高斯函数并返回峰值位置在原始图像中的坐标
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        输入的2D图像
+    region : regions.PixelRegion
+        要分析的区域
+    Returns
+    -------
+    tuple
+        峰值在原始图像中的坐标和旋转角度 (col, row, theta)
+    """
+    # 获取region的mask和cutout
+    mask = region.to_mask()
+    cutout = mask.cutout(image)
+    mask_data = mask.data
+    
+    # 创建有效数据掩模
+    #valid_mask = mask_data > 0
+    valid_mask = np.isfinite(mask_data)
+    
+    # 获取有效像素的信息
+    rows, cols = np.where(valid_mask)
+    values = cutout[valid_mask]
+
+    # 获取bounding_box信息用于坐标转换
+    bbox = region.bounding_box
+    row_min, row_max, col_min, col_max = bbox.iymin, bbox.iymax, bbox.ixmin, bbox.ixmax
+
+    # 计算更合理的初始参数
+    height, width = cutout.shape
+    max_value = np.max(values)
+    background = np.median(values)  # 使用较低百分位数作为背景估计
+    
+    # 使用最大值位置作为中心的初始猜测
+    max_pos = np.unravel_index(np.argmax(cutout), cutout.shape)
+    initial_row, initial_col = max_pos
+    
+    # 估计初始sigma（使用区域大小的1/4到1/6）
+    initial_sigma = min(width, height) / 5
+    
+    # 确保sigma不会太小
+    initial_sigma = max(initial_sigma, 1.0)
+    
+    # 初始旋转角度设为0
+    initial_theta = 0.0
+    
+    # 创建旋转高斯拟合器
+    gaussian_fitter = GaussianFitter2D()
+    try:
+        # 设置更合理的初始参数
+        fitted_model, _ = gaussian_fitter.fit(
+            cutout,
+            n_gaussians=1,
+            threshold=background,  # 使用估计的背景值作为阈值
+            position_list=[(initial_col, initial_row)],
+            amplitude_list=[max_value - background],  # 减去背景值
+            sigma_list=[initial_sigma],
+            theta_list=[initial_theta],  # 添加初始旋转角度
+        )
+        
+    except Exception as e:
+        print("\n拟合出错:", str(e))
+        print("\n详细诊断信息:")
+        print("初始参数:")
+        print(f"- 中心位置 (col, row): ({initial_col}, {initial_row})")
+        print(f"- 振幅: {max_value - background}")
+        print(f"- Sigma: {initial_sigma}")
+        print(f"- Theta: {initial_theta}")
+        print(f"- 背景: {background}")
+        print("\n数据统计:")
+        print(f"- 最大值: {max_value}")
+        print(f"- 最小值: {np.min(values)}")
+        print(f"- 平均值: {np.mean(values)}")
+        print(f"- 中位数: {np.median(values)}")
+        print(f"- 标准差: {np.std(values)}")
+        raise
+
+    # 获取拟合后的高斯函数参数（在cutout坐标系中）
+    g = fitted_model[0]  # 第一个高斯分量
+    col_cutout = g.x_mean.value  # 在cutout中的col坐标
+    row_cutout = g.y_mean.value  # 在cutout中的row坐标
+    theta = g.theta.value  # 旋转角度（弧度）
+    
+    # 转换到原始图像坐标系
+    col_orig = col_cutout + col_min
+    row_orig = row_cutout + row_min
+
+    if plot:
+        fig = gaussian_fitter.plot_results(cutout, fitted_model)
+        plt.show()
+    
+    return col_orig, row_orig, theta

@@ -14,8 +14,8 @@ from astropy.io import fits
 from sbpy.data import Ephem
 from uvotimgpy.query import StarCoordinateQuery
 from uvotimgpy.base.file_and_table import show_or_save_astropy_table
-from uvotimgpy.base.filters import normalize_filter_name
-from uvotimgpy.base.math_tools import calculate_motion_pa
+from uvotimgpy.base.instruments import normalize_filter_name
+from uvotimgpy.base.math_tools import calculate_motion_pa, icrf_to_fk5
 
 class AstroDataOrganizer:
     def __init__(self, target_name, data_root_path=None):
@@ -165,7 +165,7 @@ class ObservationLogger:
         if not is_motion:
             self._set_fixed_coordinates()
 
-    def _set_fixed_coordinates(self):
+    def _set_fixed_coordinates(self): # TODO: icrs to fk5
         """
         Obtain coordinates for fixed target (star) objects.
         
@@ -451,6 +451,10 @@ class ObservationLogger:
             if 'RA*cos(Dec)_rate' in orbital_keywords and 'DEC_rate' in orbital_keywords:
                 orbit_table['Sky_motion'] = np.sqrt(orbit_table['RA*cos(Dec)_rate'].value**2 + orbit_table['DEC_rate'].value**2)/60 # arcsec/min
                 orbit_table['Sky_mot_PA'] = calculate_motion_pa(orbit_table['RA*cos(Dec)_rate'].value, orbit_table['DEC_rate'].value)
+            if 'RA' in orbital_keywords and 'DEC' in orbital_keywords:
+                ra_list, dec_list = icrf_to_fk5(orbit_table['RA'].value, orbit_table['DEC'].value)
+                orbit_table['RA'] = ra_list*u.deg
+                orbit_table['DEC'] = dec_list*u.deg
             merged_table = hstack([processed_table, orbit_table])
 
             # Calculate pixel positions
@@ -640,6 +644,7 @@ class ObservationLogLoader:
             # 基于已筛选的DataFrame继续筛选
             first_filter = obs_log.where("FILTER == 'V'")
             second_filter = obs_log.where("EXPOSURE >= 190", df=first_filter)
+            result = obs_log.where("not (OBSID == '11000' and EXT == 1)", df=first_filter)
         
         Returns:
             pd.DataFrame: 筛选后的数据

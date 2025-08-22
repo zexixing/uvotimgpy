@@ -1,5 +1,6 @@
 from typing import Tuple, Union, Optional, List, Callable, Any
 import numpy as np
+from pathlib import Path
 from photutils.aperture import ApertureMask, BoundingBox, Aperture
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
@@ -105,7 +106,7 @@ class RegionConverter:
     
     @staticmethod
     def to_bool_array(region: Union[np.ndarray, ApertureMask, PixelRegion], 
-                      image_shape: Tuple[int, int]) -> np.ndarray:
+                      image_shape: Union[Tuple[int, int], None] = None) -> np.ndarray:
         if isinstance(region, ApertureMask):
             return RegionConverter.aperture_to_bool_array(region, image_shape)
         elif isinstance(region, PixelRegion):
@@ -225,6 +226,22 @@ class RegionCombiner:
             return reduce(and_, masks)
         else:  # region
             return reduce(and_, masks)
+
+def get_exclude_region(img_shape: Union[Tuple[int, int], None] = None, 
+                       focus_region: Union[np.ndarray, PixelRegion, None] = None,
+                       exclude_region: Union[np.ndarray, PixelRegion, None] = None):
+    # exclude region
+    if exclude_region is not None:
+        exclude_region = RegionConverter.to_bool_array(exclude_region, img_shape)
+    else:
+        exclude_region = np.zeros(img_shape, dtype=bool)
+    if focus_region is not None:
+        focus_region = RegionConverter.to_bool_array(focus_region, img_shape)
+        out_focus_region = ~focus_region
+        exclude_region = exclude_region | out_focus_region
+    if not exclude_region.any():
+        exclude_region = None
+    return exclude_region
 
 def mask_image(image: np.ndarray,
                bad_pixel_mask: Union[np.ndarray, ApertureMask, PixelRegion, None]) -> np.ndarray:
@@ -486,7 +503,7 @@ class RegionSelector:
         plt.show()
         return self.regions
 
-def save_regions(regions: List[PixelRegion], file_path: str, correct: Optional[float] = 1) -> None:
+def save_regions(regions: List[PixelRegion], file_path: Union[str, Path], correct: Optional[float] = 1) -> None:
     """
     1: 将从图上选择的PixelRegion列表保存为DS9可读取的.reg文件
     """
@@ -579,14 +596,14 @@ def select_mask_regions(mask, min_area=5, max_area=None):
         if min_area is not None and max_area is not None:
             if min_area <= area <= max_area:
                 final_mask[sl][region] = True
-        elif min_area is not None:
+        elif min_area is not None and max_area is None:
             if min_area <= area:
                 final_mask[sl][region] = True
-        elif max_area is not None:
+        elif max_area is not None and min_area is None:
             if area <= max_area:
                 final_mask[sl][region] = True
-        else:
-            raise ValueError("area_range must be a tuple of two elements")
+        elif min_area is None and max_area is None:
+            pass
     return final_mask
 
 def expand_shrink_region(mask, radius=2, method='expand', speed='normal'):
@@ -775,6 +792,14 @@ def create_circle_annulus_region(center, inner_radius, outer_radius):
                                              outer_radius=outer_radius)
     return annulus_region
 
+def create_rectangle_region(center, width, height, angle=0*u.deg):
+    """
+    center in (col, row)
+    """
+    center = PixCoord(x=center[0], y=center[1])
+    rect_region = RectanglePixelRegion(center=center, width=width, height=height, angle=angle)
+    return rect_region
+
 def create_smeared_region(center, radius, motion, motion_pa):
     """
     center in (col, row)
@@ -799,7 +824,7 @@ def create_smeared_region(center, radius, motion, motion_pa):
     # plt.contour(smeared_region_bool, levels=[0.5], colors='red', linewidths=0.5)
     return smeared_region
 
-def create_smeared_region_from_obs(center, radius, segment_elapsed_time, motion_rate, motion_pa):
+def create_smeared_region_from_obs(center, radius, elapsed_time, motion_rate, motion_pa):
     """
     center in (col, row)
     radius: radius in pixels
@@ -807,5 +832,5 @@ def create_smeared_region_from_obs(center, radius, segment_elapsed_time, motion_
     motion_rate: motion rate in arcsec/min
     motion_pa: position angle of the motion in degrees, 0 is north, 90 is east
     """
-    motion = motion_rate/60 * segment_elapsed_time
+    motion = motion_rate/60 * elapsed_time
     return create_smeared_region(center, radius, motion, motion_pa)

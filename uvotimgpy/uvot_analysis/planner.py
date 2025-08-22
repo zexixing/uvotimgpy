@@ -146,11 +146,11 @@ if __name__ == "__main__":
 
     # path
     obs_path = paths.get_subpath(paths.projects, 'C_2025N1', 'obs')
-    option_path = paths.get_subpath(obs_path, '2025july2.txt')
-    reg_path = paths.get_subpath(obs_path, '2025july2.reg')
+    option_path = paths.get_subpath(obs_path, '2025aug.txt')
+    reg_path = paths.get_subpath(obs_path, '2025aug.reg')
     print(option_path)
 
     # Create region file
-    delta = 2.82
+    delta = 2.654
     planner = RegionPlanner(option_path)
     planner.create_reg(delta, obs_config, reg_path)

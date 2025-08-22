@@ -1,5 +1,6 @@
-from typing import Union, Tuple, List, Optional
+from typing import Union, Tuple, List, Optional, Dict, Any
 import numpy as np
+from pathlib import Path
 from astropy.io import fits
 from astropy.stats import sigma_clip
 from astropy.wcs import WCS
@@ -10,11 +11,12 @@ from regions import CirclePixelRegion, PixCoord, PixelRegion
 from photutils.aperture import ApertureMask
 from uvotimgpy.utils.image_operation import calc_radial_profile, DistanceMap, ImageDistanceCalculator
 from uvotimgpy.query import StarCatalogQuery
-from uvotimgpy.base.region import RegionConverter, RegionCombiner, RegionSelector, save_regions
+from uvotimgpy.base.region import RegionConverter, RegionCombiner, RegionSelector, save_regions, select_mask_regions, expand_shrink_region, get_exclude_region
 from scipy import ndimage
 from scipy.interpolate import griddata
 from scipy.ndimage import generic_filter
 from skimage import restoration
+from uvotimgpy.base.visualizer import MaskInspector
 
 class StarIdentifier:
     """Identify stars, cosmic rays and other pixels that need to be removed from the image"""
@@ -50,8 +52,15 @@ class StarIdentifier:
     def by_sigma_clip(self, image: np.ndarray, sigma: float = 3.,
                       maxiters: Optional[int] = 3,
                       exclude_region: Optional[Union[np.ndarray, ApertureMask, PixelRegion]] = None,
-                      tile_size: Optional[int] = None) -> np.ndarray:
-        """Identify cosmic rays using sigma-clip, optionally in tiles."""
+                      tile_size: Optional[int] = None,
+                      area_size: Optional[Tuple[Optional[int], Optional[int]]] = None,
+                      expand_shrink_paras: Optional[Dict[str, Any]] = None
+                      ) -> np.ndarray:
+        """
+        Identify cosmic rays using sigma-clip, optionally in tiles.
+        area_size: (min_area, max_area)
+        expand_shrink_paras: {'radius': int, 'method': 'expand' or 'shrink', 'speed': 'normal' or 'fast'}
+        """
         mask = np.zeros_like(image, dtype=bool)
         ny, nx = image.shape
 
@@ -85,7 +94,14 @@ class StarIdentifier:
                         submask[valid_pixels] = clipped.mask
                         mask[y0:y1, x0:x1] = submask
                     # 否则该 tile 无有效 pixel，跳过
-
+        if area_size is not None:
+            min_area, max_area = area_size
+            mask = select_mask_regions(mask, min_area=min_area, max_area=max_area)
+        if expand_shrink_paras is not None:
+            radius = expand_shrink_paras.get('radius', 2)
+            method = expand_shrink_paras.get('method', 'expand')
+            speed = expand_shrink_paras.get('speed', 'normal')
+            mask = expand_shrink_region(mask, radius=radius, method=method, speed=speed)
         self.last_mask = mask
         return mask  # True 表示检测为异常值，NaN 像素恒为 False
     
@@ -93,8 +109,9 @@ class StarIdentifier:
                   row_range: Optional[Tuple[int, int]] = None,
                   col_range: Optional[Tuple[int, int]] = None,
                   vmin = 0, vmax=2,
-                  save_path: Optional[str] = None,
-                  region_plot: Optional[Union[PixelRegion, List[PixelRegion]]] = None) -> np.ndarray:
+                  save_path: Optional[Union[str, Path]] = None,
+                  region_plot: Optional[Union[PixelRegion, List[PixelRegion]]] = None,
+                  ) -> np.ndarray:
         """Identify by manual input"""
         print("Creating selector...")
         
@@ -315,7 +332,8 @@ class PixelFiller:
 
     def by_neighbors(self, image: np.ndarray, mask: np.ndarray, 
                     radius: int = 4, method: str = 'nearest',
-                    error: Optional[np.ndarray] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+                    error: Optional[np.ndarray] = None,
+                    mean_or_median: str = 'median') -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """Fill masked pixels using neighboring pixels
         
         Parameters
@@ -342,8 +360,8 @@ class PixelFiller:
         # Parameter checks
         if mask.shape != image.shape:
             raise ValueError("image and mask must have the same shape")
-        if method not in ['nearest', 'biharmonic', 'median_filter','convolution']:
-            raise ValueError("method must be one of: 'nearest', 'biharmonic', 'median_filter', 'convolution'")
+        if method not in ['nearest', 'median_filter','uniform_filter']:
+            raise ValueError("method must be one of: 'nearest', 'median_filter', 'uniform_filter'")
         if error is not None and error.shape != image.shape:
             raise ValueError("error array must have the same shape as image")
         
@@ -362,8 +380,12 @@ class PixelFiller:
             footprint = ndimage.iterate_structure(footprint, radius)
             
             # Use generic filling function to fill the image
+            if mean_or_median == 'median':
+                fill_func = np.nanmedian
+            else:
+                fill_func = np.nanmean
             filled_image = self._iterative_fill(
-                image, mask, np.nanmedian, footprint
+                image, mask, fill_func, footprint
             )
             
             # Calculate error (if needed)
@@ -373,6 +395,21 @@ class PixelFiller:
                 )
         elif method == 'median_filter':
             filtered = ndimage.median_filter(image, size=2 * radius + 1)
+            filled_image = image.copy()
+            filled_image[mask] = filtered[mask]
+            if error is not None:
+                filled_error = self._by_neighbors_calculate_error(
+                    error, mask, method='nearest', footprint=footprint
+                )
+        elif method == 'uniform_filter':
+            #filtered = ndimage.uniform_filter(image, size=2 * radius + 1)
+            filtered = image.copy()
+            filtered[mask] = np.nan
+            filtered = np.nan_to_num(filtered, nan=0.0)
+            num = ndimage.uniform_filter(filtered, size=2 * radius + 1, mode='constant', cval=0.0)
+            denom = ndimage.uniform_filter(mask, size=2 * radius + 1, mode='constant', cval=0.0)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                filtered = num/denom
             filled_image = image.copy()
             filled_image[mask] = filtered[mask]
             if error is not None:
@@ -401,7 +438,7 @@ class PixelFiller:
                 return np.median(valid_values) if len(valid_values) > 0 else np.nan
             image_with_nans = self.image.copy()
             image_with_nans[self.mask] = np.nan
-            filled_image = generic_filter(image_with_nans, nan_median_filter, size=size)
+            filled_image = generic_filter(image_with_nans, nan_median_filter, size=radius)
             return filled_image
         else:  # 'biharmonic'
             from skimage.restoration import inpaint
@@ -538,3 +575,234 @@ class BackgroundCleaner:
         mask_pos, mask_neg = self.identifier.by_comparison(image1, image2, threshold)
         cleaned1, cleaned2 = self.filler.by_comparison(image1, image2, mask_pos, mask_neg)
         return cleaned1, cleaned2
+
+class StarCleaner:
+    @staticmethod
+    def identify_stars(img: np.ndarray, 
+                       identify_method: str = 'sigma_clip',
+                       identify_paras: Union[Dict[str, Any], None] = None,
+                       focus_region: Union[np.ndarray, PixelRegion, None] = None,
+                       exclude_region: Union[np.ndarray, PixelRegion, None] = None,
+                       identified_mask: np.ndarray = None):
+        """
+        'sigma_clip':
+        identify_paras = {'sigma': float = 3, 'maxiters': int = 3, 'tile_size': int = None, 'area_size': None, \
+            'expand_shrink_paras': {'radius': float = 1, 'method': 'expand' or 'shrink', 'speend': 'normal' or 'fast'}}
+        'manual':
+        identify_paras = {'row_range': tuple(int, int) = None, 'col_range': tuple(int, int) = None, \
+                        'vmin': float = 0, 'vmax': float = 10, 
+                        'region_plot': Union[PixelRegion, List[PixelRegion]] = None}
+        """
+        # exclude region
+        exclude_region = get_exclude_region(img.shape, focus_region, exclude_region)
+        # identify
+        star_identifier = StarIdentifier()
+        if identify_method == 'sigma_clip':
+            if identify_paras is None:
+                identify_paras = {'sigma': 3, 'maxiters': 3, 'tile_size': None, 'area_size': None, \
+                                  'expand_shrink_paras': None}
+            sigma = identify_paras.get('sigma', 3)
+            maxiters = identify_paras.get('maxiters', 3)
+            tile_size = identify_paras.get('tile_size', None)
+            area_size = identify_paras.get('area_size', None)
+            expand_shrink_paras = identify_paras.get('expand_shrink_paras', None)
+            mask = star_identifier.by_sigma_clip(img, sigma=sigma, maxiters=maxiters, 
+                                                 exclude_region=exclude_region, tile_size=tile_size,
+                                                 area_size=area_size, expand_shrink_paras=expand_shrink_paras)
+        elif identify_method == 'manual':
+            if identify_paras is None:
+                identify_paras = {'target_coord': (1000, 1000), 'radius': 50, 
+                                  'vmin': 0, 'vmax': 10, 'save_path': None, 'region_plot': None}
+            target_coord = identify_paras.get('target_coord', (1000, 1000))
+            radius = identify_paras.get('radius', 50)
+            col_range = (target_coord[0]-radius, target_coord[0]+radius)
+            row_range = (target_coord[1]-radius, target_coord[1]+radius)
+            vmin = identify_paras.get('vmin', 0)
+            vmax = identify_paras.get('vmax', 10)
+            save_path = identify_paras.get('save_path', None)
+            region_plot = identify_paras.get('region_plot', None)
+            mask = star_identifier.by_manual(img, row_range=row_range, col_range=col_range, vmin=vmin, vmax=vmax, save_path=save_path, region_plot=region_plot)
+        else:
+            raise ValueError(f"Currently unsupported identify method: {identify_method}")
+        if identified_mask is not None:
+            mask = identified_mask | mask
+        return mask
+    
+    @staticmethod
+    def fill_stars(img: np.ndarray, mask: np.ndarray,
+                   fill_method: str = 'neighbors',
+                   fill_paras: Union[Dict[str, Any], None] = None,
+                   focus_region: Union[np.ndarray, PixelRegion, None] = None,
+                   exclude_region: Union[np.ndarray, PixelRegion, None] = None,
+                   ):
+        """
+        'neighbors':
+        fill_paras = {'radius': int = 4, 'method': str = 'nearest', 'mean_or_median': str = 'mean'} # 'median_filter', 'uniform_filter'
+        'tile_median':
+        fill_paras = {'tile_size': int = 40}
+        'rings':
+        fill_paras = {'center': tuple(int, int), 'step': float, 'method': str = 'median', \
+                      'start': float = None, 'end': float = None} # 'median', 'mean'
+        """
+        exclude_region = get_exclude_region(img.shape, focus_region, exclude_region)
+        if exclude_region is not None:
+            mask = mask & ~exclude_region
+        star_filler = PixelFiller()
+        if fill_method == 'neighbors':
+            if fill_paras is None:
+                fill_paras = {'radius': 4, 'method': 'nearest', 'mean_or_median': 'median'}
+            radius = fill_paras.get('radius', 4)
+            method = fill_paras.get('method', 'nearest') # 'median_filter'
+            mean_or_median = fill_paras.get('mean_or_median', 'mean')
+            filled = star_filler.by_neighbors(img, mask=mask, radius=radius, method=method, mean_or_median=mean_or_median)
+        elif fill_method == 'tile_median':
+            if fill_paras is None:
+                fill_paras = {'tile_size': 40}
+            tile_size = fill_paras.get('tile_size', 40)
+            filled = star_filler.by_tile_median(img, tile_size=tile_size, mask=mask)
+        elif fill_method == 'rings':
+            if fill_paras is None:
+                fill_paras = {'center': (1000, 1000), 'step': 2, 'method': 'median', 'start': None, 'end': None}
+            center = fill_paras.get('center', (1000, 1000))
+            step = fill_paras.get('step', 2)
+            method = fill_paras.get('method', 'median') # 'median', 'mean'
+            start = fill_paras.get('start', None)
+            end = fill_paras.get('end', None)
+            filled = star_filler.by_rings(img, mask=mask, center=center, step=step, method=method, start=start, end=end)
+        elif fill_method == 'median_map':
+            if fill_paras is None:
+                fill_paras = {'median_map': None}
+            median_map = fill_paras.get('median_map', None)
+            filled = star_filler.by_median_map(img, mask=mask, median_map=median_map)
+        else:
+            raise ValueError(f"Currently unsupported fill method: {fill_method}")
+        return filled
+    
+
+def save_starmask(img_path: Union[str, Path], 
+                  img_extension: str,
+                  star_mask_steps: List[str],
+                  identify_method: str = 'sigma_clip', # 'sigma_clip', 'manual'
+                  identify_paras: Dict[str, Any] = None,
+                  focus_region: Union[np.ndarray, PixelRegion, None] = None, 
+                  exclude_region: Union[np.ndarray, PixelRegion, None] = None,
+                  plot: bool = False,
+                  plot_vrange: Union[Tuple[float, float], None] = None,
+                  save: bool = False,
+                  verbose: bool = False) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """
+    'sigma_clip':
+    identify_paras = {'sigma': float = 3, 'maxiters': int = 3, 'tile_size': int = None, 'area_size': None, \
+            'expand_shrink_paras': {'radius': float = 1, 'method': 'expand' or 'shrink', 'speend': 'normal' or 'fast'}
+            }
+    'manual':
+    identify_paras = {'target_coord': tuple(int, int) = (1000, 1000), 'radius': int = 50, \
+                    'vmin': float = 0, 'vmax': float = 10, 
+                    'region_plot': Union[PixelRegion, List[PixelRegion]] = None}
+    """
+    with fits.open(img_path, mode='readonly') as hdul:
+        img = hdul[img_extension].data.copy()
+        has_starmask = 'STARMASK' in hdul
+    mask = StarCleaner.identify_stars(img, identify_method=identify_method, \
+                                      identify_paras=identify_paras, \
+                                        focus_region=focus_region, \
+                                            exclude_region=exclude_region)
+    if verbose:
+        print(f'{np.sum(mask)} star pixels identified')
+    
+    if plot:
+        if plot_vrange is None:
+            plot_vrange = (np.min(img), np.max(img)*0.1)
+        inspector = MaskInspector(img, mask)
+        inspector.show_comparison(vmin=plot_vrange[0], vmax=plot_vrange[1])
+    if save:
+        star_mask_steps.append(identify_method)
+        if has_starmask:
+            with fits.open(img_path, mode='update') as hdul:
+                hdu_starmask = hdul['STARMASK']
+                hdu_starmask.data = hdu_starmask.data | mask.astype(int)
+                hdul[0].header['MASKHIST'] = ','.join(star_mask_steps)
+                hdul[0].header['STARMASK'] = (True, 'Star mask applied')
+            if verbose:
+                print(f'STARMASK extension updated in {img_path}')
+        else:
+            with fits.open(img_path, mode="readonly") as hdul:
+                hdus = [hdu.copy() for hdu in hdul]
+            ext_num = len(hdus)
+            hdu_starmask = fits.ImageHDU(mask.astype(int), name='STARMASK')
+            hdus.append(hdu_starmask)
+            hdus[0].header[f'EXT{ext_num}NAME'] = ('STARMASK', f'Name of extension {ext_num}')
+            hdus[0].header['MASKHIST'] = ','.join(star_mask_steps)
+            hdus[0].header['STARMASK'] = (True, 'Star mask applied')
+            fits.HDUList(hdus).writeto(img_path, overwrite=True)
+            if verbose:
+                print(f'STARMASK extension created in {img_path}')
+    return star_mask_steps, mask
+
+def delete_starmask(img_path, verbose: bool = False):
+    with fits.open(img_path, mode='readonly') as hdul:
+        # 找到 STARMASK 扩展的索引
+        starmask_idx = None
+        for i, hdu in enumerate(hdul):
+            if hdu.name == 'STARMASK':
+                starmask_idx = i
+                break
+        if starmask_idx is None:
+            if verbose:
+                print(f'STARMASK extension not found in {img_path}')
+            return
+        hdus = [hdu.copy() for hdu in hdul if hdu.name != 'STARMASK']
+    if f'EXT{starmask_idx}NAME' in hdus[0].header:
+        del hdus[0].header[f'EXT{starmask_idx}NAME']
+    if 'MASKHIST' in hdus[0].header:
+        del hdus[0].header['MASKHIST']
+    if 'STARMASK' in hdus[0].header:
+        del hdus[0].header['STARMASK']
+    fits.HDUList(hdus).writeto(img_path, overwrite=True)
+    if verbose:
+        print(f'STARMASK extension deleted in {img_path}')
+
+def save_filled(img_path: Union[str, Path],
+                img_extension: str,
+                star_fill_steps: List[str],
+                mask: Union[np.ndarray, None] = None, 
+                fill_method: str = 'neighbors', 
+                fill_paras: Dict[str, Any] = None,
+                focus_region: Union[np.ndarray, PixelRegion, None] = None,
+                exclude_region: Union[np.ndarray, PixelRegion, None] = None,
+                plot: bool = False,
+                plot_vrange: Union[Tuple[float, float], None] = None,
+                save: bool = False,
+                verbose: bool = False):
+    with fits.open(img_path, mode='readonly') as hdul:
+        img = hdul[img_extension].data.copy()
+        has_starmask = 'STARMASK' in hdul
+        if has_starmask and mask is None:
+            mask = hdul['STARMASK'].data.astype(bool)
+        elif not has_starmask and mask is None:
+            raise ValueError("No starmask found")
+    filled = StarCleaner.fill_stars(img, mask, 
+                                    fill_method=fill_method, 
+                                    fill_paras=fill_paras,
+                                    focus_region=focus_region,
+                                    exclude_region=exclude_region)
+    if verbose:
+        print('Bad pixel fillment finished.')
+    if plot:
+        if plot_vrange is None:
+            plot_vrange = (np.min(img), np.max(img)*0.1)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+        ax1.imshow(img, vmin=plot_vrange[0], vmax=plot_vrange[1], origin='lower')
+        ax1.set_title('Original Image')
+        ax2.imshow(filled, vmin=plot_vrange[0], vmax=plot_vrange[1], origin='lower')
+        ax2.set_title('Filled Image')
+        plt.show(block=True)
+    if save:
+        star_fill_steps.append(fill_method)
+        with fits.open(img_path, mode='update') as hdul:
+            hdul[img_extension].data = filled
+            hdul[0].header['STARFILL'] = (True, 'Star fill applied')
+            hdul[0].header['FILLHIST'] = ','.join(star_fill_steps)
+        if verbose:
+            print(f'{img_extension} extension updated in {img_path}')
+    return star_fill_steps

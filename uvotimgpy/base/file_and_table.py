@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import astropy.units as u
 from astropy.units import Quantity
+from uvotimgpy.config import paths
 
 
 def save_astropy_table(data_table, output_path, verbose=True):
@@ -387,3 +388,112 @@ def ephemeris_keywords():
             'solartime', 'earth_lighttime', 'RA_3sigma', 'DEC_3sigma', 'SMAA_3sigma', 'SMIA_3sigma', 'Theta_3sigma',
             'Area_3sigma', 'RSS_3sigma', 'r_3sigma', 'r_rate_3sigma', 'SBand_3sigma', 'XBand_3sigma', 'DoppDelay_3sigma',
             'true_anom', 'hour_angle', 'alpha_true', 'PABLon', 'PABLat', 'epoch']
+
+def target_name_converter(input_value, output_type='all', csv_path=None):
+    """
+    将彗星的data_folder_name、target_simplified_name或target_full_name相互转换
+    
+    参数:
+        input_value: 输入的彗星名称（可以是三种格式中的任意一种）
+        output_type: 输出类型，可选值：
+            - 'all': 返回包含所有三个值的字典（默认）
+            - 'data_folder_name': 只返回data_folder_name
+            - 'target_simplified_name': 只返回target_simplified_name
+            - 'target_full_name': 只返回target_full_name
+        csv_path: CSV文件路径，默认为'comets_data.csv'
+    
+    返回:
+        根据output_type返回相应的值或字典，如果未找到则返回None
+    
+    示例:
+        >>> comet_name_converter('1P')
+        {'data_folder_name': '1P', 'target_simplified_name': '1P/Halley', 'target_full_name': "1P/Halley (Halley's Comet)"}
+        
+        >>> comet_name_converter('C/2006 P1', 'data_folder_name')
+        'C_2006P1'
+        
+        >>> comet_name_converter('2I/Borisov (Interstellar comet)', 'target_simplified_name')
+        'C/2019 Q4'
+    """
+    if csv_path is None:
+        csv_path = paths.get_subpath(paths.data, 'Swift', 'target_name.csv')
+    # 检查CSV文件是否存在
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"CSV文件 '{csv_path}' 不存在")
+    
+    # 读取CSV文件并查找匹配的记录
+    with open(csv_path, 'r', encoding='utf-8') as file:
+        reader = csv.DictReader(file)
+        
+        for row in reader:
+            # 检查输入值是否匹配任何一个字段
+            if (input_value == row['data_folder_name'] or 
+                input_value == row['target_simplified_name'] or 
+                input_value == row['target_full_name']):
+                
+                # 根据output_type返回相应的值
+                if output_type == 'all':
+                    return {
+                        'data_folder_name': row['data_folder_name'],
+                        'target_simplified_name': row['target_simplified_name'],
+                        'target_full_name': row['target_full_name']
+                    }
+                elif output_type in ['data_folder_name', 'target_simplified_name', 'target_full_name']:
+                    return row[output_type]
+                else:
+                    raise ValueError(f"无效的output_type: {output_type}")
+    
+    # 如果没找到匹配的记录
+    return None
+
+def target_name_converter(input_value: str, output_type: str = 'all', csv_path: Optional[Union[str, Path]] = None) -> Optional[Union[str, Dict[str, str]]]:
+    """
+    将彗星的data_folder_name、target_simplified_name或target_full_name相互转换
+    
+    参数:
+        input_value: 输入的彗星名称（可以是三种格式中的任意一种）
+        output_type: 输出类型
+            - 'all': 返回包含所有三个值的字典（默认）
+            - 'data_folder_name': 只返回data_folder_name
+            - 'target_simplified_name': 只返回target_simplified_name
+            - 'target_full_name': 只返回target_full_name
+        csv_file: CSV文件路径，默认为'comets_data.csv'
+    
+    返回:
+        根据output_type返回相应的值或字典，如果未找到则返回None
+    
+    示例:
+        >>> comet_name_converter('1P')
+        {'data_folder_name': '1P', 'target_simplified_name': '1P/Halley', 'target_full_name': "1P/Halley (Halley's Comet)"}
+        
+        >>> comet_name_converter('C/2006 P1', 'data_folder_name')
+        'C_2006P1'
+        
+        >>> comet_name_converter('2I/Borisov (Interstellar comet)', 'target_simplified_name')
+        'C/2019 Q4'
+    """
+    if csv_path is None:
+        csv_path = paths.get_subpath(paths.data, 'Swift', 'target_name.csv')
+    # 读取CSV文件
+    df = pd.read_csv(csv_path, sep=',')
+    
+    # 在三列中查找
+    mask = (
+        (df['data_folder_name'].str.lower() == input_value.lower()) |
+        (df['target_simplified_name'].str.lower() == input_value.lower()) |
+        (df['target_full_name'].str.lower() == input_value.lower())
+    )
+    
+    result = df[mask]
+    
+    if result.empty:
+        return None
+    
+    row = result.iloc[0]
+    
+    if output_type == 'all':
+        return row.to_dict()
+    elif output_type in ['data_folder_name', 'target_simplified_name', 'target_full_name']:
+        return row[output_type]
+    else:
+        raise ValueError(f"无效的output_type: {output_type}")

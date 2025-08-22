@@ -230,7 +230,15 @@ def crop_image(image: np.ndarray,
     """
     col, row = old_target_coord
     new_col, new_row = new_target_coord
-    
+
+    if isinstance(new_col, float):
+        new_col = round(new_col)
+    if isinstance(new_row, float):
+        new_row = round(new_row)
+    if isinstance(col, float):
+        col = round(col)
+    if isinstance(row, float):
+        row = round(row)
     # 计算新图像大小
     new_size = (2 * new_row + 1, 2 * new_col + 1)
     if isinstance(fill_value, int):
@@ -280,11 +288,32 @@ def align_images(images: List[np.ndarray],
             aligned_errs.append(aligned_err)
         return aligned_images, aligned_errs
 
+def images_by_exposure(images: List[np.ndarray], 
+                        exposure_list: Optional[Union[List[np.ndarray], List[float]]],
+                        method: str = 'divide') -> List[np.ndarray]:
+    """
+    将图像除以曝光图
+    """
+    if all(isinstance(expo, np.ndarray) for expo in exposure_list):
+        for img, expo in zip(images, exposure_list):
+            img[(expo / np.max(expo)) < 0.99] = np.nan
+    #exposure_stack = np.sum(exposure_list, axis=0)
+    if method == 'divide':
+        images = [img / expo for img, expo in zip(images, exposure_list)]
+    elif method == 'multiply':
+        images = [img * expo for img, expo in zip(images, exposure_list)]
+    else:
+        raise ValueError("method must be 'divide' or 'multiply'")
+    return images
+        
+
 def stack_images(images: List[np.ndarray], 
                  method: str = 'median',
                  image_err: Optional[List[np.ndarray]] = None,
                  median_err_params: Optional[dict] = {'method':'mean', 'mask':True},
-                 verbose: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+                 verbose: bool = False,
+                 input_unit: Optional[str] = None,
+                 exposure_list: Optional[Union[List[np.ndarray], List[float]]] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     叠加图像
     
@@ -309,13 +338,25 @@ def stack_images(images: List[np.ndarray],
             return np.nansum(images, axis=0)
     else:
         if method == 'mean':
+            if input_unit == 'counts' and exposure_list is not None:
+                images = images_by_exposure(images, exposure_list, method='divide')
+                if image_err is not None:
+                    image_err = images_by_exposure(image_err, exposure_list, method='divide')
             mean_image, mean_error = ErrorPropagation.mean(images, image_err, axis=0, ignore_nan=True)
             return mean_image, mean_error
         elif method == 'median':
+            if input_unit == 'counts' and exposure_list is not None:
+                images = images_by_exposure(images, exposure_list, method='divide')
+                if image_err is not None:
+                    image_err = images_by_exposure(image_err, exposure_list, method='divide')
             median_image, median_error = ErrorPropagation.median(images, image_err, axis=0, ignore_nan=True,
                                                                  **median_err_params)
             return median_image, median_error
         elif method == 'sum':
+            if input_unit == 'counts/s' and exposure_list is not None:
+                images = images_by_exposure(images, exposure_list, method='multiply')
+                if image_err is not None:
+                    image_err = images_by_exposure(image_err, exposure_list, method='multiply')
             sum_image, sum_error = ErrorPropagation.sum(images, image_err, axis=0, ignore_nan=True)
             return sum_image, sum_error
 

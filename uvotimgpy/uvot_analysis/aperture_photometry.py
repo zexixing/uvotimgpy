@@ -23,9 +23,10 @@ class BackgroundEstimator:
     @staticmethod
     def estimate_from_regions(image: np.ndarray,
                               regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+                              bad_pixel_mask: Optional[ np.ndarray] = None,
                               image_err: Optional[np.ndarray] = None,
                               method: str = 'median',
-                              median_err_params: Optional[dict] = None) -> Union[float, Tuple[float, float]]:
+                              median_err_params: Optional[dict] = {'method':'mean', 'mask':True}) -> Union[float, Tuple[float, float]]:
         """使用区域统计方法估计背景
 
         Parameters
@@ -34,6 +35,7 @@ class BackgroundEstimator:
             输入图像
         regions : Union[PixelRegion, List[PixelRegion], np.ndarray]
             用于估计背景的区域，可以是单个区域、区域列表或布尔掩模
+        bad_pixel_mask : np.ndarray, optional
         image_err : np.ndarray, optional
             误差图像，默认为None
 
@@ -46,21 +48,25 @@ class BackgroundEstimator:
         #    return RegionStatistics.median(image, regions, combine_regions=True)
         #else:
         #    # 获取区域内的像素和对应误差
-        #    masks = RegionConverter.to_bool_array_general(regions, combine_regions=True, shape=image.shape)
-        #    mask = masks[0]
-        #    valid_data = image[mask & ~np.isnan(image)]
-        #    valid_errors = image_err[mask & ~np.isnan(image)]
+        #    regions = RegionConverter.to_bool_array_general(regions, combine_regions=True, shape=image.shape)
+        #    region = regions[0]
+        #    valid_data = image[region & ~np.isnan(image)]
+        #    valid_errors = image_err[region & ~np.isnan(image)]
         #    
         #    # 使用ErrorPropagation计算中位数及其误差
         #    value, error = ErrorPropagation.median((valid_data, valid_errors), axis=None, method='std')
         #    return value, error
         
         # 获取区域内的像素和对应误差
-        masks = RegionConverter.to_bool_array_general(regions, combine_regions=True, shape=image.shape)
-        mask = masks[0]
-        valid_data = image[mask & ~np.isnan(image)]
+        regions = RegionConverter.to_bool_array_general(regions, combine_regions=True, shape=image.shape)
+        region = regions[0]
+        if bad_pixel_mask is not None:
+            bad_region = region & ~np.isnan(image) & ~bad_pixel_mask 
+        else:
+            bad_region = region & ~np.isnan(image)
+        valid_data = image[bad_region]
         if image_err is not None:
-            valid_errors = image_err[mask & ~np.isnan(image)]
+            valid_errors = image_err[bad_region]
         else:
             valid_errors = np.zeros_like(valid_data)
         
@@ -88,7 +94,7 @@ class BackgroundEstimator:
                             rho_target: Optional[float] = None,
                             image_err: Optional[np.ndarray] = None,
                             bad_pixel_mask: Optional[np.ndarray] = None,
-                            median_err_params: Optional[dict] = None
+                            median_err_params: Optional[dict] = {'method':'mean', 'mask':True}
                             ) -> Union[float, Tuple[float, float]]:
         """使用径向profile拟合方法估计背景
 

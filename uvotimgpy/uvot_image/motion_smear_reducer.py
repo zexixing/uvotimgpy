@@ -8,7 +8,7 @@ from sbpy.data import Ephem
 from astropy.nddata import block_reduce
 import pathlib
 from uvotimgpy.utils.image_operation import align_images, stack_images, DS9Converter, bin_image
-
+from uvotimgpy.base.math_tools import icrf_to_fk5
 
 def read_event_file(evt_file_path: Union[str, pathlib.Path]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, fits.Header]:
     """
@@ -173,6 +173,7 @@ def get_target_positions(time_utc: List[Time], target_id: Union[str, int], wcs: 
     #eph = obj.ephemerides()
     ra_list = eph['RA'].value
     dec_list = eph['DEC'].value
+    ra_list, dec_list = icrf_to_fk5(ra_list, dec_list)
 
     for ra, dec in zip(ra_list, dec_list):
         x, y = wcs.wcs_world2pix(ra, dec, 1) # starting from 1 -> get the position in the event list
@@ -211,6 +212,23 @@ def create_image_from_events(events_col: np.ndarray, events_row: np.ndarray) -> 
     
     return image
 
+def save_single_evt_image(evt_file_path: Union[str, pathlib.Path],
+                          output_path: Union[str, pathlib.Path]):
+    """
+    保存单个事件图像
+    """
+    _, col_list, row_list, header = read_event_file(evt_file_path)
+    image = create_image_from_events(col_list, row_list)
+    wcs = create_wcs_from_header(header)
+    primary_hdu = fits.PrimaryHDU()
+    primary_hdu.header.extend(header)
+    primary_hdu.header.update(wcs.to_header())
+    hdu_img = fits.ImageHDU(image, name='IMAGE')
+    hdu_img.header.extend(header)
+    hdu_img.header.update(wcs.to_header())
+    hdul = fits.HDUList([primary_hdu, hdu_img])
+    hdul.writeto(output_path, overwrite=True)
+    print(f'Saved to {output_path}')
 
 def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
                            exp_file_path: Union[str, pathlib.Path],
@@ -318,6 +336,12 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
     stacked_exp = stack_images(aligned_exp_map, method='sum', verbose=False)
     stacked_image[np.isinf(stacked_image)] = np.nan
     stacked_err[np.isinf(stacked_err)] = np.nan
+    stacked_image[stacked_exp/np.max(stacked_exp) < 0.99] = np.nan
+    stacked_err[stacked_exp/np.max(stacked_exp) < 0.99] = np.nan
+    if binby2:
+        platescale = 0.502*2
+    else:
+        platescale = 0.502
     # 处理信息
     processing_info = {
         'num_segments': num_segments,
@@ -326,6 +350,7 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
         'segment_exposures': total_exposure/group_number,
         'target_coord': target_coord,
         'binby2': binby2,
+        'platescale': platescale,
         'event_nums': event_nums,
         'event_nums_ratios': event_nums_ratios,
         'segment_exp_times': segment_exp_times,
@@ -334,17 +359,17 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
     
     return stacked_image, stacked_err, stacked_exp, processing_info, header, aligned_images, aligned_errs, aligned_exp_map
 
-def bin_evt_image(stacked_image, stacked_err=None, stacked_exp=None, processing_info=None):
+def bin_evt_image(image, image_err=None, image_exp=None, processing_info=None):
     """
     对事件图像进行2x2 binning
     """
-    if stacked_err is None:
-        binned_image = bin_image(stacked_image, block_size=2, method='sum')
+    if image_err is None:
+        binned_image = bin_image(image, block_size=2, method='sum')
         binned_err = None
     else:
-        binned_image, binned_err = bin_image(stacked_image, block_size=2, image_err=stacked_err, method='sum')
-    if stacked_exp is not None:
-        binned_exp = bin_image(stacked_exp, block_size=2, method='mean')
+        binned_image, binned_err = bin_image(image, block_size=2, image_err=image_err, method='sum')
+    if image_exp is not None:
+        binned_exp = bin_image(image_exp, block_size=2, method='mean')
     else:
         binned_exp = None
     if processing_info is not None:
@@ -358,7 +383,8 @@ def save_smear_reduced_result(stacked_image: np.ndarray, stacked_err: np.ndarray
                               exposure_map: np.ndarray, 
                               output_path: str, evt_hdr: fits.Header, 
                               processing_info: dict,
-                              individual_images_to_save: dict):
+                              individual_images_to_save: dict,
+                              image_unit_save: str = 'count'):
     """
     保存减少拖尾后的结果到FITS文件
     
@@ -396,14 +422,17 @@ def save_smear_reduced_result(stacked_image: np.ndarray, stacked_err: np.ndarray
         hdr['STACKMTH'] = (processing_info['stack_method'], 'Stacking method')
         stack_method = processing_info['stack_method']
         # 如果是count模式，添加特殊标记
-        if stack_method == 'sum':
+        if image_unit_save == 'count':
             hdr['BUNIT'] = ('count', 'Image units are counts (not count rate)')
-        else:
+        elif image_unit_save == 'count/s':
             hdr['BUNIT'] = ('count/s', 'Image units are count rate')
+        else:
+            raise ValueError(f"Invalid image unit: {image_unit_save}")
         if processing_info['binby2']:
             hdr['BINNED'] = ('True', 'Image is binned by 2x2')
         else:
             hdr['BINNED'] = 'False'
+        hdr['PLATESCL'] = (processing_info['platescale'], 'Platescale in arcsec/pixel')
         hdr['TOTEXP'] = (processing_info['total_exposure'], 'Total exposure time')
         hdr['SEGELAP'] = (processing_info['segment_elapsed_time'], 'Segment elapsed time')
         hdr['COLPIXEL'] = (processing_info['target_coord'][0], 'Target X position in Python coordinates')
@@ -416,6 +445,14 @@ def save_smear_reduced_result(stacked_image: np.ndarray, stacked_err: np.ndarray
     hdr['HISTORY'] = f'Created by Zexi Xing'
     hdr['REDUCER'] = 'motion_smear_reducer.py'
     # 创建HDU
+    if stack_method != 'sum' and image_unit_save == 'count':
+        stacked_image = stacked_image * exposure_map
+        stacked_err = stacked_err * exposure_map
+    elif stack_method == 'sum' and image_unit_save == 'count/s':
+        stacked_image = stacked_image / exposure_map
+        stacked_err = stacked_err / exposure_map
+    else:
+        pass
     hdu_img = fits.ImageHDU(stacked_image, name='IMAGE')
     hdu_err = fits.ImageHDU(stacked_err, name='ERROR')
     hdu_exp = fits.ImageHDU(exposure_map, name='EXPOSURE')
@@ -434,12 +471,11 @@ def save_smear_reduced_result(stacked_image: np.ndarray, stacked_err: np.ndarray
                     ext_name_key = ext_name_key[:8]
                 hdr[ext_name_key] = (f'{key}_{i}', f'Name of extension {len(hdul)}')
                 hdul.append(hdu_img)
-    if evt_hdr is not None:
-        hdr.extend(evt_hdr)
     hdul.writeto(output_path, overwrite=True)
     print(f'Saved to {output_path}')
 
-def reduce_smear(evt_file_path, exp_file_path, target_id, target_coord, group_number, stack_method, output_path = None, binby2=True, save_individual_images=False):
+def reduce_smear(evt_file_path, exp_file_path, target_id, target_coord, group_number, stack_method, 
+                 output_path = None, binby2=True, save_individual_images=False, image_unit_save='count'):
     """
     Reduce motion smear for a single observation
     Parameters
@@ -472,7 +508,8 @@ def reduce_smear(evt_file_path, exp_file_path, target_id, target_coord, group_nu
             individual_images_to_save = {'IMAGE': aligned_images, 'ERROR': aligned_errs, 'EXPOSURE': aligned_exp_map}
         else:
             individual_images_to_save = None
-        save_smear_reduced_result(stacked_image, stacked_err, stacked_exp, output_path, header, processing_info, individual_images_to_save)
+        save_smear_reduced_result(stacked_image, stacked_err, stacked_exp, output_path, header, \
+                                  processing_info, individual_images_to_save, image_unit_save=image_unit_save)
 
 # 使用示例
 import matplotlib.pyplot as plt
@@ -480,24 +517,27 @@ if __name__ == "__main__":
     """
     使用示例
     """
-    evt_file_path = '/Users/zexixing/Downloads/sw00094421002uvvw1po_uf.evt.gz'
-    exp_file_path = '/Users/zexixing/Downloads/sw00094421002uvv_ex.img.gz'
-    target_id = '90000548'
-    target_coord = (500, 500) 
-    group_number=2
-    stack_method='sum'
-    stacked_image, stacked_err, stacked_exp, processing_info, header, aligned_images, aligned_errs, aligned_exp_map = \
-        reduce_motion_smearing(evt_file_path, exp_file_path, target_coord, group_number, target_id, stack_method, binby2=True)
-    #plt.imshow(stacked_err, origin='lower', vmax=20, vmin=0)
-    #plt.plot(processing_info['target_coord'][0], processing_info['target_coord'][1], 'ro')
-    #plt.show()
-    #plt.imshow(stacked_exp, origin='lower', vmax=418, vmin=0)
-    #plt.show()
-    #binned_image, binned_err, binned_exp, processing_info2 = bin_evt_image(stacked_image, stacked_err, stacked_exp, processing_info)
-    #plt.imshow(binned_err, origin='lower', vmax=2, vmin=0)
-    #plt.plot(processing_info2['target_coord'][0], processing_info2['target_coord'][1], 'ro')
-    #plt.show()
+    #evt_file_path = '/Users/zexixing/Downloads/sw00094421002uvvw1po_uf.evt.gz'
+    #exp_file_path = '/Users/zexixing/Downloads/sw00094421002uvv_ex.img.gz'
+    #target_id = '90000548'
+    #target_coord = (500, 500) 
+    #group_number=2
+    #stack_method='sum'
+    #stacked_image, stacked_err, stacked_exp, processing_info, header, aligned_images, aligned_errs, aligned_exp_map = \
+    #    reduce_motion_smearing(evt_file_path, exp_file_path, target_coord, group_number, target_id, stack_method, binby2=True)
+    ##plt.imshow(stacked_err, origin='lower', vmax=20, vmin=0)
+    ##plt.plot(processing_info['target_coord'][0], processing_info['target_coord'][1], 'ro')
+    ##plt.show()
+    ##plt.imshow(stacked_exp, origin='lower', vmax=418, vmin=0)
+    ##plt.show()
+    ##binned_image, binned_err, binned_exp, processing_info2 = bin_evt_image(stacked_image, stacked_err, stacked_exp, processing_info)
+    ##plt.imshow(binned_err, origin='lower', vmax=2, vmin=0)
+    ##plt.plot(processing_info2['target_coord'][0], processing_info2['target_coord'][1], 'ro')
+    ##plt.show()
+    #output_path = '/Users/zexixing/Downloads/test.fits'
+    #individual_images_to_save = {'IMAGE': aligned_images, 'ERROR': aligned_errs, 'EXPOSURE': aligned_exp_map}
+    #save_smear_reduced_result(stacked_image, stacked_err, stacked_exp, output_path, header, processing_info, individual_images_to_save)
+    ##time_histogram(evt_file_path)
+    evt_file_path = '/Users/zexixing/Library/CloudStorage/OneDrive-Personal/ZexiWork/data/Swift/C_2025N1/05000549001/uvot/event/sw05000549001uw1w1po_uf.evt.gz'  
     output_path = '/Users/zexixing/Downloads/test.fits'
-    individual_images_to_save = {'IMAGE': aligned_images, 'ERROR': aligned_errs, 'EXPOSURE': aligned_exp_map}
-    save_smear_reduced_result(stacked_image, stacked_err, stacked_exp, output_path, header, processing_info, individual_images_to_save)
-    #time_histogram(evt_file_path)
+    save_single_evt_image(evt_file_path, output_path)
