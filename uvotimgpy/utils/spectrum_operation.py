@@ -878,6 +878,7 @@ class ReddeningCalculator:
         r1 = reflectance_spectrum(wave1)
         r2 = reflectance_spectrum(wave2)
         if reflectance_spectrum_err is None:
+            print(r1, r2, wave1, wave2)
             reddening = ReddeningCalculator.basic_function(r1, r2, wave1, wave2)
             return reddening
         else:
@@ -1046,7 +1047,7 @@ class ReddeningCalculator:
                                                                               r1_err, r2_err)
             return reddening, reddening_err
         
-    # reddening defined with flux
+    # reddening defined with countrate
     @staticmethod
     def from_countrate(countrate1: float, countrate2: float, solar_spectrum: Union[SolarSpectrum, SourceSpectrum],
                        bandpass1: Union[str, SpectralElement], bandpass2: Union[str, SpectralElement], area: u.Quantity,
@@ -1124,3 +1125,39 @@ if __name__ == '__main__':
     spectrum = SourceSpectrum(Empirical1D, points=wave, lookup_table=spec, fill_value=0)
     print(wave)
     print(spectrum(spectrum.waveset, flux_unit=su.FLAM))
+
+def gaussian_line(wavelength, center, intensity, fwhm):
+    """
+    生成高斯谱线
+    
+    参数:
+    wavelength: 波长数组
+    center: 谱线中心位置
+    intensity: 峰值强度
+    fwhm: 半高全宽
+    """
+    sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+    return intensity * np.exp(-(wavelength - center)**2 / (2 * sigma**2))
+
+def reconstruct_spectrum(peak_positions, peak_intensities, wavelength_range, fwhm=1.8):
+    """
+    从峰值数据重建光谱
+    
+    参数:
+    peak_positions: 峰值波长位置列表 (Å)
+    peak_intensities: 峰值强度列表
+    wavelength_range: (min_wavelength, max_wavelength) 元组
+    fwhm: 仪器分辨率 (Å)
+    """
+    # 创建波长网格，步长小于FWHM的1/10以确保平滑
+    wavelength = np.linspace(wavelength_range[0], wavelength_range[1], 
+                           int((wavelength_range[1] - wavelength_range[0]) / (fwhm/10)))
+    
+    # 初始化光谱
+    spectrum = np.zeros_like(wavelength)
+    
+    # 对每个峰值添加高斯线
+    for pos, intensity in zip(peak_positions, peak_intensities):
+        spectrum += gaussian_line(wavelength, pos, intensity, fwhm)
+    
+    return wavelength, spectrum

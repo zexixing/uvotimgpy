@@ -800,6 +800,89 @@ def create_rectangle_region(center, width, height, angle=0*u.deg):
     rect_region = RectanglePixelRegion(center=center, width=width, height=height, angle=angle)
     return rect_region
 
+def create_sector_region(center, direction, span, image_shape, radius=None):
+    """
+    创建精确的扇形区域 bool array
+    
+    Parameters:
+    -----------
+    center : tuple
+        中心点坐标 (col, row)
+    radius : float
+        扇形半径
+    direction : float
+        扇形中心方向（度），从正上方开始逆时针旋转的角度
+        0度=上, 90度=左, 180度=下, 270度=右
+    angle_span : float
+        扇形张角（度），0-360度
+    image_shape : tuple
+        图像形状 (height, width)
+    
+    Returns:
+    --------
+    mask : numpy.ndarray
+        bool类型的mask数组，True表示在扇形内
+    """
+    if span >= 360 and radius is not None:
+        return RegionConverter.to_bool_array(create_circle_region(center, radius), image_shape)
+    elif span >= 360 and radius is None:
+        return np.ones(image_shape, dtype=bool)
+    
+    height, width = image_shape
+    
+    # 创建像素坐标网格
+    cols = np.arange(width)
+    rows = np.arange(height)
+    col_grid, row_grid = np.meshgrid(cols, rows)
+    
+    # 计算每个像素到中心的距离
+    dcol = col_grid - center[0]
+    drow = row_grid - center[1]
+    distance = np.sqrt(dcol**2 + drow**2)
+    
+    # 距离条件：在半径内
+    if radius is not None:  
+        in_radius = distance <= radius
+    else:
+        in_radius = np.ones(image_shape, dtype=bool)
+    
+    # 计算每个像素相对于中心的角度
+    # arctan2返回的是标准数学坐标系的角度（从x轴正方向逆时针）
+    angle_rad = np.arctan2(drow, dcol)
+    angle_deg = np.degrees(angle_rad)
+    
+    # 转换到用户定义的坐标系（从y轴正方向逆时针）
+    # 标准系统：0度=右, 90度=上, 180度=左, 270度=下
+    # 用户系统：0度=上, 90度=左, 180度=下, 270度=右
+    user_angle = (angle_deg + 270) % 360
+    
+    # 计算扇形的起始和结束角度
+    half_span = span / 2
+    start_angle = (direction - half_span) % 360
+    end_angle = (direction + half_span) % 360
+    
+    # 角度条件：在扇形角度范围内
+    if start_angle <= end_angle:
+        # 扇形不跨越0度
+        in_angle = (user_angle >= start_angle) & (user_angle <= end_angle)
+    else:
+        # 扇形跨越0度（例如：350度到10度）
+        in_angle = (user_angle >= start_angle) | (user_angle <= end_angle)
+    
+    # 同时满足距离和角度条件
+    mask = in_radius & in_angle
+    return mask
+
+def get_smeared_ends(center, motion, motion_pa):
+    rect_angle = (motion_pa - 90)*u.deg
+    angle_rad = np.radians(rect_angle).value
+    dx = np.cos(angle_rad)
+    dy = np.sin(angle_rad)
+    half_width = motion / 2
+    end1 = (center[0] - half_width * dx, center[1] - half_width * dy)
+    end2 = (center[0] + half_width * dx, center[1] + half_width * dy)
+    return end1, end2
+
 def create_smeared_region(center, radius, motion, motion_pa):
     """
     center in (col, row)
@@ -810,12 +893,9 @@ def create_smeared_region(center, radius, motion, motion_pa):
     rect_angle = (motion_pa - 90)*u.deg
     rect_region = RectanglePixelRegion(center=rect_center, width=motion, height=2*radius, angle=rect_angle)
 
-    angle_rad = np.radians(rect_angle)
-    dx = np.cos(angle_rad)
-    dy = np.sin(angle_rad)
-    half_width = motion / 2
-    circle1_center = PixCoord(x=center[0] - half_width * dx, y=center[1] - half_width * dy)
-    circle2_center = PixCoord(x=center[0] + half_width * dx, y=center[1] + half_width * dy)
+    end1, end2 = get_smeared_ends(center, motion, motion_pa)
+    circle1_center = PixCoord(x=end1[0], y=end1[1])
+    circle2_center = PixCoord(x=end2[0], y=end2[1])
     circle1_region = CirclePixelRegion(center=circle1_center, radius=radius)
     circle2_region = CirclePixelRegion(center=circle2_center, radius=radius)
 
@@ -824,13 +904,14 @@ def create_smeared_region(center, radius, motion, motion_pa):
     # plt.contour(smeared_region_bool, levels=[0.5], colors='red', linewidths=0.5)
     return smeared_region
 
-def create_smeared_region_from_obs(center, radius, elapsed_time, motion_rate, motion_pa):
+def create_smeared_region_from_obs(center, radius, elapsed_time, motion_rate, motion_pa, scale = 1.004):
     """
     center in (col, row)
     radius: radius in pixels
     segment_elapsed_time: segment elapsed time in seconds
     motion_rate: motion rate in arcsec/min
     motion_pa: position angle of the motion in degrees, 0 is north, 90 is east
+    scale: arcesc/pixel
     """
-    motion = motion_rate/60 * elapsed_time
+    motion = motion_rate/60 * elapsed_time / scale
     return create_smeared_region(center, radius, motion, motion_pa)

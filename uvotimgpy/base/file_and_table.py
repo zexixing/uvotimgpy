@@ -15,6 +15,7 @@ import pandas as pd
 import astropy.units as u
 from astropy.units import Quantity
 from uvotimgpy.config import paths
+import csv
 
 
 def save_astropy_table(data_table, output_path, verbose=True):
@@ -53,7 +54,7 @@ def load_table(table_path, type='astropy_table', verbose=True):
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
     
-    if file_path.suffix.lower() == '.csv' and type == 'df':
+    if type == 'df' and file_path.suffix.lower() == '.csv':
         # CSV文件
         dtype_dict = {'OBSID': str} if 'OBSID' in pd.read_csv(file_path, nrows=0).columns else {}
         df = pd.read_csv(file_path, dtype=dtype_dict)

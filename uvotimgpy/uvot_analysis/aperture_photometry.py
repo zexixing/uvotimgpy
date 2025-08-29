@@ -1,4 +1,4 @@
-from typing import Union, List, Optional, Tuple
+from typing import Union, List, Optional, Tuple, Callable
 import numpy as np
 from regions import PixelRegion, CirclePixelRegion, PixCoord
 from scipy.optimize import curve_fit
@@ -10,8 +10,9 @@ from synphot.units import convert_flux
 import stsynphot as stsyn
 from sbpy.activity import phase_HalleyMarcus, Afrho
 from sbpy.data import Ephem
+import matplotlib.pyplot as plt
 
-from uvotimgpy.base.region import RegionStatistics, RegionConverter
+from uvotimgpy.base.region import RegionStatistics, RegionConverter, create_circle_region, create_circle_annulus_region
 from uvotimgpy.utils.image_operation import calc_radial_profile
 from uvotimgpy.base.math_tools import ErrorPropagation
 from uvotimgpy.utils.spectrum_operation import format_bandpass, SolarSpectrum, calculate_flux, TypicalWaveSfluxd
@@ -21,12 +22,12 @@ class BackgroundEstimator:
     """背景估计类，提供两种静态方法计算背景"""
     
     @staticmethod
-    def estimate_from_regions(image: np.ndarray,
-                              regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
-                              bad_pixel_mask: Optional[ np.ndarray] = None,
-                              image_err: Optional[np.ndarray] = None,
-                              method: str = 'median',
-                              median_err_params: Optional[dict] = {'method':'mean', 'mask':True}) -> Union[float, Tuple[float, float]]:
+    def from_regions(image: np.ndarray,
+                     regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+                     bad_pixel_mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None,
+                     image_err: Optional[np.ndarray] = None,
+                     method: str = 'median',
+                     median_err_params: Optional[dict] = {'method':'mean', 'mask':True}) -> Union[float, Tuple[float, float]]:
         """使用区域统计方法估计背景
 
         Parameters
@@ -58,15 +59,15 @@ class BackgroundEstimator:
         #    return value, error
         
         # 获取区域内的像素和对应误差
-        regions = RegionConverter.to_bool_array_general(regions, combine_regions=True, shape=image.shape)
-        region = regions[0]
+        region = RegionConverter.to_bool_array_general(regions, combine_regions=True, shape=image.shape)[0]
         if bad_pixel_mask is not None:
-            bad_region = region & ~np.isnan(image) & ~bad_pixel_mask 
+            bad_pixel_mask = RegionConverter.to_bool_array_general(bad_pixel_mask, combine_regions=True, shape=image.shape)[0]
+            valid_region = region & ~np.isnan(image) & ~bad_pixel_mask 
         else:
-            bad_region = region & ~np.isnan(image)
-        valid_data = image[bad_region]
+            valid_region = region & ~np.isnan(image)
+        valid_data = image[valid_region]
         if image_err is not None:
-            valid_errors = image_err[bad_region]
+            valid_errors = image_err[valid_region]
         else:
             valid_errors = np.zeros_like(valid_data)
         
@@ -83,19 +84,105 @@ class BackgroundEstimator:
         else:
             return value
 
+    @staticmethod
+    def for_single_pixel(image: np.ndarray,
+                         regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
+                         bad_pixel_mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None,
+                         method: str = 'median', 
+                         plot: bool = False,
+                         plot_bin_num: int = 100,
+                         verbose: bool = False):
+        region = RegionConverter.to_bool_array_general(regions, combine_regions=True, shape=image.shape)[0]
+        if bad_pixel_mask is not None:
+            bad_pixel_mask = RegionConverter.to_bool_array_general(bad_pixel_mask, combine_regions=True, shape=image.shape)[0]
+            valid_region = region & ~np.isnan(image) & ~bad_pixel_mask 
+        else:
+            valid_region = region & ~np.isnan(image)
+        valid_data = image[valid_region]
+        if verbose:
+            print(f'valid pixel number for background = {len(valid_data)}')
+        error = np.std(valid_data)
+        if method == 'median':
+            value = np.median(valid_data)
+        elif method == 'mean':
+            value = np.mean(valid_data)
+        if plot:
+            print(f'mean = {np.mean(valid_data)}, median = {np.median(valid_data)}, std = {np.std(valid_data)}')
+            plt.hist(valid_data, bins=plot_bin_num)
+            plt.axvline(np.median(valid_data), color='blue', linestyle='--', lw=0.5, label='median')
+            plt.axvline(np.mean(valid_data), color='red', linestyle='--', lw=0.5, label='mean')
+            plt.legend()
+            plt.show(block=True)
+            plt.close()
+        return value, error
         
     @staticmethod
-    def estimate_from_profile(image: np.ndarray,
-                            center: tuple,
-                            fit_range: Tuple[float, float],
-                            step: float = 1.0,
-                            fit_func: str = 'power_law',
-                            p0 = [1, 1, 0],
-                            rho_target: Optional[float] = None,
-                            image_err: Optional[np.ndarray] = None,
-                            bad_pixel_mask: Optional[np.ndarray] = None,
-                            median_err_params: Optional[dict] = {'method':'mean', 'mask':True}
-                            ) -> Union[float, Tuple[float, float]]:
+    def from_multiple_apertures(image: np.ndarray,
+                                background_center_region: Union[PixelRegion, List[PixelRegion], np.ndarray],
+                                region_creation_func: Optional[Callable] = None,
+                                radius_inner: Optional[float] = None,
+                                radius_outer: float = 100.0,
+                                n_samples: int = 500,
+                                bad_pixel_mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None,
+                                method: str = 'mean',
+                                plot: bool = False,
+                                plot_bin_num: int = 100,
+                                verbose: bool = False,
+                                ):
+        background_center_region = RegionConverter.to_bool_array_general(background_center_region, combine_regions=True, shape=image.shape)[0]
+        if bad_pixel_mask is not None:
+            bad_pixel_mask = RegionConverter.to_bool_array_general(bad_pixel_mask, combine_regions=True, shape=image.shape)[0]
+            image[bad_pixel_mask] = np.nan
+        background_center_region = background_center_region & ~np.isnan(image)
+        valid_indices = np.argwhere(background_center_region)
+
+        if len(valid_indices) < n_samples:
+            raise ValueError(f"The number of valid pixels is less than the required sample number: {len(valid_indices)} < {n_samples}")
+        if verbose:
+            print(f'valid pixel number for background = {len(valid_indices)}, n_samples = {n_samples}')
+        selected_idx = np.random.choice(len(valid_indices), size=n_samples, replace=False)
+        selected_indices = valid_indices[selected_idx]
+
+        background_samples = []
+        for row, col in selected_indices:
+            if region_creation_func is not None:
+                region = region_creation_func((col, row))
+            elif radius_inner is None:
+                region = create_circle_region((col, row), radius_outer)
+            else:
+                region = create_circle_annulus_region((col, row), radius_inner, radius_outer)
+            region_bool = RegionConverter.region_to_bool_array(region, image.shape)
+            valid_pixels_in_region = image[region_bool]
+            background_samples.append(np.sum(valid_pixels_in_region))
+        error = np.nanstd(background_samples)
+        if method == 'mean':
+            value = np.nanmean(background_samples)
+        elif method == 'median':
+            value = np.nanmedian(background_samples)
+        else:
+            raise ValueError(f"Unsupported method: {method}")
+        if plot:
+            print(f'mean = {np.nanmean(background_samples)}, median = {np.nanmedian(background_samples)}, std = {np.nanstd(background_samples)}')
+            plt.hist(background_samples, bins=plot_bin_num)
+            plt.axvline(np.nanmedian(background_samples), color='blue', linestyle='--', lw=0.5, label='median')
+            plt.axvline(np.nanmean(background_samples), color='red', linestyle='--', lw=0.5, label='mean')
+            plt.legend()
+            plt.show(block=True)
+            plt.close()
+        return value, error
+        
+    @staticmethod
+    def from_profile(image: np.ndarray,
+                     center: tuple,
+                     fit_range: Tuple[float, float],
+                     step: float = 1.0,
+                     fit_func: str = 'power_law',
+                     p0 = [1, 1, 0],
+                     rho_target: Optional[float] = None,
+                     image_err: Optional[np.ndarray] = None,
+                     bad_pixel_mask: Optional[np.ndarray] = None,
+                     median_err_params: Optional[dict] = {'method':'mean', 'mask':True}
+                     ) -> Union[float, Tuple[float, float]]:
         """使用径向profile拟合方法估计背景
 
         Parameters

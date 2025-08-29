@@ -127,6 +127,7 @@ class StarIdentifier:
         print("Getting regions...")
         # Explicitly call show and wait for window to close
         plt.show(block=True)
+        plt.close()
         
         # Get regions
         regions = selector.get_regions()

@@ -11,17 +11,21 @@ from regions import PixelRegion
 from astropy.time import Time
 from astropy.io import fits
 from astropy.wcs import WCS
+import astropy.units as u
 from astropy.nddata import block_reduce
 from astroquery.skyview import SkyView
+from synphot import SourceSpectrum, SpectralElement
 
 import matplotlib.pyplot as plt
 
 from uvotimgpy.config import paths
 from uvotimgpy.query import SkyImageFetcher
+from uvotimgpy.base.math_tools import UnitConverter
 from uvotimgpy.base.file_and_table import TableConverter, target_name_converter
 from uvotimgpy.base.visualizer import multi_show, draw_direction_compass, MaskInspector, draw_scalebar
-from uvotimgpy.base.instruments import normalize_filter_name
+from uvotimgpy.base.instruments import normalize_filter_name, get_effective_area
 from uvotimgpy.utils.image_operation import DS9Converter, crop_image, stack_images
+from uvotimgpy.utils.spectrum_operation import SolarSpectrum
 from uvotimgpy.uvot_file.file_organization import ObservationLogLoader, ObservationLogger
 from uvotimgpy.uvot_file.file_io import save_stacked_fits
 from uvotimgpy.uvot_image.motion_smear_reducer import reduce_smear
@@ -52,7 +56,7 @@ def is_path_like(string):
     except:
         return False
 
-def load_path(path_or_name: Union[str, Path, None] = None, parent_path: Union[str, Path, None] = None) -> Path:
+def load_path(path_or_name: Union[str, Path, None], parent_path: Union[str, Path, None] = None) -> Path:
     """统一的路径加载函数"""
     if isinstance(path_or_name, str) and not is_path_like(path_or_name):
         if parent_path is None:
@@ -115,23 +119,63 @@ class BasicInfo:
     project_docs_path: Path
     project_name: str
     data_path: Path
+    evt_to_img_folder_path: Path
+    alignment_folder_path: Path
+    cleaned_folder_path: Path
+    stacked_folder_path: Path
+    evt_to_img_name_style: str
+    alignment_name_style: str
+    cleaned_name_style: str
+    stacked_name_style: str
     target_id: str
     obsid_initial: str
     obsid_final: str
     epoch_name: str
     orbital_keywords: List[str]
     observation_log_path: Path
-    #delete_list_v: List[str]
-    #delete_list_uw1: List[str]
     observation_info: Dict[str, Any]
+    filt_filename_v: str = 'uvv'
+    filt_filename_uw1: str = 'uw1'
+    filt_display_v: str = 'V'
+    filt_display_uw1: str = 'UVW1'
+    obs_time: Optional[Time] = None
+    effective_wave_uv: u.Quantity = 3325.72*u.AA
+    effective_wave_v: u.Quantity = 5437.83*u.AA
+    central_wave: u.Quantity = 4381.775*u.AA
+    area: u.Quantity = np.pi*15*15 * u.cm*u.cm
+    sun: SourceSpectrum = SolarSpectrum.from_model()
+
+    def __post_init__(self):
+        """在初始化后自动计算 obs_time"""
+        if self.obs_time is None:
+            self.obs_time = Time(self.observation_info['mid_time'])
+        self.bandpass_v: SpectralElement = get_effective_area(self.filt_filename_v, transmission=True, bandpass=True, obs_time=self.obs_time)
+        self.bandpass_uw1: SpectralElement = get_effective_area(self.filt_filename_uw1, transmission=True, bandpass=True, obs_time=self.obs_time)
+        self.filt_dict = {
+                'uvv': {
+                    'filename': 'uvv',
+                    'display': 'V',
+                    'bandpass': self.bandpass_v,
+                },
+                'uw1': {
+                    'filename': 'uw1',
+                    'display': 'UVW1',
+                    'bandpass': self.bandpass_uw1,
+                },
+            }
+        self.km_per_arcsec = UnitConverter.arcsec_to_km(1.0, self.observation_info['delta'])
     
 class DataPreparation:
     """数据准备相关功能"""
     
     def __init__(self, target_name: str, project_path_or_name: Union[str, Path], target_id: Union[str, int], 
                  obsid_initial: str, obsid_final: str, epoch_name: str,
-                 data_path: Union[str, Path, None] = None, 
-                 **kwargs):
+                 data_path: Union[str, Path, None] = None,
+                 evt_to_img_folder: Optional[Union[str, Path]] = 'evt_to_img', evt_to_img_name_style: Optional[str] = None,
+                 alignment_folder: Optional[Union[str, Path]] = 'alignment', alignment_name_style: Optional[str] = None,
+                 cleaned_folder: Optional[Union[str, Path]] = 'cleaned', cleaned_name_style: Optional[str] = None,
+                 stacked_folder: Optional[Union[str, Path]] = 'stacked', stacked_name_style: Optional[str] = None,
+                 ):
         """设置基本信息"""
         name_dict = target_name_converter(target_name)
         self.instrument = 'Swift'
@@ -167,9 +211,15 @@ class DataPreparation:
         # target_name, 
         self.orbital_keywords = ['RA', 'DEC', 'RA*cos(Dec)_rate', 'DEC_rate', 'delta', 'r', 'r_rate', \
                                  'elong', 'alpha', 'sunTargetPA', 'velocityPA', 'Sky_motion', 'Sky_mot_PA']
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-    
+        self.evt_to_img_folder_path = load_path(evt_to_img_folder, self.project_path)
+        self.alignment_folder_path = load_path(alignment_folder, self.project_path)
+        self.cleaned_folder_path = load_path(cleaned_folder, self.project_path)
+        self.stacked_folder_path = load_path(stacked_folder, self.project_path)
+        self.evt_to_img_name_style = '{obsid}_{ext_no}_{filt_filename}.fits' if evt_to_img_name_style is None else evt_to_img_name_style
+        self.alignment_name_style = '{obsid}_{ext_no}_{filt_filename}.fits' if alignment_name_style is None else alignment_name_style
+        self.cleaned_name_style = '{obsid}_{ext_no}_{filt_filename}.fits' if cleaned_name_style is None else cleaned_name_style
+        self.stacked_name_style = '{epoch_name}_{filt_filename}.fits' if stacked_name_style is None else stacked_name_style
+
     def create_observation_log(self, output_path_or_name: Union[str, Path], orbital_keywords = None) -> pd.DataFrame:
         """创建observation log"""
         # 实现创建逻辑
@@ -300,6 +350,7 @@ class DataPreparation:
                                text_offset=0.02, 
                                fontsize=10)
         plt.show(block=True)
+        plt.close()
     
     def open_in_ds9(self, observations: Optional[pd.DataFrame] = None, **kwargs):
         """用ds9打开图像"""
@@ -343,6 +394,14 @@ class DataPreparation:
                          project_docs_path=self.project_docs_path, 
                          project_name=self.project_name, 
                          data_path=self.data_path, 
+                         evt_to_img_folder_path=self.evt_to_img_folder_path,
+                         alignment_folder_path=self.alignment_folder_path,
+                         cleaned_folder_path=self.cleaned_folder_path,
+                         stacked_folder_path=self.stacked_folder_path,
+                         evt_to_img_name_style=self.evt_to_img_name_style,
+                         alignment_name_style=self.alignment_name_style,
+                         cleaned_name_style=self.cleaned_name_style,
+                         stacked_name_style=self.stacked_name_style,
                          target_id=self.target_id, 
                          obsid_initial=self.obsid_initial, 
                          obsid_final=self.obsid_final, 
@@ -356,9 +415,9 @@ class DataCleaningIndividual:
     """数据清理相关功能"""
     
     def __init__(self, obs: Dict[str, Any], basic_info: BasicInfo, target_coord = (1000, 1000), verbose = True,
-                 evt_to_img_folder: Optional[Union[str, Path]] = 'evt_to_img', evt_to_img_name_style: Optional[str] = None,
-                 alignment_folder: Optional[Union[str, Path]] = 'alignment', alignment_name_style: Optional[str] = None,
-                 cleaned_folder: Optional[Union[str, Path]] = 'cleaned', cleaned_name_style: Optional[str] = None
+                 evt_to_img_folder: Optional[Union[str, Path]] = None, evt_to_img_name_style: Optional[str] = None,
+                 alignment_folder: Optional[Union[str, Path]] = None, alignment_name_style: Optional[str] = None,
+                 cleaned_folder: Optional[Union[str, Path]] = None, cleaned_name_style: Optional[str] = None
                  ):
         self.obs = obs
         self.obsid = obs['OBSID']
@@ -387,12 +446,12 @@ class DataCleaningIndividual:
         self.evt_file_path = get_obs_path(self.basic_info.data_path, self.obsid, self.obs['FILTER'], return_type='evt', datatype=self.datatype)
         self.exp_file_path = get_obs_path(self.basic_info.data_path, self.obsid, self.obs['FILTER'], return_type='exp', datatype=self.datatype)
         self.sk_file_path = get_obs_path(self.basic_info.data_path, self.obsid, self.obs['FILTER'], return_type='sk', datatype=self.datatype)
-        self.evt_to_img_folder_path = load_path(evt_to_img_folder, self.basic_info.project_path)
-        self.alignment_folder_path = load_path(alignment_folder, self.basic_info.project_path)
-        self.cleaned_folder_path = load_path(cleaned_folder, self.basic_info.project_path)
-        evt_to_img_name_style = '{obsid}_{ext_no}_{filt_filename}.fits' if evt_to_img_name_style is None else evt_to_img_name_style
-        alignment_name_style = '{obsid}_{ext_no}_{filt_filename}.fits' if alignment_name_style is None else alignment_name_style
-        cleaned_name_style = '{obsid}_{ext_no}_{filt_filename}.fits' if cleaned_name_style is None else cleaned_name_style
+        self.evt_to_img_folder_path = self.basic_info.evt_to_img_folder_path if evt_to_img_folder is None else load_path(evt_to_img_folder, self.basic_info.project_path)
+        self.alignment_folder_path = self.basic_info.alignment_folder_path if alignment_folder is None else load_path(alignment_folder, self.basic_info.project_path)
+        self.cleaned_folder_path = self.basic_info.cleaned_folder_path if cleaned_folder is None else load_path(cleaned_folder, self.basic_info.project_path)
+        evt_to_img_name_style = self.basic_info.evt_to_img_name_style if evt_to_img_name_style is None else evt_to_img_name_style
+        alignment_name_style = self.basic_info.alignment_name_style if alignment_name_style is None else alignment_name_style
+        cleaned_name_style = self.basic_info.cleaned_name_style if cleaned_name_style is None else cleaned_name_style
         self.evt_to_img_name = evt_to_img_name_style.format(obsid=self.obsid, ext_no=self.ext_no, filt_filename=self.filt_filename)
         self.alignment_name = alignment_name_style.format(obsid=self.obsid, ext_no=self.ext_no, filt_filename=self.filt_filename)
         self.cleaned_name = cleaned_name_style.format(obsid=self.obsid, ext_no=self.ext_no, filt_filename = self.filt_filename)
@@ -620,13 +679,14 @@ class DataCleaningIndividual:
                                target_position_range = self.target_coord_py)
         fig.suptitle(f'{self.obsid} {self.ext_no} {self.filt_filename}')
         plt.show(block=True)
+        plt.close()
         
 class DataCleaningMultiple:
     def __init__(self, observations: Union[pd.DataFrame, List[Dict[str, Any]]], basic_info: BasicInfo, target_coord = (1000, 1000), verbose = True,
-                 evt_to_img_folder: Optional[Union[str, Path]] = 'evt_to_img', evt_to_img_name_style: Optional[str] = None,
-                 alignment_folder: Optional[Union[str, Path]] = 'alignment', alignment_name_style: Optional[str] = None,
-                 cleaned_folder: Optional[Union[str, Path]] = 'cleaned', cleaned_name_style: Optional[str] = None,
-                 stacked_folder: Optional[Union[str, Path]] = 'stacked', stacked_name_style: Optional[str] = None
+                 evt_to_img_folder: Optional[Union[str, Path]] = None, evt_to_img_name_style: Optional[str] = None,
+                 alignment_folder: Optional[Union[str, Path]] = None, alignment_name_style: Optional[str] = None,
+                 cleaned_folder: Optional[Union[str, Path]] = None, cleaned_name_style: Optional[str] = None,
+                 stacked_folder: Optional[Union[str, Path]] = None, stacked_name_style: Optional[str] = None
                  ):
         """
         evt_to_img_name_style example: '{obsid}_{ext_no}_{filt_filename}.fits'
@@ -659,14 +719,14 @@ class DataCleaningMultiple:
         self.stack_unit = None
         self.star_mask_steps = []
         self.star_fill_steps = []
-        self.evt_to_img_folder_path = load_path(evt_to_img_folder, self.basic_info.project_path)
-        self.alignment_folder_path = load_path(alignment_folder, self.basic_info.project_path)
-        self.cleaned_folder_path = load_path(cleaned_folder, self.basic_info.project_path)
-        self.stacked_folder_path = load_path(stacked_folder, self.basic_info.project_path)
-        self.evt_to_img_name_style = '{obsid}_{ext_no}_{filt_filename}.fits' if evt_to_img_name_style is None else evt_to_img_name_style
-        self.alignment_name_style = '{obsid}_{ext_no}_{filt_filename}.fits' if alignment_name_style is None else alignment_name_style
-        self.cleaned_name_style = '{obsid}_{ext_no}_{filt_filename}.fits' if cleaned_name_style is None else cleaned_name_style
-        self.stacked_name_style = '{epoch_name}_{filt_filename}.fits' if stacked_name_style is None else stacked_name_style
+        self.evt_to_img_folder_path = self.basic_info.evt_to_img_folder_path if evt_to_img_folder is None else load_path(evt_to_img_folder, self.basic_info.project_path)
+        self.alignment_folder_path = self.basic_info.alignment_folder_path if alignment_folder is None else load_path(alignment_folder, self.basic_info.project_path)
+        self.cleaned_folder_path = self.basic_info.cleaned_folder_path if cleaned_folder is None else load_path(cleaned_folder, self.basic_info.project_path)
+        self.stacked_folder_path = self.basic_info.stacked_folder_path if stacked_folder is None else load_path(stacked_folder, self.basic_info.project_path)
+        self.evt_to_img_name_style = self.basic_info.evt_to_img_name_style if evt_to_img_name_style is None else evt_to_img_name_style
+        self.alignment_name_style = self.basic_info.alignment_name_style if alignment_name_style is None else alignment_name_style
+        self.cleaned_name_style = self.basic_info.cleaned_name_style if cleaned_name_style is None else cleaned_name_style
+        self.stacked_name_style = self.basic_info.stacked_name_style if stacked_name_style is None else stacked_name_style
         self.stacked_name = self.stacked_name_style.format(epoch_name=self.epoch_name, filt_filename=self.filt_filename)
         self.stacked_path = paths.get_subpath(self.stacked_folder_path, self.stacked_name)
         self.path_dict = dict(
@@ -888,6 +948,7 @@ class DataCleaningMultiple:
                                text_offset=0.02, 
                                fontsize=10)
         plt.show(block=True)
+        plt.close()
 
 def display_stacked_images(project_path: Union[str, Path] = None,
                            stacked_folder: Optional[Union[str, Path]] = 'stacked', 
@@ -956,73 +1017,71 @@ def display_stacked_images(project_path: Union[str, Path] = None,
                           'color': 'white', 
                           'linewidth': 1, 
                           'text_offset': 5}
-    ax_v.imshow(img_v, vmin=vrange_v[0], vmax=vrange_v[1], origin='lower')
-    ax_v.plot(target_coord_py[0], target_coord_py[1], 'rx', markersize=5)
-    #ax_v.set_title('V')
-    if observation_time is not None:
-        text_v = 'V\n'+r'$Swift$/UVOT'+'\n'+f'{observation_time}'
-    else:
-        text_v = 'V\n'+r'$Swift$/UVOT'
-    ax_v.text(0.95, 0.03, text_v, 
-              transform=ax_v.transAxes,ha='right', va='bottom',color='white')
+    ax_v.imshow(img_v, vmin=vrange_v[0], vmax=vrange_v[1], origin='lower', cmap='gray')
+    #ax_v.plot(target_coord_py[0], target_coord_py[1], 'rx', markersize=5)
+    #if observation_time is not None:
+    #    text_v = 'V\n'+r'$Swift$/UVOT'+'\n'+f'{observation_time}'
+    #else:
+    #    text_v = 'V\n'+r'$Swift$/UVOT'
+    #ax_v.text(0.95, 0.03, text_v, 
+    #          transform=ax_v.transAxes,ha='right', va='bottom',color='white')
     ax_v.set_xlim(xrange[0], xrange[1])
     ax_v.set_ylim(yrange[0], yrange[1])
     for spine in ax_v.spines.values():
         spine.set_visible(False)
-    draw_direction_compass(ax_v, 
-                           directions=compass_paras.get('directions', {'N': 0, 'E': 90, 'v': velocityPA_v-180, '☉': sunTargetPA_v-180}),
-                           colors=compass_paras.get('colors', 'white'),
-                           position=compass_paras.get('position', (0.17, 0.83)), 
-                           arrow_length=compass_paras.get('arrow_length', 0.08),
-                           arrow_width=compass_paras.get('arrow_width', 0.1),
-                           headwidth=compass_paras.get('headwidth', 4),
-                           headlength=compass_paras.get('headlength', 3),
-                           text_offset=compass_paras.get('text_offset', 0.02), 
-                           fontsize=compass_paras.get('fontsize', 10))
-    draw_scalebar(ax_v,
-                  length=scalebar_paras.get('length', 100),
-                  label_top=scalebar_paras.get('label_top', r'$20\,000~$'+'km'),
-                  label_bottom=scalebar_paras.get('label_bottom', r"45$^{\prime\prime}$"),
-                  position=scalebar_paras.get('position', (0.85, 0.1)),
-                  color=scalebar_paras.get('color', 'white'),
-                  linewidth=scalebar_paras.get('linewidth', 1),
-                  text_offset=scalebar_paras.get('text_offset', 5),
-                  )
+    #draw_direction_compass(ax_v, 
+    #                       directions=compass_paras.get('directions', {'N': 0, 'E': 90, 'v': velocityPA_v-180, '☉': sunTargetPA_v-180}),
+    #                       colors=compass_paras.get('colors', 'white'),
+    #                       position=compass_paras.get('position', (0.17, 0.83)), 
+    #                       arrow_length=compass_paras.get('arrow_length', 0.08),
+    #                       arrow_width=compass_paras.get('arrow_width', 0.1),
+    #                       headwidth=compass_paras.get('headwidth', 4),
+    #                       headlength=compass_paras.get('headlength', 3),
+    #                       text_offset=compass_paras.get('text_offset', 0.02), 
+    #                       fontsize=compass_paras.get('fontsize', 10))
+    #draw_scalebar(ax_v,
+    #              length=scalebar_paras.get('length', 100),
+    #              label_top=scalebar_paras.get('label_top', r'$20\,000~$'+'km'),
+    #              label_bottom=scalebar_paras.get('label_bottom', r"45$^{\prime\prime}$"),
+    #              position=scalebar_paras.get('position', (0.85, 0.1)),
+    #              color=scalebar_paras.get('color', 'white'),
+    #              linewidth=scalebar_paras.get('linewidth', 1),
+    #              text_offset=scalebar_paras.get('text_offset', 5),
+    #              )
     ax_v.tick_params(axis='both', which='major', direction='in', colors='white', length=3, width=0.5,
                      top=True, bottom=True, left=True, right=True,
                      labelleft=False, labelbottom=False, labeltop=False, labelright=False)
-    ax_uw1.imshow(img_uw1, vmin=vrange_uw1[0], vmax=vrange_uw1[1], origin='lower')
-    ax_uw1.plot(target_coord_py[0], target_coord_py[1], 'rx', markersize=5)
-    #ax_uw1.set_title('UVW1')
-    if observation_time is not None:
-        text_uw1 = 'UVW1\n'+r'$Swift$/UVOT'+'\n'+f'{observation_time}'
-    else:
-        text_uw1 = 'UVW1\n'+r'$Swift$/UVOT'
-    ax_uw1.text(0.95, 0.03, text_uw1, 
-                transform=ax_uw1.transAxes,ha='right', va='bottom',color='white')
+    ax_uw1.imshow(img_uw1, vmin=vrange_uw1[0], vmax=vrange_uw1[1], origin='lower', cmap='gray')
+    #ax_uw1.plot(target_coord_py[0], target_coord_py[1], 'rx', markersize=5)
+    #if observation_time is not None:
+    #    text_uw1 = 'UVW1\n'+r'$Swift$/UVOT'+'\n'+f'{observation_time}'
+    #else:
+    #    text_uw1 = 'UVW1\n'+r'$Swift$/UVOT'
+    #ax_uw1.text(0.95, 0.03, text_uw1, 
+    #            transform=ax_uw1.transAxes,ha='right', va='bottom',color='white')
     ax_uw1.set_xlim(xrange[0], xrange[1])
     ax_uw1.set_ylim(yrange[0], yrange[1])
     for spine in ax_uw1.spines.values():
         spine.set_visible(False)
-    draw_direction_compass(ax_uw1, 
-                           directions=compass_paras.get('directions', {'N': 0, 'E': 90, 'v': velocityPA_uw1-180, '☉': sunTargetPA_uw1-180}),
-                           colors=compass_paras.get('colors', 'white'),
-                           position=compass_paras.get('position', (0.17, 0.83)), 
-                           arrow_length=compass_paras.get('arrow_length', 0.08), 
-                           arrow_width=compass_paras.get('arrow_width', 0.1),
-                           headwidth=compass_paras.get('headwidth', 4),
-                           headlength=compass_paras.get('headlength', 3),
-                           text_offset=compass_paras.get('text_offset', 0.02), 
-                           fontsize=compass_paras.get('fontsize', 10))
-    draw_scalebar(ax_uw1,
-                  length=scalebar_paras.get('length', 100),
-                  label_top=scalebar_paras.get('label_top', r'$20\,000~$'+'km'),
-                  label_bottom=scalebar_paras.get('label_bottom', r"45$^{\prime\prime}$"),
-                  position=scalebar_paras.get('position', (0.85, 0.1)),
-                  color=scalebar_paras.get('color', 'white'),
-                  linewidth=scalebar_paras.get('linewidth', 1),
-                  text_offset=scalebar_paras.get('text_offset', 5),
-                  )
+    #draw_direction_compass(ax_uw1, 
+    #                       directions=compass_paras.get('directions', {'N': 0, 'E': 90, 'v': velocityPA_uw1-180, '☉': sunTargetPA_uw1-180}),
+    #                       colors=compass_paras.get('colors', 'white'),
+    #                       position=compass_paras.get('position', (0.17, 0.83)), 
+    #                       arrow_length=compass_paras.get('arrow_length', 0.08), 
+    #                       arrow_width=compass_paras.get('arrow_width', 0.1),
+    #                       headwidth=compass_paras.get('headwidth', 4),
+    #                       headlength=compass_paras.get('headlength', 3),
+    #                       text_offset=compass_paras.get('text_offset', 0.02), 
+    #                       fontsize=compass_paras.get('fontsize', 10))
+    #draw_scalebar(ax_uw1,
+    #              length=scalebar_paras.get('length', 100),
+    #              label_top=scalebar_paras.get('label_top', r'$20\,000~$'+'km'),
+    #              label_bottom=scalebar_paras.get('label_bottom', r"45$^{\prime\prime}$"),
+    #              position=scalebar_paras.get('position', (0.85, 0.1)),
+    #              color=scalebar_paras.get('color', 'white'),
+    #              linewidth=scalebar_paras.get('linewidth', 1),
+    #              text_offset=scalebar_paras.get('text_offset', 5),
+    #              )
     ax_uw1.tick_params(axis='both', which='major', direction='in', colors='white', length=3, width=0.5, 
                        top=True, bottom=True, left=True, right=True,
                        labelleft=False, labelbottom=False, labeltop=False, labelright=False)

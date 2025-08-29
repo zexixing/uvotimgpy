@@ -181,9 +181,27 @@ class RatioCalculator_V_UV:
         cr2flux_v = calculate_flux(reddened_dust_spectrum, bp_v)/calculate_count_rate(reddened_dust_spectrum, bp_v)
         dust_countrate_ratio = (cr2flux_v/cr2flux_uvw1) * gray_dust_flux_ratio * RatioCalculator_V_UV.reddening_correction(reddening)
         return dust_countrate_ratio
+    
+    def dust_countrate_ratio_from_reddening(reddening, reddening_meas_wave = 4381.8, obs_time=None, 
+                                            gray_dust_spectrum='sun', wave_grid_range=[1000,13000]*u.AA):
+        # create reflectance spectrum from reddening_meas_wave & reddening
+        red_throughput = ReddeningSpectrum.linear_reddening(reddening, wave0 = reddening_meas_wave*u.AA, wave_grid_range=wave_grid_range) # to be changed
+        # create a reddened dust spectrum
+        if gray_dust_spectrum == 'sun':
+            sun = SolarSpectrum.from_model()
+            reddened_spectrum = sun * red_throughput
+        else:
+            raise ValueError(f"Not supported for now: {gray_dust_spectrum}")
+        # calculate the ratio of the two filters
+        bp_uv = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+        bp_v = get_effective_area('v', transmission=True, bandpass=True, obs_time=obs_time)
+        area = np.pi*15*15*u.cm**2
+        countrate_v = calculate_count_rate(reddened_spectrum, bp_v, area).value
+        countrate_uv = calculate_count_rate(reddened_spectrum, bp_uv, area).value
+        return countrate_uv/countrate_v
 
 def countrate_to_emission_flux_for_oh(countrate: Union[float, np.ndarray], 
-                                      countrate_err: Union[float, np.ndarray]=None,
+                                      countrate_err: Union[float, np.ndarray, None] = None,
                                       obs_time=None):
     """
     Convert countrate measurements to flux OH. Default is for Swift UVOT UVW1.
@@ -215,7 +233,7 @@ def countrate_to_emission_flux_for_oh(countrate: Union[float, np.ndarray],
 def emission_flux_to_total_number(emission_flux: Union[float, np.ndarray],  
                                   rh: float, delta: float,
                                   rhv: float,
-                                  emission_flux_err: Union[float, np.ndarray]=None):
+                                  emission_flux_err: Union[float, np.ndarray, None] = None):
     """
     Convert flux measurements to molecular total number using OH fluorescence g-factors.
     

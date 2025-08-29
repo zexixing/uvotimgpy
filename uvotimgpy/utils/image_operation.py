@@ -8,7 +8,7 @@ from matplotlib.patches import Circle
 from regions import CircleAnnulusPixelRegion, CirclePixelRegion, PixCoord
 from scipy.interpolate import interp1d
 from uvotimgpy.base.math_tools import ErrorPropagation
-from uvotimgpy.base.region import mask_image, RegionStatistics, expand_shrink_region
+from uvotimgpy.base.region import mask_image, RegionStatistics, expand_shrink_region, create_sector_region
 import warnings
 from astropy.wcs import FITSFixedWarning
 from astropy.nddata import block_reduce
@@ -569,6 +569,8 @@ def calc_radial_profile(image: np.ndarray,
                        step: float,
                        image_err: Optional[np.ndarray] = None,
                        bad_pixel_mask: Optional[np.ndarray] = None,
+                       sector_pa: Optional[float] = None,
+                       sector_span: Optional[float] = None,
                        start: Optional[float] = None,
                        end: Optional[float] = None,
                        method: str = 'median',
@@ -604,6 +606,13 @@ def calc_radial_profile(image: np.ndarray,
         如果提供了image_err，返回对应的误差值
     """
     # 处理输入图像和掩模
+    if sector_pa is not None and sector_span is not None:
+        sector_region = create_sector_region(center, sector_pa, sector_span, image.shape, radius=end)
+        out_sector_mask = ~sector_region
+        if bad_pixel_mask is None:
+            bad_pixel_mask = out_sector_mask
+        else:
+            bad_pixel_mask = bad_pixel_mask | out_sector_mask
     image = mask_image(image, bad_pixel_mask)
     #image_err = mask_image(image_err, bad_pixel_mask) if not isinstance(image_err, type(None)) else None
     image_err = mask_image(image_err, bad_pixel_mask) if image_err is not None else None
@@ -632,12 +641,14 @@ def calc_radial_profile(image: np.ndarray,
                 center=center_coord,
                 radius=step
             )
+            radii.append(r)
         else:
             region = CircleAnnulusPixelRegion(
                 center=center_coord,
                 inner_radius=r,
                 outer_radius=r + step
             )
+            radii.append(r+step/2)
 
         # 获取区域内的有效像素值
         mask = region.to_mask()
@@ -651,7 +662,6 @@ def calc_radial_profile(image: np.ndarray,
             region_errors = mask.get_values(image_err)
             valid_errors = region_errors[~np.isnan(region_pixels)]
 
-        radii.append(r+step/2)
         if method == 'median':
             if image_err is not None:
                 value, error = ErrorPropagation.median(valid_pixels, valid_errors, axis=None, ignore_nan=True, 
@@ -661,7 +671,7 @@ def calc_radial_profile(image: np.ndarray,
             else:
                 value = np.nanmedian(valid_pixels)
                 values.append(value)
-        else:  # mean
+        elif method == 'mean':
             if image_err is not None:
                 value, error = ErrorPropagation.mean(valid_pixels, valid_errors, axis=None, ignore_nan=True)
                 values.append(value)
@@ -677,6 +687,7 @@ def calc_radial_profile(image: np.ndarray,
         errors = np.array(errors)
         return radii, values, errors
     return radii, values
+    
 
 def bin_image(image: np.ndarray, 
               block_size: Union[int, Tuple[int, int]], 
