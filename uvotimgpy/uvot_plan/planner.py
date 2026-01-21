@@ -132,6 +132,92 @@ class RegionPlanner:
                 f.write(f'# vector({ra_obs},{dec_obs},504",{disp}) vector=1\n')
                 f.write(f'# vector({ra_obs},{dec_obs},300",{antidisp}) vector=1\n')
 
+def compute_pa(roll_deg: float) -> float:
+    """PA = 240.64 - roll  （单位：度）"""
+    return 240.64 - roll_deg
+
+def get_pointing(rain_deg: float,
+                 decin_deg: float,
+                 xoff_arcsec: float,
+                 yoff_arcsec: float,
+                 roll_deg: float):
+    """
+    根据 Swift 的 offset 定义，从 (rain, decin) + (xoff, yoff)
+    计算出 (rapnt, decpnt)。
+
+    参数
+    ----
+    rain_deg, decin_deg : float
+        彗星实际赤经赤纬（deg）
+    xoff_arcsec, yoff_arcsec : float
+        detector 坐标系下需要的 offset（arcsec）
+    roll_deg : float
+        Swift spacecraft roll angle（deg）
+
+    返回
+    ----
+    raoff_deg, decoff_deg : float
+        需要指向的赤经赤纬（deg）
+    """
+    pa_deg = compute_pa(roll_deg)
+    pa_rad = np.deg2rad(pa_deg)
+    dec_rad = np.deg2rad(decin_deg)
+
+    # 把 arcsec 转成 deg
+    x = xoff_arcsec / 3600.0
+    y = yoff_arcsec / 3600.0
+
+    rapnt_deg = (rain_deg
+                 + (y * np.sin(pa_rad) + x * np.cos(pa_rad)) / np.cos(dec_rad))
+    decpnt_deg = (decin_deg
+                  + (-y * np.cos(pa_rad) + x * np.sin(pa_rad)))
+
+    return rapnt_deg, decpnt_deg
+
+def get_offset(rain_deg: float,
+               decin_deg: float,
+               rapnt_deg: float,
+               decpnt_deg: float,
+               roll_deg: float):
+    """
+    已知 (rain, decin) 和目标指向 (rapnt, decpnt)，
+    反推在 detector 坐标系下的 (xoff, yoff)（单位 arcmin）。
+
+    参数
+    ----
+    rain_deg, decin_deg : float
+        彗星实际赤经赤纬（deg）
+    raoff_deg, decoff_deg : float
+        望远镜实际指向赤经赤纬（deg）
+    roll_deg : float
+        Swift spacecraft roll angle（deg）
+
+    返回
+    ----
+    xoff_arcsec, yoff_arcsec : float
+        detector 坐标系下的 offset（arcsec）
+    """
+    pa_deg = compute_pa(roll_deg)
+    pa_rad = np.deg2rad(pa_deg)
+    dec_rad = np.deg2rad(decin_deg)
+
+    cd = np.cos(dec_rad)
+    delta_ra = rapnt_deg - rain_deg      # deg
+    delta_dec = decpnt_deg - decin_deg   # deg
+
+    # 还原成 R, D（相当于把前向变换那一步“收回来”）
+    R = 60.0 * cd * delta_ra
+    D = 60.0 * delta_dec
+
+    c = np.cos(pa_rad)
+    s = np.sin(pa_rad)
+
+    xoff_arcsec = (c * R + s * D) * 60
+    yoff_arcsec = (s * R - c * D) * 60
+
+    return xoff_arcsec, yoff_arcsec
+
+
 # Example usage:
 if __name__ == "__main__":
     
@@ -145,12 +231,12 @@ if __name__ == "__main__":
     obs_config = 'middle'
 
     # path
-    obs_path = paths.get_subpath(paths.projects, 'C_2025N1', 'obs')
-    option_path = paths.get_subpath(obs_path, '2025sep.txt')
-    reg_path = paths.get_subpath(obs_path, '2025sep.reg')
+    obs_path = paths.get_subpath(paths.projects, 'C_2025K1', 'obs')
+    option_path = paths.get_subpath(obs_path, '2026jan2.txt')
+    reg_path = paths.get_subpath(obs_path, '2026jan2.reg')
     print(option_path)
 
     # Create region file
-    delta = 2.57
+    delta = 2.07
     planner = RegionPlanner(option_path)
     planner.create_reg(delta, obs_config, reg_path)

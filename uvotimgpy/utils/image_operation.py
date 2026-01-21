@@ -2,18 +2,20 @@ from astropy.io import fits
 import numpy as np
 #from scipy.ndimage import shift, rotate
 from skimage.transform import rotate
-from typing import List, Tuple, Union, Optional
+from typing import List, Tuple, Union, Optional, Sequence
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from regions import CircleAnnulusPixelRegion, CirclePixelRegion, PixCoord
 from scipy.interpolate import interp1d
 from uvotimgpy.base.math_tools import ErrorPropagation
-from uvotimgpy.base.region import mask_image, RegionStatistics, expand_shrink_region, create_sector_region
+from uvotimgpy.base.region import mask_image, RegionStatistics, expand_shrink_region, create_sector_region, create_sector_region_from_map
 import warnings
 from astropy.wcs import FITSFixedWarning
 from astropy.nddata import block_reduce
 from astropy.convolution import Gaussian2DKernel, convolve
 from scipy.ndimage import binary_dilation
+from scipy.signal import fftconvolve
+from scipy.ndimage import uniform_filter, gaussian_filter
 warnings.filterwarnings('ignore', category=FITSFixedWarning)
 
 class DS9Converter:
@@ -329,36 +331,50 @@ def stack_images(images: List[np.ndarray],
     if method == 'mean' or method == 'sum':
         if verbose:
             warnings.warn("Some pixels may be not well exposed, please check the exposure map with sum_exposure_map().")
-    if image_err is None:
-        if method == 'median':
-            return np.nanmedian(images, axis=0)
-        elif method == 'mean':
-            return np.nanmean(images, axis=0)
-        elif method == 'sum':
-            return np.nansum(images, axis=0)
-    else:
-        if method == 'mean':
-            if input_unit == 'counts' and exposure_list is not None:
-                images = images_by_exposure(images, exposure_list, method='divide')
-                if image_err is not None:
-                    image_err = images_by_exposure(image_err, exposure_list, method='divide')
+    all_nan = np.all(np.isnan(images), axis=0)
+    if method == 'mean':
+        if input_unit == 'counts' and exposure_list is not None:
+            images = images_by_exposure(images, exposure_list, method='divide')
+            if image_err is not None:
+                image_err = images_by_exposure(image_err, exposure_list, method='divide')
+        if image_err is not None:
             mean_image, mean_error = ErrorPropagation.mean(images, image_err, axis=0, ignore_nan=True)
+            mean_image[all_nan] = np.nan
+            mean_error[all_nan] = np.nan
             return mean_image, mean_error
-        elif method == 'median':
-            if input_unit == 'counts' and exposure_list is not None:
-                images = images_by_exposure(images, exposure_list, method='divide')
-                if image_err is not None:
-                    image_err = images_by_exposure(image_err, exposure_list, method='divide')
+        else:
+            result = np.nanmean(images, axis=0)
+            result[all_nan] = np.nan
+            return result
+    elif method == 'median':
+        if input_unit == 'counts' and exposure_list is not None:
+            images = images_by_exposure(images, exposure_list, method='divide')
+            if image_err is not None:
+                image_err = images_by_exposure(image_err, exposure_list, method='divide')
+        if image_err is not None:
             median_image, median_error = ErrorPropagation.median(images, image_err, axis=0, ignore_nan=True,
                                                                  **median_err_params)
+            median_image[all_nan] = np.nan
+            median_error[all_nan] = np.nan
             return median_image, median_error
-        elif method == 'sum':
-            if input_unit == 'counts/s' and exposure_list is not None:
-                images = images_by_exposure(images, exposure_list, method='multiply')
-                if image_err is not None:
-                    image_err = images_by_exposure(image_err, exposure_list, method='multiply')
+        else:
+            result = np.nanmedian(images, axis=0)
+            result[all_nan] = np.nan
+            return result
+    elif method == 'sum':
+        if input_unit == 'counts/s' and exposure_list is not None:
+            images = images_by_exposure(images, exposure_list, method='multiply')
+            if image_err is not None:
+                image_err = images_by_exposure(image_err, exposure_list, method='multiply')
+        if image_err is not None:
             sum_image, sum_error = ErrorPropagation.sum(images, image_err, axis=0, ignore_nan=True)
+            sum_image[all_nan] = np.nan
+            sum_error[all_nan] = np.nan
             return sum_image, sum_error
+        else:
+            result = np.nansum(images, axis=0)
+            result[all_nan] = np.nan
+            return result
 
 def shrink_valid_image(image: np.ndarray, shrink_pixels: int = 2, mask: Optional[np.ndarray] = None, speed: str = 'normal') -> np.ndarray:
     """
@@ -521,23 +537,34 @@ class ImageDistanceCalculator:
             
         return max_dist
 
-class DistanceMap:
+class GeometryMap:
     """处理图像中像素到指定中心点距离的类"""
     
     def __init__(self, image: np.ndarray, center: tuple):
-        self.image = image
+        #self.image = image
+        #self.center_col, self.center_row = center
+        #
+        ## 直接在初始化时计算距离图
+        #rows, cols = np.indices(self.image.shape)
+        #self.dist_map = np.sqrt(
+        #    (cols - self.center_col)**2 + 
+        #    (rows - self.center_row)**2
+        #)
+        height, width = image.shape
+
+        # 创建像素坐标网格
+        cols = np.arange(width)
+        rows = np.arange(height)
+        col_grid, row_grid = np.meshgrid(cols, rows)
+
+        # 计算每个像素到中心的距离
         self.center_col, self.center_row = center
-        
-        # 直接在初始化时计算距离图
-        rows, cols = np.indices(self.image.shape)
-        self.dist_map = np.sqrt(
-            (cols - self.center_col)**2 + 
-            (rows - self.center_row)**2
-        )
+        self.dcol = col_grid - self.center_col
+        self.drow = row_grid - self.center_row
         
     def get_distance_map(self) -> np.ndarray:
         """计算每个像素到中心的距离"""
-        return self.dist_map
+        return np.sqrt(self.dcol**2 + self.drow**2)
     
     def get_range_mask(self, inner_radius: float, outer_radius: float) -> np.ndarray:
         """
@@ -555,18 +582,210 @@ class DistanceMap:
         np.ndarray
             布尔掩膜，在指定范围内的像素为True
         """
+        self.dist_map = np.sqrt(self.dcol**2 + self.drow**2)
         return (self.dist_map >= inner_radius) & (self.dist_map < outer_radius)
     
     def get_index_map(self, step) -> np.ndarray:
         """获取距离的索引图"""            
         #index_map = np.round(self.dist_map / step).astype(int)
         #index_map = np.maximum(index_map, 1)
+        self.dist_map = np.sqrt(self.dcol**2 + self.drow**2)
         index_map = np.floor(self.dist_map / step).astype(int)
         return index_map
 
+    def get_angle_map(self) -> np.ndarray:
+        """获取每个像素相对于中心的角度"""
+        angle_rad = np.arctan2(self.drow, self.dcol)
+        angle_deg = np.degrees(angle_rad)
+        return (angle_deg + 270) % 360 # 0度=上, 90度=左, 180度=下, 270度=右
+
+def build_edge_list(start: float,
+                    end: float,
+                    step: float = 1.0,
+                    power: float = 0.0):
+    """
+    Vectorized bin construction using
+        width_i = step * (1 + i^beta) / 2
+
+    power = 0: linear (width = step always)
+    power > 0: increasing widths
+    """
+    if end <= start:
+        raise ValueError("end must > start")
+    if step <= 0:
+        raise ValueError("step must > 0")
+
+    full_span = end - start
+
+    # --- (1) 粗略估计最大需要多少 bin （线性下的上限） ---
+    # 因为 width_i >= step/2
+    max_bins = int(np.ceil(full_span / (step / 2)))  
+    # 通常 max_bins 会比实际有效的多，但不会影响性能
+
+    # --- (2) 一次性生成 i = 0..max_bins 的全部 width ---
+    i = np.arange(max_bins, dtype=float)[1:]
+
+    #if beta == 0.0:
+    #    widths = np.full_like(i, step)
+    #else:
+    widths = step * (1 + i**power) / 2
+
+    # --- (3) 累积和 ---
+    cumsum = widths.cumsum()
+
+    # --- (4) 找到所有 bin 都能完全包含的范围 ---
+    valid = cumsum <= full_span
+    if not np.any(valid):
+        # 一个 bin 也放不下，退化为单 bin
+        return np.array([start, end], dtype=float)
+
+    last = np.where(valid)[0][-1]  # 最后的有效 bin index
+
+    # --- (5) 构造 edge_list ---
+    widths_used = widths[: last + 1]
+    edge_offsets = np.concatenate(([0.0], widths_used.cumsum()))
+    edge_list = start + edge_offsets
+
+    return edge_list
+
+#def calc_radial_profile(image: np.ndarray, 
+#                       center: tuple, 
+#                       step: float,
+#                       edge_list: Optional[List[float]] = None,
+#                       image_err: Optional[np.ndarray] = None,
+#                       bad_pixel_mask: Optional[np.ndarray] = None,
+#                       sector_pa: Optional[float] = None,
+#                       sector_span: Optional[float] = None,
+#                       start: Optional[float] = None,
+#                       end: Optional[float] = None,
+#                       method: str = 'median',
+#                       median_err_params: Optional[dict] = {'method':'mean', 'mask':True},
+#                       power: float = 1.0) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+#    """计算径向profile及其误差
+#
+#    Parameters
+#    ----------
+#    image : np.ndarray
+#        输入图像
+#    center : tuple
+#        中心点坐标 (col, row)
+#    step : float
+#        环宽度
+#    edge_list : List[float], optional
+#        边缘列表
+#    image_err : np.ndarray, optional
+#        图像误差数组
+#    bad_pixel_mask : np.ndarray, optional
+#        坏像素掩模，True表示被mask的像素
+#    start : float, optional
+#        起始半径，默认为0
+#    end : float, optional
+#        结束半径，默认为图像中心到角落的距离
+#    method : str
+#        计算方法，'median'或'mean'或'max'
+#
+#    Returns
+#    -------
+#    radii : np.ndarray
+#        半径数组
+#    values : np.ndarray
+#        对应的profile值
+#    errors : np.ndarray, optional
+#        如果提供了image_err，返回对应的误差值
+#    """
+#    # 处理输入图像和掩模
+#    if sector_pa is not None and sector_span is not None:
+#        sector_region = create_sector_region(center, sector_pa, sector_span, image.shape, radius=end)
+#        out_sector_mask = ~sector_region
+#        if bad_pixel_mask is None:
+#            bad_pixel_mask = out_sector_mask
+#        else:
+#            bad_pixel_mask = bad_pixel_mask | out_sector_mask
+#    image = mask_image(image, bad_pixel_mask)
+#    #image_err = mask_image(image_err, bad_pixel_mask) if not isinstance(image_err, type(None)) else None
+#    image_err = mask_image(image_err, bad_pixel_mask) if image_err is not None else None
+#    # 处理中心坐标
+#    if isinstance(center, PixCoord):
+#        center_coord = center
+#    else:
+#        center_coord = PixCoord(x=center[0], y=center[1])
+#    
+#    # 设置起始和结束半径
+#    start = start if start is not None else 0
+#    if end is None:
+#        end = ImageDistanceCalculator.max_distance_from_valid_pixels(image, center)
+#    
+#    # 初始化结果列表
+#    if edge_list is None and step is not None:
+#        #edge_list = np.arange(start, end+step, step)
+#        edge_list = np.asarray(build_edge_list(start, end, step, power=power))
+#    radii = []
+#    values = []
+#    errors = [] if image_err is not None else None
+#
+#    # 计算每个半径处的值
+#    for i, r in enumerate(edge_list[:-1]):
+#        # 创建区域
+#        r_next = edge_list[i+1]
+#        if r == 0:
+#            region = CirclePixelRegion(
+#                center=center_coord,
+#                radius=r_next
+#            )
+#            radii.append(r)
+#        else:
+#            region = CircleAnnulusPixelRegion(
+#                center=center_coord,
+#                inner_radius=r,
+#                outer_radius=r_next
+#            )
+#            radii.append((r+r_next)/2)
+#
+#        # 获取区域内的有效像素值
+#        mask = region.to_mask()
+#        region_pixels = mask.get_values(image)
+#        valid_pixels = region_pixels[~np.isnan(region_pixels)]
+#
+#        if len(valid_pixels) == 0:
+#            values.append(np.nan)
+#            if image_err is not None:
+#                errors.append(np.nan)
+#            continue
+#
+#        if image_err is not None:
+#            region_errors = mask.get_values(image_err)
+#            valid_errors = region_errors[~np.isnan(region_pixels)]
+#
+#        if method == 'median':
+#            if image_err is not None:
+#                value, error = ErrorPropagation.median(valid_pixels, valid_errors, axis=None, ignore_nan=True, 
+#                                                       **median_err_params)
+#                values.append(value)
+#                errors.append(error)
+#            else:
+#                value = np.nanmedian(valid_pixels)
+#                values.append(value)
+#        elif method == 'mean':
+#            if image_err is not None:
+#                value, error = ErrorPropagation.mean(valid_pixels, valid_errors, axis=None, ignore_nan=True)
+#                values.append(value)
+#                errors.append(error)
+#            else:
+#                value = np.nanmean(valid_pixels)
+#                values.append(value)
+#
+#    # 转换为numpy数组并返回结果
+#    radii = np.array(radii)
+#    values = np.array(values)
+#    if image_err is not None:
+#        errors = np.array(errors)
+#        return radii, values, errors
+#    return radii, values
+    
 def calc_radial_profile(image: np.ndarray, 
                        center: tuple, 
                        step: float,
+                       edge_list: Optional[List[float]] = None,
                        image_err: Optional[np.ndarray] = None,
                        bad_pixel_mask: Optional[np.ndarray] = None,
                        sector_pa: Optional[float] = None,
@@ -574,7 +793,11 @@ def calc_radial_profile(image: np.ndarray,
                        start: Optional[float] = None,
                        end: Optional[float] = None,
                        method: str = 'median',
-                       median_err_params: Optional[dict] = {'method':'mean', 'mask':True}) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+                       median_err_params: Optional[dict] = {'method':'mean', 'mask':True},
+                       power: float = 1.0,
+                       distance_map: Optional[np.ndarray] = None,
+                       angle_map: Optional[np.ndarray] = None,
+                       ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """计算径向profile及其误差
 
     Parameters
@@ -585,6 +808,8 @@ def calc_radial_profile(image: np.ndarray,
         中心点坐标 (col, row)
     step : float
         环宽度
+    edge_list : List[float], optional
+        边缘列表
     image_err : np.ndarray, optional
         图像误差数组
     bad_pixel_mask : np.ndarray, optional
@@ -606,13 +831,25 @@ def calc_radial_profile(image: np.ndarray,
         如果提供了image_err，返回对应的误差值
     """
     # 处理输入图像和掩模
+    if distance_map is None or angle_map is None:
+        geometry_mapper = GeometryMap(image, center)
+        if distance_map is None:
+            distance_map = geometry_mapper.get_distance_map()
+        if angle_map is None:
+            angle_map = geometry_mapper.get_angle_map()
     if sector_pa is not None and sector_span is not None:
-        sector_region = create_sector_region(center, sector_pa, sector_span, image.shape, radius=end)
+        #sector_region = create_sector_region(center, sector_pa, sector_span, image.shape, radius=end, )
+        sector_region = create_sector_region_from_map(distance_map, angle_map, sector_pa, sector_span, radius=end)
         out_sector_mask = ~sector_region
         if bad_pixel_mask is None:
             bad_pixel_mask = out_sector_mask
         else:
             bad_pixel_mask = bad_pixel_mask | out_sector_mask
+    value_center = image[center[1], center[0]]
+    if image_err is not None:
+        error_center = image_err[center[1], center[0]]
+    else:
+        error_center = None
     image = mask_image(image, bad_pixel_mask)
     #image_err = mask_image(image_err, bad_pixel_mask) if not isinstance(image_err, type(None)) else None
     image_err = mask_image(image_err, bad_pixel_mask) if image_err is not None else None
@@ -628,66 +865,204 @@ def calc_radial_profile(image: np.ndarray,
         end = ImageDistanceCalculator.max_distance_from_valid_pixels(image, center)
     
     # 初始化结果列表
-    radii_range = np.arange(start, end, step)
-    radii = []
-    values = []
-    errors = [] if image_err is not None else None
+    if edge_list is None and step is not None:
+        #edge_list = np.arange(start, end+step, step)
+        edge_list = np.asarray(build_edge_list(start, end, step, power=power))
 
-    # 计算每个半径处的值
-    for r in radii_range:
-        # 创建区域
-        if r == 0:
-            region = CirclePixelRegion(
-                center=center_coord,
-                radius=step
-            )
-            radii.append(r)
-        else:
-            region = CircleAnnulusPixelRegion(
-                center=center_coord,
-                inner_radius=r,
-                outer_radius=r + step
-            )
-            radii.append(r+step/2)
+    n_bin = len(edge_list) - 1
+    # 计算每个 bin 的代表半径（默认是边界中点；若最内层从 0 开始则强制为 0）
+    radii = 0.5 * (edge_list[:-1] + edge_list[1:])
+    if edge_list[0] == 0:
+        radii[0] = 0.0
 
-        # 获取区域内的有效像素值
-        mask = region.to_mask()
-        region_pixels = mask.get_values(image)
-        valid_pixels = region_pixels[~np.isnan(region_pixels)]
-
-        if len(valid_pixels) == 0:
-            continue
-
-        if image_err is not None:
-            region_errors = mask.get_values(image_err)
-            valid_errors = region_errors[~np.isnan(region_pixels)]
-
-        if method == 'median':
-            if image_err is not None:
-                value, error = ErrorPropagation.median(valid_pixels, valid_errors, axis=None, ignore_nan=True, 
-                                                       **median_err_params)
-                values.append(value)
-                errors.append(error)
-            else:
-                value = np.nanmedian(valid_pixels)
-                values.append(value)
-        elif method == 'mean':
-            if image_err is not None:
-                value, error = ErrorPropagation.mean(valid_pixels, valid_errors, axis=None, ignore_nan=True)
-                values.append(value)
-                errors.append(error)
-            else:
-                value = np.nanmean(valid_pixels)
-                values.append(value)
-
-    # 转换为numpy数组并返回结果
-    radii = np.array(radii)
-    values = np.array(values)
+    # 拉平成一维，建立有效像素 mask
+    radius_flat = distance_map.ravel()
+    image_flat = image.ravel()
+    finite = np.isfinite(image_flat)
+    # 只考虑半径在 edge_list 范围内的像素
+    r_min, r_max = edge_list[0], edge_list[-1]
+    radius_in = (radius_flat >= r_min) & (radius_flat <= r_max)
+    valid = finite & radius_in
     if image_err is not None:
-        errors = np.array(errors)
+        image_err_flat = image_err.ravel()
+        finite_err = np.isfinite(image_err_flat)
+        #valid &= finite_err
+    else:
+        image_err_flat = None
+    if not np.any(valid):
+        values = np.full(n_bin, np.nan, dtype=float)
+        errors = np.full(n_bin, np.nan, dtype=float) if image_err is not None else None
+        if errors is not None:
+            return radii, values, errors
+        else:
+            return radii, values
+
+    r_flat = radius_flat[valid]
+    v_flat = image_flat[valid]
+    if image_err_flat is not None:
+        e_flat = image_err_flat[valid]
+    else:
+        e_flat = None
+
+    # 将像素按半径分配到 bin
+    bin_idx = np.digitize(r_flat, edge_list) - 1   # 0 到 n_bin-1
+    # 防御性裁剪（极端边界）
+    good_bins = (bin_idx >= 0) & (bin_idx < n_bin)
+    r_flat = r_flat[good_bins]
+    v_flat = v_flat[good_bins]
+    if e_flat is not None:
+        e_flat = e_flat[good_bins]
+    bin_idx = bin_idx[good_bins]
+    # 初始化输出
+    values = np.full(n_bin, np.nan, dtype=float)
+    errors = np.full(n_bin, np.nan, dtype=float) if e_flat is not None else None
+    if edge_list[0] == 0:
+        values[0] = value_center
+        if e_flat is not None:
+            errors[0] = error_center
+    if edge_list[0] == 0:
+        loop_range = range(1, n_bin)
+    else:
+        loop_range = range(n_bin)
+    # 按 bin 逐个计算（median/mean/max），这里仍是 python loop，
+    for i in loop_range:
+        sel = (bin_idx == i)
+        if not np.any(sel):
+            continue
+        pix = v_flat[sel]
+        if e_flat is not None:
+            errs = e_flat[sel]
+        else:
+            errs = None
+#        if radii[i] == 0:
+#            print('hi')
+#            values[i] = value_center
+#            if errs is not None:
+#                errors[i] = error_center
+        if method == 'median':
+            if errs is not None:
+                # 保留你原来的误差传播逻辑
+                value, error = ErrorPropagation.median(
+                    pix, errs, axis=None, ignore_nan=True, **median_err_params
+                )
+                values[i] = value
+                errors[i] = error
+            else:
+                values[i] = np.nanmedian(pix)
+        elif method == 'mean':
+            if errs is not None:
+                value, error = ErrorPropagation.mean(
+                    pix, errs, axis=None, ignore_nan=True
+                )
+                values[i] = value
+                errors[i] = error
+            else:
+                values[i] = np.nanmean(pix)
+        elif method == 'min':
+            values[i] = np.nanmin(pix)
+        else:
+            raise ValueError(f"Unknown method '{method}', must be 'median' or 'mean'.")
+    if errors is not None:
         return radii, values, errors
-    return radii, values
-    
+    else:
+        return radii, values
+
+def calc_radial_profiles_sectors(
+    image: np.ndarray,
+    center: tuple,
+    step: float,
+    sector_pa_list: Sequence[float],
+    sector_span: Union[float, Sequence[float]],
+    edge_list: Optional[Sequence[float]] = None,
+    image_err: Optional[np.ndarray] = None,
+    bad_pixel_mask: Optional[np.ndarray] = None,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+    method: str = "median",
+    median_err_params: Optional[dict] = {'method':'mean', 'mask':True},
+    power: float = 1.0,
+    verbose: bool = True,
+    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    """
+    对多个 sector_pa 计算各自的 radial profile
+
+    Parameters
+    ----------
+    sector_pa_list : sequence of float
+        每个扇区的 position angle
+    sector_span : float or sequence of float
+        若为 float/int，则所有扇区用同一个 span；
+        若为 sequence，则长度必须与 sector_pa_list 一致。
+    其他参数：
+        与 calc_radial_profile 一致，edge_list 若为 None 则内部统一生成。
+
+    Returns
+    -------
+    radii : (n_rad,) ndarray
+    values : (n_sector, n_rad) ndarray
+        每一行对应一个 sector 的 profile
+    errors : (n_sector, n_rad) ndarray or None
+    """
+    sector_pa_list = np.asarray(sector_pa_list, dtype=float)
+    n_sector = len(sector_pa_list)
+
+    # 规范化 sector_span
+    if np.isscalar(sector_span):
+        sector_span_list = np.full(n_sector, float(sector_span))
+    else:
+        sector_span_list = np.asarray(sector_span, dtype=float)
+        if len(sector_span_list) != n_sector:
+            raise ValueError("sector_span 长度必须与 sector_pa_list 一致。")
+    # 预计算 radius_map / theta_map（所有扇区共用）
+    geometry_mapper = GeometryMap(image, center)
+    distance_map = geometry_mapper.get_distance_map()
+    angle_map = geometry_mapper.get_angle_map()
+    if bad_pixel_mask is not None:
+        image = mask_image(image, bad_pixel_mask)
+        image_err = mask_image(image_err, bad_pixel_mask) if image_err is not None else None
+    # 如果没给 edge_list，先按整个图像生成一个（所有 sector 共用）
+    if edge_list is None:
+        # 这里直接用你上面封装好的 build_edge_list
+        start_val = 0.0 if start is None else start
+        # 先暂时求 end（用一次 max_distance）
+        if end is None:
+            end_val = ImageDistanceCalculator.max_distance_from_valid_pixels(image, center)
+        else:
+            end_val = end
+        edge_list = build_edge_list(start_val, end_val, step, power=power)
+
+    edge_list = np.asarray(edge_list)
+
+    profile_dict = {}
+
+    for pa, span in zip(sector_pa_list, sector_span_list):
+        result = calc_radial_profile(
+            image=image,
+            center=center,
+            step=step,                  # 不再用于生成 edge_list，但保持接口一致
+            edge_list=edge_list,        # 固定同一组 edge_list
+            image_err=image_err,
+            bad_pixel_mask=None,
+            sector_pa=pa,
+            sector_span=span,
+            start=start,
+            end=end,
+            method=method,
+            median_err_params=median_err_params,
+            power=power,
+            distance_map=distance_map,
+            angle_map=angle_map,
+        )
+        if image_err is not None:
+            radii, vals, errs = result
+            profile_dict[pa] = {'radii': radii, 'values': vals, 'errors': errs}
+        else:
+            radii, vals = result
+            profile_dict[pa] = {'radii': radii, 'values': vals}
+        if verbose:
+            print(f'sector {pa} done')
+    return profile_dict
+
 
 def bin_image(image: np.ndarray, 
               block_size: Union[int, Tuple[int, int]], 
@@ -703,7 +1078,7 @@ def bin_image(image: np.ndarray,
         输入图像
     block_size : int or tuple of int
         binning的块大小。如果是整数，则在两个方向使用相同的大小；
-        如果是元组，则分别指定(y, x)方向的块大小
+        如果是元组，则分别指定(col, row)方向的块大小
     method : str, optional
         用于binning的函数，默认为np.nanmean
     image_err : np.ndarray, optional
@@ -747,7 +1122,91 @@ def bin_image(image: np.ndarray,
         else:
             raise ValueError("image and image_err must have consistent shapes and NaN positions")
 
-def smooth_image(image: np.ndarray, kernel_size: int = 3, method: str = 'gaussian',
+def bin_coordinate(pixel_coord, block_size):
+    """
+    将原图像素坐标 pixel_coord 映射到 block_reduce 之后的 binned 图像坐标。
+
+    参数
+    ----------
+    pixel_coord: (col, row)
+    block_size : tuple(int, int) or int
+        每个方向上的 block 大小，形式为 (bcol, brow)。
+
+    返回
+    ----------
+    (colb, rowb) : tuple(int, int)
+        binned 图像中的像素坐标。
+    """
+    col, row = pixel_coord
+    if isinstance(block_size, int):
+        bcol, brow = block_size, block_size
+    else:
+        bcol, brow = block_size
+    rowb = row // brow
+    colb = col // bcol
+    return (colb, rowb)
+
+def get_original_coordinate_range(pixel_coord, block_size):
+    """
+    给定 binned 图像的坐标 (yb, xb)，返回对应的原图像素范围。
+
+    参数
+    ----------
+    pixel_coord : (col, row)
+        binned 图像坐标。
+    block_size : tuple(int, int) or int
+        每个方向上的 block 大小，形式为 (bcol, brow)。
+
+    返回
+    ----------
+    (colrange, rowrange) : tuple(range, range)
+        原图中对应的行列范围。
+    """
+    if isinstance(block_size, int):
+        bcol, brow = block_size, block_size
+    else:
+        bcol, brow = block_size
+    col, row = pixel_coord
+    colrange = range(col * bcol, (col + 1) * bcol)
+    rowrange = range(row * brow, (row + 1) * brow)
+    return colrange, rowrange
+
+def tile_image(image: np.ndarray, tile_size: int, func=np.median, mask: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    将图像按tile分块，每块用该块的中位数值填充。
+    Parameters
+    ----------
+    image : np.ndarray
+        输入图像
+    tile_size : int
+        tile大小
+    func : callable
+        填充函数, np.median or np.mean ...
+    mask : np.ndarray, optional
+        掩膜
+    """
+    image_tiled = image.copy()
+    ny, nx = image.shape
+    if mask is not None:
+        image_tiled[mask] = np.nan
+    for y0 in range(0, ny, tile_size):
+        for x0 in range(0, nx, tile_size):
+            y1 = min(y0 + tile_size, ny)
+            x1 = min(x0 + tile_size, nx)
+            tile = image_tiled[y0:y1, x0:x1]
+            
+            # 提取非 NaN 有效值
+            valid_values = tile[~np.isnan(tile)]
+            if valid_values.size > 0:
+                filled_val = func(valid_values)
+                image_tiled[y0:y1, x0:x1] = filled_val
+                # 可选：tile 中的 NaN 保持为 NaN，不做替换
+            else:
+                # 整个 tile 都是 NaN，保持为 NaN
+                continue
+    return image_tiled
+
+def smooth_image(image: np.ndarray, size: int = 3, method: str = 'gaussian_filter',
                  image_err: Optional[np.ndarray] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     对图像进行平滑处理
@@ -759,35 +1218,89 @@ def smooth_image(image: np.ndarray, kernel_size: int = 3, method: str = 'gaussia
     kernel_size : int
         卷积核大小
     method : str
-        平滑方法，'gaussian'
+        平滑方法，'convolve', 'gaussian_filter', 'boxcar', 'fft'
     """
-    if method == 'gaussian':
-        kernel = Gaussian2DKernel(kernel_size)
+    if image_err is not None:
+        consistency = ErrorPropagation.check_consistency(image, image_err)
+        if not consistency:
+            raise ValueError("image and image_err must have consistent shapes and NaN positions")
+    if method == 'convolve':
+        kernel = Gaussian2DKernel(size)
         smoothed_image = convolve(image, kernel)
+        mask = ~np.isfinite(image)
+        smoothed_image[mask] = np.nan
         if image_err is None:
             return smoothed_image
         else:
-            if ErrorPropagation.check_consistency(image, image_err):
-                smoothed_err = np.sqrt(convolve(image_err**2, kernel**2))
-                return smoothed_image, smoothed_err
-            else:
-                raise ValueError("image and image_err must have consistent shapes and NaN positions")
-    else:
-        raise ValueError(f"Unsupported method: {method}")
+            smoothed_err = np.sqrt(convolve(image_err**2, kernel**2))
+            smoothed_err[mask] = np.nan
+            return smoothed_image, smoothed_err
+    elif method == 'gaussian_filter':
+        smoothed_image = gaussian_filter(image, sigma=size)
+        if image_err is None:
+            return smoothed_image
+        else:
+            smoothed_err = gaussian_filter(image_err, sigma=size)
+            return smoothed_image, smoothed_err
+    elif method == 'boxcar':
+        mask = ~np.isfinite(image)
+        image[mask] = 0.0
+        smoothed_image = uniform_filter(image, size=size)
+        smoothed_image[mask] = np.nan
+        if image_err is None:
+            return smoothed_image
+        else:
+            image_err[mask] = 0.0
+            smoothed_err = uniform_filter(image_err, size=size)
+            smoothed_err[mask] = np.nan
+            return smoothed_image, smoothed_err
+    elif method == 'fft':
+        mask = ~np.isfinite(image)
+        image[mask] = 0.0
+        kernel = Gaussian2DKernel(size)
+        kernel = kernel.array.astype(np.float32)
+        smoothed_image = fftconvolve(image, kernel, mode='same')
+        smoothed_image[mask] = np.nan
+        if image_err is None:
+            return smoothed_image
+        else:
+            image_err[mask] = 0.0
+            smoothed_err = fftconvolve(image_err, kernel, mode='same')
+            smoothed_err[mask] = np.nan
+            return smoothed_image, smoothed_err
+        
 
-def profile_to_image(profile_r, profile_value, r_2d, fill_value=np.nan,
+def profile_to_image(profile_r, profile_value, distance_map=None, radius=None, fill_value=np.nan,
                      start_r = None, start_value = None):
     """
     将径向profile转换为图像
     fill_value: np.nan, 0, 'extrapolate'
     """
     if start_r is not None:
-        profile_r = np.insert(profile_r, 0, start_r)
-    if start_value is not None:
-        profile_value = np.insert(profile_value, 0, start_value)
 
+        if start_r < profile_r[0]:
+            profile_r = np.insert(profile_r, 0, start_r)
+            profile_value = np.insert(profile_value, 0, start_value)
+        elif start_r > profile_r[0]:
+            profile_value = profile_value[profile_r >= start_r]
+            profile_r = profile_r[profile_r >= start_r]
+        else:
+            pass
     profile_interp = interp1d(profile_r, profile_value, 
                               bounds_error=False, 
                               fill_value=fill_value)
-    image = profile_interp(r_2d)
+    if (distance_map is None) and (radius is not None):
+        radius = int(radius)
+        center = (radius, radius)
+        shape = (2*radius+1, 2*radius+1)
+        image = np.zeros(shape)
+        distance_calculator = GeometryMap(image, center)
+        distance_map = distance_calculator.get_distance_map()
+    elif distance_map is not None:
+        pass
+    elif (distance_map is not None) and (radius is not None):
+        raise ValueError("distance_map and radius cannot be provided at the same time")
+    else:
+        raise ValueError("distance_map or radius must be provided")
+    image = profile_interp(distance_map)
     return image

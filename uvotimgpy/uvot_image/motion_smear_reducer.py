@@ -4,11 +4,11 @@ from astropy.time import Time
 from astropy.wcs import WCS
 from astroquery.jplhorizons import Horizons
 from typing import List, Tuple, Optional, Union
-from sbpy.data import Ephem
 from astropy.nddata import block_reduce
 import pathlib
 from uvotimgpy.utils.image_operation import align_images, stack_images, DS9Converter, bin_image
 from uvotimgpy.base.math_tools import icrf_to_fk5
+from uvotimgpy.base.file_and_table import get_ephemeris_batch
 
 def read_event_file(evt_file_path: Union[str, pathlib.Path]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, fits.Header]:
     """
@@ -68,7 +68,7 @@ def create_wcs_from_header(header: fits.Header) -> WCS:
     wcs_obj.wcs.ctype = [header['TCTYP6'], header['TCTYP7']]
     return wcs_obj
 
-def ttime_to_utctime(ttime: float, mjdrefi: float, mjdreff: float) -> Time:
+def ttime_to_utctime(ttime: Union[float, np.ndarray], mjdrefi: float, mjdreff: float) -> Time:
     mjd = mjdrefi + mjdreff + ttime / 86400
     return Time(mjd, format='mjd', scale='tt').utc
 
@@ -103,45 +103,8 @@ def slice_time(header: fits.Header,
         time_utc.append(new_time_time)
     return time_utc, time_raw
 
-def get_ephemeris_batch(times, target_id, location, orbital_keywords, batch_size):
-    """
-    分批获取历表数据的辅助函数
-    Parameters
-    ----------
-    times : array-like
-        时间点列表
-    orbital_keywords : list
-        需要获取的轨道参数关键字列表
-    batch_size : int
-        每批处理的时间点数量
-    Returns
-    -------
-    Ephem 
-        合并后的历表数据，格式与直接调用eph[orbital_keywords]相同
-    """
-    results = []  # 存储所有批次的结果
-    # 分批处理
-    for i in range(0, len(times), batch_size):
-        try:
-            batch_times = times[i:min(i + batch_size, len(times))]
-            eph = Ephem.from_horizons(target_id, location=location, epochs=batch_times)
-            results.append(eph)
-        except Exception as e:
-            if "Ambiguous target name" in str(e):
-                print(f"请提供准确的目标ID。错误: {str(e)}")
-            else:
-                print(f"错误: {str(e)}")
-            raise
-    # 如果只有一批数据，直接返回
-    if len(results) == 1:
-        return results[0][orbital_keywords]
-    # 使用sbpy的vstack合并结果
-    final_eph = results[0]
-    for eph in results[1:]:
-        final_eph.vstack(eph)
-    return final_eph[orbital_keywords]
 
-def get_target_positions(time_utc: List[Time], target_id: Union[str, int], wcs: WCS) -> Tuple[List[float], List[float]]:
+def get_target_positions(time_utc: List[Time], target_id: Union[str, int], wcs: WCS, return_radec: Optional[bool] = False) -> Tuple[List[float], List[float]]:
     """
     获取彗星在各时间段的位置
     
@@ -171,18 +134,20 @@ def get_target_positions(time_utc: List[Time], target_id: Union[str, int], wcs: 
     eph = get_ephemeris_batch(Time(middle_time_list, format='jd'), target_id, '@swift', ['RA', 'DEC'], 50)
     #obj = Horizons(id=target_id, location='@swift', epochs=middle_time_list)
     #eph = obj.ephemerides()
-    ra_list = eph['RA'].value
-    dec_list = eph['DEC'].value
+    ra_list = eph['RA'].value.tolist()
+    dec_list = eph['DEC'].value.tolist()
     ra_list, dec_list = icrf_to_fk5(ra_list, dec_list)
-
-    for ra, dec in zip(ra_list, dec_list):
-        x, y = wcs.wcs_world2pix(ra, dec, 1) # starting from 1 -> get the position in the event list
-        # can be tested with header['TCRPX6'], header['TCRPX7'] and header['TCRVL6'], header['TCRVL7']
-        # ra = 37.90958, dec = -20.7373 <-> 2000.5, 2000.5
-        col, row = DS9Converter.ds9_to_coords(x, y)
-        col_positions.append(col)
-        row_positions.append(row)
-    return col_positions, row_positions
+    if return_radec:
+        return ra_list, dec_list
+    else:
+        for ra, dec in zip(ra_list, dec_list):
+            x, y = wcs.wcs_world2pix(ra, dec, 1) # starting from 1 -> get the position in the event list
+            # can be tested with header['TCRPX6'], header['TCRPX7'] and header['TCRVL6'], header['TCRVL7']
+            # ra = 37.90958, dec = -20.7373 <-> 2000.5, 2000.5
+            col, row = DS9Converter.ds9_to_coords(x, y)
+            col_positions.append(col)
+            row_positions.append(row)
+        return col_positions, row_positions
 
 def create_image_from_events(events_col: np.ndarray, events_row: np.ndarray) -> np.ndarray:
     """
@@ -275,6 +240,10 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
     # 获取彗星位置
     target_col_list, target_row_list = get_target_positions(time_utc, target_id, wcs)
     target_col_list_exp, target_row_list_exp = get_target_positions(time_utc, target_id, wcs_exp)
+    if group_number == 1:
+        ra_list, dec_list = get_target_positions(time_utc, target_id, wcs, return_radec=True)
+        ra_for_wcs = ra_list[0]
+        dec_for_wcs = dec_list[0]
 
     if binby2:
         target_col_list = [col // 2 for col in target_col_list]
@@ -342,6 +311,17 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
         platescale = 0.502*2
     else:
         platescale = 0.502
+
+    if group_number == 1:
+        wcs_in_result = WCS(naxis=2)
+        wcs_in_result.wcs.crpix = [target_coord[0]+1, target_coord[1]+1] # pixel position
+        wcs_in_result.wcs.cdelt = [header['TCDLT6'], header['TCDLT7']] # scale
+        wcs_in_result.wcs.crval = [ra_for_wcs, dec_for_wcs] # ra dec
+        wcs_in_result.wcs.ctype = [header['TCTYP6'], header['TCTYP7']] # type
+        if binby2:
+            wcs_in_result.wcs.cdelt = [header['TCDLT6']*2, header['TCDLT7']*2]
+    else:
+        wcs_in_result = None
     # 处理信息
     processing_info = {
         'num_segments': num_segments,
@@ -354,7 +334,8 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
         'event_nums': event_nums,
         'event_nums_ratios': event_nums_ratios,
         'segment_exp_times': segment_exp_times,
-        'segment_elapsed_time':segment_elapsed_time
+        'segment_elapsed_time':segment_elapsed_time,
+        'wcs_in_result': wcs_in_result
     }
     
     return stacked_image, stacked_err, stacked_exp, processing_info, header, aligned_images, aligned_errs, aligned_exp_map
@@ -377,6 +358,10 @@ def bin_evt_image(image, image_err=None, image_exp=None, processing_info=None):
         new_col = col // 2
         new_row = row // 2
         processing_info['target_coord'] = (new_col, new_row)
+        if processing_info['wcs_in_result'] is not None:
+            processing_info['wcs_in_result'].wcs.crpix = [new_col+1, new_row+1]
+            cdelt = processing_info['wcs_in_result'].wcs.cdelt
+            processing_info['wcs_in_result'].wcs.cdelt = [cdelt[0]*2, cdelt[1]*2]
     return binned_image, binned_err, binned_exp, processing_info
 
 def save_smear_reduced_result(stacked_image: np.ndarray, stacked_err: np.ndarray,
@@ -401,7 +386,7 @@ def save_smear_reduced_result(stacked_image: np.ndarray, stacked_err: np.ndarray
     processing_info : dict, optional
         处理信息字典
     individual_images_to_save : dict
-        dict = {'IMAGE': [], 'ERROR': [], 'EXPOSURE': []}
+        dict = {'IMAGE': list, 'ERROR': list, 'EXPOSURE': list}
     """
     # 创建header
     primary_hdu = fits.PrimaryHDU()
@@ -459,6 +444,8 @@ def save_smear_reduced_result(stacked_image: np.ndarray, stacked_err: np.ndarray
     hdr[f'EXT{1}NAME'] = ('IMAGE', f'Name of extension {1}')
     hdr[f'EXT{2}NAME'] = ('ERROR', f'Name of extension {2}')
     hdr[f'EXT{3}NAME'] = ('EXPOSURE', f'Name of extension {3}')
+    if processing_info['wcs_in_result'] is not None:
+        hdu_img.header.update(processing_info['wcs_in_result'].to_header())
     hdul = fits.HDUList([primary_hdu, hdu_img, hdu_err, hdu_exp])
 
     if individual_images_to_save is not None:

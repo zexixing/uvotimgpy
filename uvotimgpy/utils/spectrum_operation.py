@@ -670,7 +670,7 @@ class ReddeningSpectrum:
             else:
                 if bp1 is None or bp2 is None:
                     raise ValueError("bp1 and bp2 must be provided for flux reddening defination")
-                wave1 = TypicalWaveSfluxd.average_wave(bp1)
+                wave1 = TypicalWaveSfluxd.average_wave(bp1) # to update?
                 wave2 = TypicalWaveSfluxd.average_wave(bp2)
                 sun = SolarSpectrum.from_model()
                 if reddening_defination == 'flux':
@@ -720,6 +720,7 @@ class ReddeningSpectrum:
             用于计算的波长网格范围
         wave_grid : Quantity, optional
             直接提供的波长网格
+        bp_list: bandpass list
 
         Returns
         -------
@@ -751,7 +752,7 @@ class ReddeningSpectrum:
 
         # 处理第一个分段
         if reddening_defination != 'r':
-            warnings.warn("reddening_defination is based on countrate or flux, the breakpoints should be average wavelengths of the filters")
+            warnings.warn("reddening_defination is based on countrate or flux, the breakpoints should be effective wavelengths of the filters")
         mask = (wave_grid <= breakpoints[1])
         if np.any(mask):
             segment = ReddeningSpectrum.linear_reddening(
@@ -1049,10 +1050,10 @@ class ReddeningCalculator:
         
     # reddening defined with countrate
     @staticmethod
-    def from_countrate(countrate1: float, countrate2: float, solar_spectrum: Union[SolarSpectrum, SourceSpectrum],
+    def from_countrate(countrate1: Union[float, np.ndarray], countrate2: Union[float, np.ndarray], solar_spectrum: Union[SolarSpectrum, SourceSpectrum],
                        bandpass1: Union[str, SpectralElement], bandpass2: Union[str, SpectralElement], area: u.Quantity,
-                       countrate1_err: Optional[float] = None,
-                       countrate2_err: Optional[float] = None,
+                       countrate1_err: Optional[Union[float, np.ndarray]] = None,
+                       countrate2_err: Optional[Union[float, np.ndarray]] = None,
                        solar_spectrum_err: Optional[SourceSpectrum] = None,):
         bandpass1 = format_bandpass(bandpass1)
         bandpass2 = format_bandpass(bandpass2)
@@ -1119,13 +1120,6 @@ class ReddeningCalculator:
                                                                               afrho1_err, afrho2_err)
             return reddening, reddening_err
 
-if __name__ == '__main__':
-    wave = np.array([1000, 3000, 5000]) * u.AA
-    spec = np.array([1,2,3]) * su.FLAM
-    spectrum = SourceSpectrum(Empirical1D, points=wave, lookup_table=spec, fill_value=0)
-    print(wave)
-    print(spectrum(spectrum.waveset, flux_unit=su.FLAM))
-
 def gaussian_line(wavelength, center, intensity, fwhm):
     """
     生成高斯谱线
@@ -1139,15 +1133,21 @@ def gaussian_line(wavelength, center, intensity, fwhm):
     sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
     return intensity * np.exp(-(wavelength - center)**2 / (2 * sigma**2))
 
-def reconstruct_spectrum(peak_positions, peak_intensities, wavelength_range, fwhm=1.8):
+def reconstruct_spectrum(peak_positions, intensities, wavelength_range, fwhm=1.8, use_area=True):
     """
     从峰值数据重建光谱
     
     参数:
     peak_positions: 峰值波长位置列表 (Å)
-    peak_intensities: 峰值强度列表
+    intensities: 峰值强度列表（可以是峰高或总面积，取决于use_area参数）
     wavelength_range: (min_wavelength, max_wavelength) 元组
     fwhm: 仪器分辨率 (Å)
+    use_area: 如果为True，intensities表示高斯曲线的总面积；
+              如果为False，intensities表示高斯曲线的峰高
+    
+    返回:
+    wavelength: 波长数组
+    spectrum: 重建的光谱数组
     """
     # 创建波长网格，步长小于FWHM的1/10以确保平滑
     wavelength = np.linspace(wavelength_range[0], wavelength_range[1], 
@@ -1156,8 +1156,25 @@ def reconstruct_spectrum(peak_positions, peak_intensities, wavelength_range, fwh
     # 初始化光谱
     spectrum = np.zeros_like(wavelength)
     
+    # 计算sigma
+    sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+    
     # 对每个峰值添加高斯线
-    for pos, intensity in zip(peak_positions, peak_intensities):
-        spectrum += gaussian_line(wavelength, pos, intensity, fwhm)
+    for pos, intensity in zip(peak_positions, intensities):
+        if use_area:
+            # 计算需要的峰高以获得指定总面积
+            # 高斯曲线的总面积 = 峰高 * sigma * sqrt(2π)
+            peak_height = intensity / (sigma * np.sqrt(2 * np.pi))
+            spectrum += gaussian_line(wavelength, pos, peak_height, fwhm)
+        else:
+            # 直接使用输入的峰高
+            spectrum += gaussian_line(wavelength, pos, intensity, fwhm)
     
     return wavelength, spectrum
+
+if __name__ == '__main__':
+    wave = np.array([1000, 3000, 5000]) * u.AA
+    spec = np.array([1,2,3]) * su.FLAM
+    spectrum = SourceSpectrum(Empirical1D, points=wave, lookup_table=spec, fill_value=0)
+    print(wave)
+    print(spectrum(spectrum.waveset, flux_unit=su.FLAM))

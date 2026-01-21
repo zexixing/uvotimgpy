@@ -13,7 +13,7 @@ import re
 
 from uvotimgpy.config import paths
 from uvotimgpy.base.math_tools import UnitConverter
-from uvotimgpy.utils.image_operation import DistanceMap
+from uvotimgpy.utils.image_operation import GeometryMap
 from uvotimgpy.utils.spectrum_operation import TypicalWaveSfluxd, ReddeningSpectrum, SolarSpectrum, calculate_flux, calculate_count_rate, ReddeningCalculator, read_OH_spectrum, FluxConverter
 from uvotimgpy.base.instruments import get_effective_area
 
@@ -222,13 +222,36 @@ def countrate_to_emission_flux_for_oh(countrate: Union[float, np.ndarray],
     count_rate_in_theory = calculate_count_rate(oh_spectrum, bp, area=area)
     emission_flux_in_theory = oh_spectrum.integrate(flux_unit=su.FLAM)
     factor = emission_flux_in_theory.value/count_rate_in_theory.value 
-    #factor = 1.2750922625672172e-12
+    #factor = 1.6368359501510164e-12 for 2025-01-01T00:00:00.000
     flux = countrate * factor
     if countrate_err is not None:
         flux_err = countrate_err * factor
         return flux, flux_err
     else:
         return flux
+
+def get_g_factor(rhv: float):
+    # Load g-factor file
+    package_path = paths.package_uvotimgpy
+    g_file_path = paths.get_subpath(package_path, 'auxil', 'fluorescenceOH.txt')
+    
+    if not g_file_path.exists():
+        raise FileNotFoundError(f"G-factor file not found: {g_file_path}")
+    
+    # Read g-factor data (skip first 3 rows which are comments)
+    g_data = np.loadtxt(g_file_path, skiprows=3)
+    
+    # Extract data columns
+    helio_v_list = g_data[:, 0]  # Radial velocity in km/s
+    # Sum the three fluorescence bands (0-0, 1-0, 1-1); Unit: erg/s/molecule
+    g_1au_list = (g_data[:, 1] + g_data[:, 2] + g_data[:, 3]) * 1e-16
+    
+    # Create interpolation function for g-factors
+    g_1au_interp = interp1d(helio_v_list, g_1au_list, kind='linear', fill_value='extrapolate')
+
+    g_1au_value = g_1au_interp(rhv)
+    return g_1au_value
+
 
 def emission_flux_to_total_number(emission_flux: Union[float, np.ndarray],  
                                   rh: float, delta: float,
@@ -273,24 +296,6 @@ def emission_flux_to_total_number(emission_flux: Union[float, np.ndarray],
     
     Where r is the heliocentric distance.
     """
-    # Load g-factor file
-    package_path = paths.package_uvotimgpy
-    g_file_path = paths.get_subpath(package_path, 'auxil', 'fluorescenceOH.txt')
-    
-    if not g_file_path.exists():
-        raise FileNotFoundError(f"G-factor file not found: {g_file_path}")
-    
-    # Read g-factor data (skip first 3 rows which are comments)
-    g_data = np.loadtxt(g_file_path, skiprows=3)
-    
-    # Extract data columns
-    helio_v_list = g_data[:, 0]  # Radial velocity in km/s
-    # Sum the three fluorescence bands (0-0, 1-0, 1-1); Unit: erg/s/molecule
-    g_1au_list = (g_data[:, 1] + g_data[:, 2] + g_data[:, 3]) * 1e-16
-    
-    # Create interpolation function for g-factors
-    g_1au_interp = interp1d(helio_v_list, g_1au_list, kind='linear', fill_value='extrapolate')
-    
     # Convert observer distance from AU to cm
     # AU -> km -> cm
     delta_cm = UnitConverter.au_to_km(delta) * 1000 * 100
@@ -301,7 +306,7 @@ def emission_flux_to_total_number(emission_flux: Union[float, np.ndarray],
         luminosity_err = emission_flux_err * 4 * np.pi * np.power(delta_cm, 2)
     
     # Calculate scaled g-factor: g = g_1AU(rv) / r^2
-    g_1au_value = g_1au_interp(rhv)
+    g_1au_value = get_g_factor(rhv)
     g_value = g_1au_value / np.power(rh, 2)
     
     # Calculate molecular number: N = L / g
@@ -934,8 +939,8 @@ def build_column_density_image(rho_km, column_densities_cm2, center,
                        new km_per_pixel={km_per_pixel}')
     
     empty_image = np.zeros((2 * center_row + 1, 2 * center_col + 1))
-    mapper = DistanceMap(empty_image, (center_row, center_col))
-    pixel_distances = mapper.get_distance_map
+    mapper = GeometryMap(empty_image, (center_row, center_col))
+    pixel_distances = mapper.get_distance_map()
     
     # 转换为物理距离（km）
     physical_distances = pixel_distances * km_per_pixel
@@ -984,7 +989,8 @@ class TotalNumberCalculator:
     def from_profile():
         pass
 
-def oh_countrate_to_column_density(countrate_per_pixel, pixel_scale, delta, r, rv, countrate_per_pixel_err=None): #TODO
+def oh_countrate_to_column_density(countrate_per_pixel, pixel_scale, delta, r, rv, countrate_per_pixel_err=None, obs_time=None): 
+    #TODO
     # cnts/s/pixel
     arcsec = UnitConverter.pixel_to_arcsec(1.0, pixel_scale)
     km_per_pixel = UnitConverter.arcsec_to_km(arcsec, delta)
@@ -993,11 +999,11 @@ def oh_countrate_to_column_density(countrate_per_pixel, pixel_scale, delta, r, r
     countrate_per_cm2 = countrate_per_pixel / cm2_per_pixel
     if countrate_per_pixel_err is not None:
         countrate_per_cm2_err = countrate_per_pixel_err / cm2_per_pixel
-        emission_flux, emission_flux_err = countrate_to_emission_flux_for_oh(countrate_per_cm2, countrate_per_cm2_err)
+        emission_flux, emission_flux_err = countrate_to_emission_flux_for_oh(countrate_per_cm2, countrate_per_cm2_err, obs_time=obs_time)
         number, number_err = emission_flux_to_total_number(emission_flux, r, delta, rv, emission_flux_err)
         return number, number_err
     else:
-        emission_flux = countrate_to_emission_flux_for_oh(countrate_per_cm2)
+        emission_flux = countrate_to_emission_flux_for_oh(countrate_per_cm2, obs_time=obs_time)
         number = emission_flux_to_total_number(emission_flux, r, delta, rv)
     return number
 
@@ -1455,6 +1461,7 @@ class OHProfileFitter:
 
 # 使用示例
 if __name__ == "__main__":
+    pass
     # 直接调用静态方法
     #vm = create_vectorial_model(
     #    r_h=2*u.au,
@@ -1488,18 +1495,18 @@ if __name__ == "__main__":
 
 
 # Example usage:
-    project_path = paths.projects
-    project_3i_path = paths.get_subpath(project_path, 'C_2025N1')
-    vm_file = paths.get_subpath(project_3i_path, 'docs', 'vectorial_model_results.csv')
-    data = read_vectorial_model_csv(vm_file)
-    
-    # Access parameters
-    base_q = data['base_q']  # with units
-    parent_velocity = data['parent.v_outflow']  # with units
-    radial_points = data['grid.radial_points']  # no units
-
-    # Access data arrays (whatever columns exist in the file)
-    for key in data.keys():
-        if not hasattr(data[key], 'unit'):  # It's a quantity array
-            print(f"{key}: {data[key]}")
-    print(hasattr(data['collision_sphere_radius'], 'unit'))
+    #project_path = paths.projects
+    #project_3i_path = paths.get_subpath(project_path, 'C_2025N1')
+    #vm_file = paths.get_subpath(project_3i_path, 'docs', 'vectorial_model_results.csv')
+    #data = read_vectorial_model_csv(vm_file)
+    #
+    ## Access parameters
+    #base_q = data['base_q']  # with units
+    #parent_velocity = data['parent.v_outflow']  # with units
+    #radial_points = data['grid.radial_points']  # no units
+    #
+    ## Access data arrays (whatever columns exist in the file)
+    #for key in data.keys():
+    #    if not hasattr(data[key], 'unit'):  # It's a quantity array
+    #        print(f"{key}: {data[key]}")
+    #print(hasattr(data['collision_sphere_radius'], 'unit'))

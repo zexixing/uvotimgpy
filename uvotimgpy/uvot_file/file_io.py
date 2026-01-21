@@ -138,7 +138,10 @@ def save_stacked_fits(images_to_save: dict,
     # 循环创建各个extension
     for ext_name, image_data in images_to_save.items():
         if image_data is not None:
-            image_hdu = fits.ImageHDU(data=image_data, name=ext_name)
+            if image_data.dtype == bool:
+                image_hdu = fits.CompImageHDU(data=image_data.astype(np.uint8), compression_type='RICE_1', name=ext_name)
+            else:
+                image_hdu = fits.ImageHDU(data=image_data, name=ext_name)
             hdul.append(image_hdu)
     
     # 保存文件

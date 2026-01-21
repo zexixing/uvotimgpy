@@ -116,7 +116,7 @@ class RegionConverter:
         
     @staticmethod
     def to_bool_array_general(regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
-                              combine_regions: bool, shape: Optional[Tuple[int, int]] = None) -> List[np.ndarray]:
+                              combine_regions: bool = False, shape: Optional[Tuple[int, int]] = None) -> List[np.ndarray]:
         """处理输入的regions，转换为布尔数组列表"""
         if isinstance(regions, np.ndarray):
             if regions.dtype != bool:
@@ -269,7 +269,7 @@ def mask_image(image: np.ndarray,
 
 class RegionSelector:
     def __init__(self, image_data, vmin=0, vmax=None, 
-                 row_range=None, col_range=None, shape='circle', region_plot=None):
+                 row_range=None, col_range=None, shape='circle', region_plot=None, default_size=5, step=0.5):
         """
         Parameters
         ----------
@@ -292,7 +292,8 @@ class RegionSelector:
     
         self.regions = []
         self.patches = []
-        self.current_size = 5
+        self.current_size = default_size
+        self.step = step
         self.shape = shape
         
         # Display parameters
@@ -491,9 +492,9 @@ class RegionSelector:
             
         elif event.key in ['w', 'e']:  # Adjust size
             if event.key == 'w':
-                self.current_size = max(1, self.current_size - 0.5)
+                self.current_size = max(1, self.current_size - self.step)
             elif event.key == 'e':
-                self.current_size += 0.5
+                self.current_size += self.step
             #print(f"Current size: {self.current_size:.1f}")
             self.status_text = f'Current size: {self.current_size:.1f} | Shape: {self.shape}'
             self._update_title()
@@ -526,6 +527,26 @@ def save_regions(regions: List[PixelRegion], file_path: Union[str, Path], correc
                 w, h = region.width, region.height
                 f.write(f"box({x_ds9},{y_ds9},{w},{h},0)\n")
 
+
+def update_regions(regions: List[PixelRegion], file_path: Union[str, Path], correct: Optional[float] = 1) -> None:
+    """
+    将输入的 PixelRegion 列表追加到已有的 DS9 .reg 文件末尾
+    不会覆盖原文件，仅在末尾补充新 region。
+    """
+    with open(file_path, 'a') as f:  # 使用追加模式
+        for region in regions:
+            if isinstance(region, CirclePixelRegion):
+                # Python (col, row) -> DS9 (x, y)
+                x_ds9 = region.center.x + correct  # col -> x
+                y_ds9 = region.center.y + correct  # row -> y
+                r = region.radius
+                f.write(f"circle({x_ds9},{y_ds9},{r})\n")
+            elif isinstance(region, RectanglePixelRegion):
+                x_ds9 = region.center.x + correct  # col -> x
+                y_ds9 = region.center.y + correct  # row -> y
+                w, h = region.width, region.height
+                f.write(f"box({x_ds9},{y_ds9},{w},{h},0)\n")
+                
 def load_regions(file_path: str, shape: Tuple[int, int] = None, correct: Optional[float] = -1) -> Union[List[PixelRegion], np.ndarray]:
     """
     -1: 读取DS9的.reg文件，返回PixelRegion列表或布尔数组到array处理
@@ -800,7 +821,31 @@ def create_rectangle_region(center, width, height, angle=0*u.deg):
     rect_region = RectanglePixelRegion(center=center, width=width, height=height, angle=angle)
     return rect_region
 
-def create_sector_region(center, direction, span, image_shape, radius=None):
+def create_sector_region_from_map(distance_map, angle_map, direction, span, radius=None):
+    # 距离条件：在半径内
+    if radius is not None:  
+        in_radius = distance_map <= radius
+    else:
+        in_radius = np.ones(distance_map.shape, dtype=bool)
+    # 计算扇形的起始和结束角度
+    half_span = span / 2
+    start_angle = (direction - half_span) % 360
+    end_angle = (direction + half_span) % 360
+    
+    # 角度条件：在扇形角度范围内
+    if start_angle <= end_angle:
+        # 扇形不跨越0度
+        in_angle = (angle_map >= start_angle) & (angle_map <= end_angle)
+    else:
+        # 扇形跨越0度（例如：350度到10度）
+        in_angle = (angle_map >= start_angle) | (angle_map <= end_angle)
+    
+    # 同时满足距离和角度条件
+    mask = in_radius & in_angle
+    return mask
+
+
+def create_sector_region(center, direction, span, image_shape, radius=None, return_map=False):
     """
     创建精确的扇形区域 bool array
     
@@ -840,11 +885,11 @@ def create_sector_region(center, direction, span, image_shape, radius=None):
     drow = row_grid - center[1]
     distance = np.sqrt(dcol**2 + drow**2)
     
-    # 距离条件：在半径内
-    if radius is not None:  
-        in_radius = distance <= radius
-    else:
-        in_radius = np.ones(image_shape, dtype=bool)
+    ## 距离条件：在半径内
+    #if radius is not None:  
+    #    in_radius = distance <= radius
+    #else:
+    #    in_radius = np.ones(image_shape, dtype=bool)
     
     # 计算每个像素相对于中心的角度
     # arctan2返回的是标准数学坐标系的角度（从x轴正方向逆时针）
@@ -856,22 +901,25 @@ def create_sector_region(center, direction, span, image_shape, radius=None):
     # 用户系统：0度=上, 90度=左, 180度=下, 270度=右
     user_angle = (angle_deg + 270) % 360
     
-    # 计算扇形的起始和结束角度
-    half_span = span / 2
-    start_angle = (direction - half_span) % 360
-    end_angle = (direction + half_span) % 360
-    
-    # 角度条件：在扇形角度范围内
-    if start_angle <= end_angle:
-        # 扇形不跨越0度
-        in_angle = (user_angle >= start_angle) & (user_angle <= end_angle)
-    else:
-        # 扇形跨越0度（例如：350度到10度）
-        in_angle = (user_angle >= start_angle) | (user_angle <= end_angle)
+    ## 计算扇形的起始和结束角度
+    #half_span = span / 2
+    #start_angle = (direction - half_span) % 360
+    #end_angle = (direction + half_span) % 360
+    #
+    ## 角度条件：在扇形角度范围内
+    #if start_angle <= end_angle:
+    #    # 扇形不跨越0度
+    #    in_angle = (user_angle >= start_angle) & (user_angle <= end_angle)
+    #else:
+    #    # 扇形跨越0度（例如：350度到10度）
+    #    in_angle = (user_angle >= start_angle) | (user_angle <= end_angle)
     
     # 同时满足距离和角度条件
-    mask = in_radius & in_angle
-    return mask
+    mask = create_sector_region_from_map(distance, user_angle, direction, span, radius)
+    if return_map:
+        return mask, distance, user_angle
+    else:
+        return mask
 
 def get_smeared_ends(center, motion, motion_pa):
     rect_angle = (motion_pa - 90)*u.deg

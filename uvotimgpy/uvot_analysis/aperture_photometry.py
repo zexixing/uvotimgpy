@@ -277,7 +277,7 @@ def perform_photometry(image: np.ndarray,
     image : np.ndarray
         输入图像
     background : float
-        背景亮度值
+        背景亮度值, background per pixel
     regions : Union[PixelRegion, List[PixelRegion], np.ndarray]
         测光区域，可以是区域对象、区域列表或布尔掩模
     mask : Union[PixelRegion, List[PixelRegion], np.ndarray], optional

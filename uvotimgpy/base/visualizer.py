@@ -1,7 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from PIL import Image
 from typing import Union, List, Dict, Any, Optional, Tuple
 import math
+import pandas as pd
+import plotly.express as px
 
 
 class MaskInspector:
@@ -232,18 +236,6 @@ def draw_scalebar(ax,
                 ha='center', va='top', color=color, fontsize=fontsize)
 
     return ax
-
-def smart_float_format(x):
-    abs_x = abs(x)
-    # 特别大或特别小：用科学计数法
-    if abs_x != 0 and (abs_x < 1e-3 or abs_x > 1e5):
-        return f"{x:.3e}"
-    # 大于 1000 的普通数：保留三位小数
-    elif abs_x >= 10:
-        return f"{x:.3f}"
-    # 其他情况：保留 4 位有效数字
-    else:
-        return f"{x:.4g}"  # g 格式自动切换科学计数法和浮点数
     
 def multi_show(image_list, max_cols=4, vrange: Union[None, Tuple[float, float], List[Tuple[float, float]]] = None, 
                xrange: Union[None, Tuple[float, float], List[Tuple[float, float]]] = None, 
@@ -353,3 +345,153 @@ def multi_show(image_list, max_cols=4, vrange: Union[None, Tuple[float, float], 
     plt.tight_layout(pad=0.1)
     return fig, axes
     
+def linear_stretch(img, p_low=2.0, p_high=98.0, mask=None, return_threshold=False):
+    img = np.asarray(img, dtype=np.float32)
+
+    # 直接忽略 NaN 计算百分位
+    if mask is not None:
+        lo, hi = np.nanpercentile(img[mask], [p_low, p_high])
+    else:
+        lo, hi = np.nanpercentile(img, [p_low, p_high])
+
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+        return np.zeros_like(img, dtype=np.float32)
+
+    out = np.clip(img, lo, hi)
+    out = (out - lo) / (hi - lo)
+    if return_threshold:
+        return out, lo, hi
+    else:
+        return out
+
+def figs_to_gif(figs, save_path, duration=500):
+    """
+    Save figures as GIF.
+
+    Parameters
+    ----------
+    figs : list
+        List of figures
+    outfile : str or pathlib.Path
+        Output file path
+    duration : int
+        Duration of each frame in milliseconds
+    """
+    frames = []
+    for fig in figs:
+        canvas = FigureCanvas(fig)
+        canvas.draw()
+        buf = np.asarray(canvas.buffer_rgba())
+        frames.append(Image.fromarray(buf))
+
+    # 存 GIF：每帧 1000 毫秒（1s）
+    frames[0].save(
+        save_path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration,   # 毫秒！不是秒
+        loop=0,          # 无限循环
+        disposal=2       # 避免残影
+    )
+
+def plot_obs_timeline(
+    csv_path,
+    start=None,              # e.g. "2025-01-01 00:00:00" / pd.Timestamp(...)
+    end=None,                # e.g. "2025-01-31 23:59:59"
+    html_out=None,
+    color_map = None,
+    y_map = None,
+    time_keyword='MIDTIME',
+    obs_id_keyword='OBSID',
+    filter_keyword='FILTER',
+    datatype_keyword='DATATYPE',
+    symbol_map = None,
+    ):
+    # 关键：OBSID/obsid 用字符串读，保留前导 0
+    df = pd.read_csv(csv_path, dtype={obs_id_keyword: "string", obs_id_keyword.lower(): "string"})
+
+    # 兼容列名大小写：优先用 OBSID，其次 obsid
+    obs_col = obs_id_keyword if obs_id_keyword in df.columns else obs_id_keyword.lower()
+    df[obs_col] = df[obs_col].astype("string")
+
+    # MIDTIME 转 datetime
+    df[time_keyword] = pd.to_datetime(df[time_keyword], errors="coerce", utc=False)
+    df = df.dropna(subset=[time_keyword]).copy()
+
+    # 时间范围：未提供就用表内最早/最晚
+    start = pd.to_datetime(start) if start is not None else df[time_keyword].min()
+    end   = pd.to_datetime(end)   if end   is not None else df[time_keyword].max()
+    df = df[(df[time_keyword] >= start) & (df[time_keyword] <= end)].copy()
+
+    # 固定 y=0，做成“时间轴”
+    #df["_y"] = 0
+    # 按 filter 映射到不同高度
+    if y_map is None:
+        y_map = {'UVW2': 0, 'UVM2':1, 'UVW1':2, 'U':3, 'B':4, 'V':5}
+
+    df["_y"] = df[filter_keyword].map(y_map)
+
+    # 如果表里有不在 filter_height_map 中的 filter，防止报错
+    df = df.dropna(subset=["_y"])
+
+    # FILTER：紫 -> 橘（可按需微调）
+    if color_map is None:
+        color_map = {
+            "UVW2": "#5B2A86",
+            "UVM2": "#3B4CC0",
+            "UVW1": "#2C7FB8",
+            "U":    "cyan",
+            "B":    "#41AB5D",
+            "V":    "#F28E2B",
+        }
+
+    # DATATYPE：image 圆点，event 十字
+    if datatype_keyword is not None and datatype_keyword in df.columns:
+        if symbol_map is None:
+            symbol_map = {"image": "circle", "event": "cross"}
+        fig = px.scatter(
+            df,
+            x="MIDTIME",
+            y="_y",
+            color=filter_keyword,
+            symbol="DATATYPE",
+            color_discrete_map=color_map,
+            symbol_map=symbol_map,
+            hover_name=obs_col,           # 悬停直接显示 obsid（保留前导0）
+            hover_data={"_y": False},     # 不显示 y
+        )
+    else:
+        fig = px.scatter(
+            df,
+            x="MIDTIME",
+            y="_y",
+            color=filter_keyword,
+            color_discrete_map=color_map,
+            hover_name=obs_col,           # 悬停直接显示 obsid（保留前导0）
+            hover_data={"_y": False},     # 不显示 y
+        )
+
+    fig.update_traces(marker={"size": 9})
+    #fig.update_yaxes(visible=False, showticklabels=False, zeroline=False)
+    # y 轴显示为 FILTER 分层
+    ymin = min(y_map.values()) - 0.5
+    ymax = max(y_map.values()) + 0.5
+    ymean = (ymin + ymax) / 2
+    ystep = (ymax - ymin)
+    ymin = ymean - ystep*5
+    ymax = ymean + ystep*5
+    fig.update_yaxes(
+        visible=False,            # 不显示轴，但 range 仍然生效
+        range=[ymin, ymax],
+        zeroline=False
+    )
+    fig.update_layout(
+        xaxis_title="MIDTIME",
+        yaxis_title="",
+        title="Observation Timeline",
+        legend_title_text="FILTER / DATATYPE",
+        margin=dict(l=40, r=20, t=50, b=40),
+    )
+    if html_out is not None:
+        fig.write_html(html_out, include_plotlyjs="cdn")
+    return fig

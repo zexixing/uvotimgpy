@@ -22,7 +22,7 @@ from uvotimgpy.utils.image_operation import calc_radial_profile
 from uvotimgpy.uvot_analysis.activity import create_vectorial_model, save_vectorial_model_to_csv, \
     countrate_to_emission_flux_for_oh, emission_flux_to_total_number, TotalNumberCalculator, \
     scale_from_total_number, RatioCalculator_V_UV
-from uvotimgpy.base.visualizer import smart_float_format
+from uvotimgpy.base.file_and_table import smart_float_format
 from uvotimgpy.base.instruments import get_effective_area, normalize_filter_name, format_bandpass
 from uvotimgpy.utils.spectrum_operation import SolarSpectrum, ReddeningSpectrum, FluxConverter
 from uvotimgpy.uvot_analysis.aperture_photometry import BackgroundEstimator, perform_photometry, AfrhoCalculator
@@ -111,12 +111,17 @@ class PhotometryAnalysis:
             raise ValueError(f"Unsupported unit: {self.unit}")
         filt = obs_paras.get('FILTER', self.header['FILTER'])
         self.filt_filename = normalize_filter_name(filt, output_format='filename')
+        self.filt_displayname = normalize_filter_name(filt, output_format='display')
         self.midtime = Time(obs_paras.get('MIDTIME', self.header['MIDTIME']))
         self.exptime = obs_paras.get('EXPTIME', self.header['EXPTIME'])
         self.target_coord_py = (obs_paras.get('COLPIXEL', self.header['COLPIXEL']), 
                                 obs_paras.get('ROWPIXEL', self.header['ROWPIXEL']))
-        self.filt_displayname = basic_info.filt_dict[self.filt_filename]['display']
-        self.bandpass = basic_info.filt_dict[self.filt_filename]['bandpass']
+        #self.filt_displayname = basic_info.filt_dict[self.filt_filename]['display']
+        #self.bandpass = basic_info.filt_dict[self.filt_filename]['bandpass']
+        try:
+            self.bandpass = get_effective_area(self.filt_filename, transmission=True, bandpass=True, obs_time=basic_info.obs_time)
+        except:
+            self.bandpass = None
         self.sun = basic_info.sun
         self.bkg_for_single_pixel = None
         self.bkg_err_for_single_pixel = None
@@ -554,7 +559,7 @@ class OHAnalysis:
             oh_countrate_err = self.oh_countrate_err
         delta_cm = UnitConverter.au_to_km(self.delta) * 1000 * 100
         if oh_countrate_err is None:
-            self.oh_flux = countrate_to_emission_flux_for_oh(oh_countrate, oh_countrate_err, obs_time=self.obs_time)
+            self.oh_flux = countrate_to_emission_flux_for_oh(oh_countrate, obs_time=self.obs_time)
             self.oh_luminosity = self.oh_flux * 4 * np.pi * np.power(delta_cm, 2) * u.erg / u.s
             self.oh_luminosity_err = None
             self.oh_total_number = emission_flux_to_total_number(self.oh_flux, rh=self.rh, delta=self.delta, rhv=self.rhv, emission_flux_err=None)

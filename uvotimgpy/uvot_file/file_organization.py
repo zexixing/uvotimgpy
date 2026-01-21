@@ -16,19 +16,20 @@ from uvotimgpy.query import StarCoordinateQuery
 from uvotimgpy.base.file_and_table import show_or_save_astropy_table
 from uvotimgpy.base.instruments import normalize_filter_name
 from uvotimgpy.base.math_tools import calculate_motion_pa, icrf_to_fk5
+from uvotimgpy.base.file_and_table import target_name_converter, get_ephemeris_batch
 
 class AstroDataOrganizer:
-    def __init__(self, target_name, data_root_path=None):
+    def __init__(self, data_folder_name, data_root_path=None):
         """
         Initialize the AstroDataOrganizer.
         Designed for Swift data.
 
         Parameters:
-        target_name (str): Name of the target (e.g., '29P').
+        data_folder_name (str): Name of the target folder (e.g., '29P').
         data_root_path (str, optional): Absolute path to the root of the data directory.
         """
-        self.target_name = target_name
-        self.project_path = os.path.join(data_root_path, target_name)
+        self.data_folder_name = data_folder_name
+        self.project_path = os.path.join(data_root_path, data_folder_name)
         self.data_table = QTable(names=['OBSID', 'PNT_NO', 'FILTER', 'DATATYPE'],
                                 dtype=[str, int, str, str],
                                 units=[None, None, None, None])
@@ -130,17 +131,19 @@ class ObservationLogger:
     """
     def __init__(self, target_name, data_root_path, is_motion=True, target_alternate=None, location='@Swift'):
         self.target_name = target_name
+        self.data_folder_name = target_name_converter(target_name, 'data_folder_name')
+        self.target_simplified_name = target_name_converter(target_name, 'target_simplified_name')
         self.target_alternate = target_alternate
         self.location = location
         self.is_motion = is_motion
         
         # Set project path
-        self.project_path = os.path.join(data_root_path, target_name)
+        self.project_path = os.path.join(data_root_path, self.data_folder_name)
         if not os.path.exists(self.project_path):
             raise ValueError(f"Data path does not exist: {self.project_path}")
             
         # Initialize parameters
-        self.organizer = AstroDataOrganizer(target_name, data_root_path)
+        self.organizer = AstroDataOrganizer(self.data_folder_name, data_root_path)
         self.data_table = self.organizer.organize_data()
         
         # Initialize header info
@@ -243,50 +246,50 @@ class ObservationLogger:
             header_info[key] = {'value': value, 'dtype': info['dtype'], 'unit': info['unit']}
         return header_info
 
-    def _get_ephemeris_batch(self, times, orbital_keywords, batch_size):
-        """
-        分批获取历表数据的辅助函数
-
-        Parameters
-        ----------
-        times : array-like
-            时间点列表
-        orbital_keywords : list
-            需要获取的轨道参数关键字列表
-        batch_size : int
-            每批处理的时间点数量
-
-        Returns
-        -------
-        Ephem 
-            合并后的历表数据，格式与直接调用eph[orbital_keywords]相同
-        """
-        results = []  # 存储所有批次的结果
-
-        # 分批处理
-        for i in range(0, len(times), batch_size):
-            try:
-                batch_times = times[i:min(i + batch_size, len(times))]
-                target = self.target_alternate or self.target_name
-                eph = Ephem.from_horizons(target, location=self.location, epochs=batch_times)
-                results.append(eph)
-            except Exception as e:
-                if "Ambiguous target name" in str(e):
-                    print(f"请提供准确的目标ID。错误: {str(e)}")
-                else:
-                    print(f"错误: {str(e)}")
-                raise
-
-        # 如果只有一批数据，直接返回
-        if len(results) == 1:
-            return results[0][orbital_keywords]
-
-        # 使用sbpy的vstack合并结果
-        final_eph = results[0]
-        for eph in results[1:]:
-            final_eph.vstack(eph)
-
-        return final_eph[orbital_keywords]
+    #def _get_ephemeris_batch(self, times, orbital_keywords, batch_size):
+    #    """
+    #    分批获取历表数据的辅助函数
+    #
+    #    Parameters
+    #    ----------
+    #    times : array-like
+    #        时间点列表
+    #    orbital_keywords : list
+    #        需要获取的轨道参数关键字列表
+    #    batch_size : int
+    #        每批处理的时间点数量
+    #
+    #    Returns
+    #    -------
+    #    Ephem 
+    #        合并后的历表数据，格式与直接调用eph[orbital_keywords]相同
+    #    """
+    #    results = []  # 存储所有批次的结果
+    #
+    #    # 分批处理
+    #    for i in range(0, len(times), batch_size):
+    #        try:
+    #            batch_times = times[i:min(i + batch_size, len(times))]
+    #            target = self.target_alternate or self.target_name
+    #            eph = Ephem.from_horizons(target, location=self.location, epochs=batch_times)
+    #            results.append(eph)
+    #        except Exception as e:
+    #            if "Ambiguous target name" in str(e):
+    #                print(f"请提供准确的目标ID。错误: {str(e)}")
+    #            else:
+    #                print(f"错误: {str(e)}")
+    #            raise
+    #
+    #    # 如果只有一批数据，直接返回
+    #    if len(results) == 1:
+    #        return results[0][orbital_keywords]
+    #
+    #    # 使用sbpy的vstack合并结果
+    #    final_eph = results[0]
+    #    for eph in results[1:]:
+    #        final_eph.vstack(eph)
+    #
+    #    return final_eph[orbital_keywords]
 
     def calculate_orbit_info(self, times, orbital_keywords):
         """
@@ -324,25 +327,26 @@ class ObservationLogger:
         """
         try:
             # 如果时间点数量大于阈值，使用批处理
-            batch_size = 50
-            if len(times) > batch_size:
-                return self._get_ephemeris_batch(times, orbital_keywords, batch_size)
-            else:
-                # 原始的单批次处理
-                target = self.target_alternate or self.target_name
-                eph = Ephem.from_horizons(target, location=self.location, epochs=times)
-                return eph[orbital_keywords]
+            #batch_size = 50
+            #if len(times) > batch_size:
+            #    return self._get_ephemeris_batch(times, orbital_keywords, batch_size)
+            #else:
+            #    # 原始的单批次处理
+            #    target = self.target_alternate or self.target_name
+            #    eph = Ephem.from_horizons(target, location=self.location, epochs=times)
+            #    return eph[orbital_keywords]
+            return get_ephemeris_batch(times, self.target_alternate or self.target_simplified_name, self.location, orbital_keywords, 50)
 
         except Exception as e:
             if "Ambiguous target name" in str(e):
                 print(f"请提供准确的目标ID。错误: {str(e)}")
-            elif "414 Request-URI Too Large" in str(e):
-                # 如果URL过长，自动切换到批处理模式
-                try:
-                    return self._get_ephemeris_batch(times, orbital_keywords)
-                except Exception as batch_e:
-                    print(f"批处理模式也失败: {str(batch_e)}")
-                    raise
+            #elif "414 Request-URI Too Large" in str(e):
+            #    # 如果URL过长，自动切换到批处理模式
+            #    try:
+            #        return self._get_ephemeris_batch(times, orbital_keywords)
+            #    except Exception as batch_e:
+            #        print(f"批处理模式也失败: {str(batch_e)}")
+            #        raise
             else:
                 print(f"错误: {str(e)}")
             raise

@@ -30,7 +30,7 @@ from uvotimgpy.uvot_file.file_organization import ObservationLogLoader, Observat
 from uvotimgpy.uvot_file.file_io import save_stacked_fits
 from uvotimgpy.uvot_image.motion_smear_reducer import reduce_smear
 from uvotimgpy.uvot_image.star_cleaner import StarCleaner, save_starmask, delete_starmask, save_filled
-from uvotimgpy.uvot_image.image_correction import correct_offset_in_image
+from uvotimgpy.uvot_image.image_correction import correct_offset_in_image, correct_coi_loss_in_image, get_coi_loss_map
 
 
 # ===================== 工具函数 =====================
@@ -117,7 +117,7 @@ class BasicInfo:
     target_full_name: str
     project_path: Path
     project_docs_path: Path
-    project_name: str
+    #project_name: str
     data_path: Path
     evt_to_img_folder_path: Path
     alignment_folder_path: Path
@@ -143,6 +143,7 @@ class BasicInfo:
     effective_wave_v: u.Quantity = 5437.83*u.AA
     central_wave: u.Quantity = 4381.775*u.AA
     area: u.Quantity = np.pi*15*15 * u.cm*u.cm
+    target_coord: Tuple[Union[int, float], Union[int, float]] = (1000, 1000)
     sun: SourceSpectrum = SolarSpectrum.from_model()
 
     def __post_init__(self):
@@ -169,7 +170,7 @@ class DataPreparation:
     """数据准备相关功能"""
     
     def __init__(self, target_name: str, project_path_or_name: Union[str, Path], target_id: Union[str, int], 
-                 obsid_initial: str, obsid_final: str, epoch_name: str,
+                 obsid_initial: Optional[str] = None, obsid_final: Optional[str] = None, epoch_name: Optional[str] = None,
                  data_path: Union[str, Path, None] = None,
                  evt_to_img_folder: Optional[Union[str, Path]] = 'evt_to_img', evt_to_img_name_style: Optional[str] = None,
                  alignment_folder: Optional[Union[str, Path]] = 'alignment', alignment_name_style: Optional[str] = None,
@@ -184,7 +185,7 @@ class DataPreparation:
         self.target_full_name = name_dict['target_full_name']
         self.project_path = load_path(project_path_or_name, parent_path=paths.projects)
         self.project_docs_path = paths.get_subpath(self.project_path, 'docs')
-        self.project_name = self.project_path.name
+        #self.project_name = self.project_path.name
 
         if data_path is None:
             self.data_path = paths.get_subpath(paths.data, self.instrument, self.data_folder_name)
@@ -198,6 +199,9 @@ class DataPreparation:
         self.observations_df = None
         self.observations_v_df = None
         self.observations_uw1_df = None
+        self.observations_df_epoch = None
+        self.observations_v_df_epoch = None
+        self.observations_uw1_df_epoch = None
         #self.observations_list = None
         #self.observations_v_list = None
         #self.observations_uw1_list = None
@@ -223,7 +227,7 @@ class DataPreparation:
     def create_observation_log(self, output_path_or_name: Union[str, Path], orbital_keywords = None) -> pd.DataFrame:
         """创建observation log"""
         # 实现创建逻辑
-        logger = ObservationLogger(self.project_name,data_root_path=paths.get_subpath(paths.data, self.instrument), target_alternate=self.target_id)
+        logger = ObservationLogger(self.data_folder_name,data_root_path=paths.get_subpath(paths.data, self.instrument), target_alternate=self.target_id)
         if orbital_keywords is not None:
             self.orbital_keywords = orbital_keywords
         orbital_keywords_to_get_log = [keyword for keyword in self.orbital_keywords if keyword not in ['Sky_motion', 'Sky_mot_PA']]
@@ -239,6 +243,9 @@ class DataPreparation:
         self.observations_df = self.observation_loader.where(f'OBSID >= "{self.obsid_initial}"', f'OBSID <= "{self.obsid_final}"')
         self.observations_v_df = self.observation_loader.where('FILTER == "V"', df=self.observations_df)
         self.observations_uw1_df = self.observation_loader.where('FILTER == "UVW1"', df=self.observations_df)
+        self.observations_df_epoch = self.observations_df.copy()
+        self.observations_v_df_epoch = self.observations_v_df.copy()
+        self.observations_uw1_df_epoch = self.observations_uw1_df.copy()
         #self.observations_list = TableConverter.df_to_dict_list(self.observations_df)
         #self.observations_v_list = TableConverter.df_to_dict_list(self.observations_v_df)
         #self.observations_uw1_list = TableConverter.df_to_dict_list(self.observations_uw1_df)
@@ -282,7 +289,7 @@ class DataPreparation:
                              compare_with_dss: bool = False, scale: float = 1.004, dss_scale: Optional[float] = None):
         """
         展示所有筛选出的observation图像
-        TODO: compare_with_dss
+        dss_scale: arcsec/pixel in dss image; default makes 100 pixels in radius
         """
         # 实现展示逻辑
         image_list = []
@@ -338,10 +345,11 @@ class DataPreparation:
                                title_list=title_list, target_position_range=target_position_range)
 
         # draw direction compass
-        if len(image_list) > max_cols:
-            ax0 = axes[0][0]
-        else:
-            ax0 = axes[0]
+        #if len(image_list) > max_cols:
+        #    ax0 = axes[0][0]
+        #else:
+        #    ax0 = axes[0]
+        ax0 = axes[0][0]
         draw_direction_compass(ax0, 
                                directions={'N': 0, 'E': 90, 'v': mean_velocityPA-180, '☉': mean_sunTargetPA-180},
                                colors='white',
@@ -386,13 +394,14 @@ class DataPreparation:
     
     def get_basic_info(self) -> BasicInfo:
         """获取基本信息"""
+        self.get_observation_info()
         return BasicInfo(instrument=self.instrument, 
                          data_folder_name=self.data_folder_name, 
                          target_simplified_name=self.target_simplified_name, 
                          target_full_name=self.target_full_name, 
                          project_path=self.project_path, 
                          project_docs_path=self.project_docs_path, 
-                         project_name=self.project_name, 
+                         #project_name=self.project_name, 
                          data_path=self.data_path, 
                          evt_to_img_folder_path=self.evt_to_img_folder_path,
                          alignment_folder_path=self.alignment_folder_path,
@@ -414,7 +423,8 @@ class DataPreparation:
 class DataCleaningIndividual:
     """数据清理相关功能"""
     
-    def __init__(self, obs: Dict[str, Any], basic_info: BasicInfo, target_coord = (1000, 1000), verbose = True,
+    def __init__(self, obs: Dict[str, Any], basic_info: BasicInfo, 
+                 target_coord: Optional[Tuple[float, float]] = None, verbose: Optional[bool] = True,
                  evt_to_img_folder: Optional[Union[str, Path]] = None, evt_to_img_name_style: Optional[str] = None,
                  alignment_folder: Optional[Union[str, Path]] = None, alignment_name_style: Optional[str] = None,
                  cleaned_folder: Optional[Union[str, Path]] = None, cleaned_name_style: Optional[str] = None
@@ -423,10 +433,20 @@ class DataCleaningIndividual:
         self.obsid = obs['OBSID']
         self.ext_no = obs['EXT_NO']
         self.datatype = obs['DATATYPE'] # 'image' or 'event'
+        if self.datatype == 'image' and 'grism' not in obs['FILTER']:
+            self.scale = 1.004
+        elif self.datatype == 'event':
+            self.scale = 0.502
+        elif 'grism' in obs['FILTER']:
+            self.scale = 0.58
+        else:
+            self.scale = None
         self.filt_filename = normalize_filter_name(obs['FILTER'], output_format='filename')
         self.sk_coord_ds9 = (obs['x_pixel'], obs['y_pixel'])
         self.sk_coord_py = DS9Converter.ds9_to_coords(obs['x_pixel'], obs['y_pixel']) # col, row
         self.basic_info = basic_info
+        if target_coord is None:
+            target_coord = basic_info.target_coord
         self.target_coord_py = target_coord
         self.target_coord_ds9 = DS9Converter.coords_to_ds9(target_coord[0], target_coord[1])
         # quality flags
@@ -460,7 +480,7 @@ class DataCleaningIndividual:
         self.cleaned_path = paths.get_subpath(self.cleaned_folder_path, self.cleaned_name)
 
 
-    def remove_motion_smearing(self, longest_elapsed_time: float = 30, stack_method = 'sum'):
+    def remove_motion_smearing(self, longest_elapsed_time: float = 30, stack_method = 'sum', binby2 = True):
         """去除motion造成的smearing"""
         t_elapsed = self.obs['TELAPSE']
         group_number = math.ceil(t_elapsed/longest_elapsed_time)
@@ -468,8 +488,10 @@ class DataCleaningIndividual:
             print(f'Processing observation: {self.obsid}; group number: {group_number}; elapsed time per group: {t_elapsed/group_number};')
         self.smearing_correction_stack_method = stack_method
         reduce_smear(self.evt_file_path, self.exp_file_path, self.basic_info.target_id, self.target_coord_py, group_number, \
-                     self.smearing_correction_stack_method, self.evt_to_img_path, binby2=True, save_individual_images=False, image_unit_save='count')
+                     self.smearing_correction_stack_method, self.evt_to_img_path, binby2=binby2, save_individual_images=False, image_unit_save='count')
         self.smearing_correction = 2
+        if binby2:
+            self.scale = 1.004
         if self.verbose:
             print(f'Smearing correction applied, saved to {self.evt_to_img_path}')
     
@@ -505,6 +527,7 @@ class DataCleaningIndividual:
             error_data = np.sqrt(sk_hdu.data)
             error_hdu = fits.ImageHDU(error_data, name='ERROR')
             primary_hdu = fits.PrimaryHDU()
+            primary_hdu.header['BUNIT'] = 'count'
             primary_hdu.header['COLPIXEL'] = (self.target_coord_py[0], 'Target X position in Python coordinates')
             primary_hdu.header['ROWPIXEL'] = (self.target_coord_py[1], 'Target Y position in Python coordinates')
             primary_hdu.header['DS9XPIX'] = (self.target_coord_ds9[0], 'Target X position in DS9 coordinates')
@@ -553,19 +576,22 @@ class DataCleaningIndividual:
             print("Do alignment first")
         
     def correct_offset(self, box_size: Tuple[int, int] = (41, 41), plot: bool = False,
-                       save: bool = False) -> np.ndarray:
+                       save: bool = False,  img_path: Union[str, Path] = None):
         """
         修正offset
         box_size: width, height
         """
-        correct_offset_in_image(img_path = self.cleaned_path, img_extension = 'IMAGE', target_coord = self.target_coord_py, 
+        if img_path is None:
+            img_path = self.cleaned_path
+        correct_offset_in_image(img_path = img_path, img_extension = 'IMAGE', target_coord = self.target_coord_py, 
                                 datatype=self.datatype, box_size=box_size, plot=plot, save=save, verbose=self.verbose)
         self.offset_correction = 2
 
-    def correct_coincidence_loss(self, images: Union[List[str], List[np.ndarray], np.ndarray], 
-                                **kwargs) -> Union[np.ndarray, List[np.ndarray]]:
+    def correct_coincidence_loss(self, plot: bool = False, save: bool = False):
         """修正coincidence loss"""
-        pass
+        correct_coi_loss_in_image(img_path = self.cleaned_path, img_extension = 'IMAGE', scale = self.scale, func = 'poole2008', 
+                                  plot = plot, save = save, verbose = self.verbose)
+        self.coincidence_loss_correction = 2
     
     def identify_stars(self, 
                      identify_method: str = 'sigma_clip', # 'sigma_clip', 'manual'
@@ -640,6 +666,23 @@ class DataCleaningIndividual:
         if save:
             self.star_removal = 2
 
+    def restore_fillment(self, coi_loss_corr: bool = True):
+        with fits.open(self.alignment_path, mode='readonly') as hdul:
+            img = hdul['IMAGE'].data.copy()
+            exp = hdul['EXPOSURE'].data.copy()
+        if coi_loss_corr:
+            coi_map = get_coi_loss_map(img/exp, self.scale, 'poole2008')
+            img_original = img*coi_map
+        else:
+            img_original = img
+        with fits.open(self.cleaned_path, mode='update') as hdul:
+            hdul['IMAGE'].data = img_original
+            hdul[0].header['STARFILL'] = (False, 'Star fill not applied')
+            hdul[0].header['FILLHIST'] = ''
+        if self.verbose:
+            print('Star fill restored.')
+        
+
     def display_cleaned_images(self, vrange = None, radius = 20, max_cols = 4):
         """
         展示clean好的图像
@@ -682,7 +725,8 @@ class DataCleaningIndividual:
         plt.close()
         
 class DataCleaningMultiple:
-    def __init__(self, observations: Union[pd.DataFrame, List[Dict[str, Any]]], basic_info: BasicInfo, target_coord = (1000, 1000), verbose = True,
+    def __init__(self, observations: Union[pd.DataFrame, List[Dict[str, Any]]], basic_info: BasicInfo, 
+                 observations_all: Union[pd.DataFrame, List[Dict[str, Any]], None] = None, target_coord = (1000, 1000), verbose = True,
                  evt_to_img_folder: Optional[Union[str, Path]] = None, evt_to_img_name_style: Optional[str] = None,
                  alignment_folder: Optional[Union[str, Path]] = None, alignment_name_style: Optional[str] = None,
                  cleaned_folder: Optional[Union[str, Path]] = None, cleaned_name_style: Optional[str] = None,
@@ -706,7 +750,21 @@ class DataCleaningMultiple:
             self.datatype = 'Multiple'
             if verbose:
                 print("Multiple datatypes found, using Multiple")
+        if self.datatype == 'image' and 'grism' not in self.filt_filename:
+            self.scale = 1.004
+        elif self.datatype == 'event':
+            self.scale = 0.502
+        elif 'grism' in self.filt_filename:
+            self.scale = 0.58
+        elif self.datatype == 'Multiple':
+            self.scale = 'Multiple'
+        else:
+            self.scale = None
         self.observations = table_to_list(observations)
+        if observations_all is not None:
+            self.observations_all = table_to_list(observations_all)
+        else:
+            self.observations_all = self.observations.copy()
         self.basic_info = basic_info
         self.epoch_name = basic_info.epoch_name
         self.target_coord_py = target_coord
@@ -739,7 +797,7 @@ class DataCleaningMultiple:
         )
         
     def basic_loop(self, longest_elapsed_time: float = 30, smearing_correction_stack_method: str = 'sum',):
-        for obs in self.observations:
+        for obs in self.observations_all:
             obs_cleaning = DataCleaningIndividual(obs, self.basic_info, self.target_coord_py,
                                                   verbose = self.verbose,
                                                   **self.path_dict
@@ -748,7 +806,9 @@ class DataCleaningMultiple:
                 obs_cleaning.remove_motion_smearing(longest_elapsed_time=longest_elapsed_time,
                                                     stack_method = smearing_correction_stack_method,)
             obs_cleaning.align_image()
-            obs_cleaning.create_cleaned_image()
+            if obs in self.observations:
+                obs_cleaning.create_cleaned_image()
+                obs_cleaning.correct_coincidence_loss(save = True)
 
     def offset_correction_loop(self, observations: Union[pd.DataFrame, List[Dict[str, Any]],None], box_size: Tuple[int, int] = (41, 41), plot: bool = False):
         if observations is None:
@@ -763,7 +823,7 @@ class DataCleaningMultiple:
             obs_cleaning.correct_offset(box_size = box_size, plot = plot)
 
     def stack(self, observations: Union[pd.DataFrame, List[Dict[str, Any]],None]= None, 
-                     stack_method: str = 'sum', compressed: bool = False, comment = None):
+                     stack_method: str = 'sum', compressed: bool = False, comment = None, image_type: str = 'cleaned'):
         if observations is None:
             observations = self.observations
             filt_filename = self.filt_filename
@@ -789,11 +849,21 @@ class DataCleaningMultiple:
         err_list = []
         mask_list = []
         for obs in observations:
-            cleaned_name = self.cleaned_name_style.format(obsid=obs['OBSID'], ext_no=obs['EXT_NO'], filt_filename=filt_filename)
-            cleaned_path = paths.get_subpath(self.cleaned_folder_path, cleaned_name)
-            with fits.open(cleaned_path, mode='readonly') as hdul:
+            if image_type == 'cleaned':
+                cleaned_name = self.cleaned_name_style.format(obsid=obs['OBSID'], ext_no=obs['EXT_NO'], filt_filename=filt_filename)
+                cleaned_path = paths.get_subpath(self.cleaned_folder_path, cleaned_name)
+                image_path = cleaned_path
+            elif image_type == 'aligned':
+                aligned_name = self.alignment_name_style.format(obsid=obs['OBSID'], ext_no=obs['EXT_NO'], filt_filename=filt_filename)
+                aligned_path = paths.get_subpath(self.alignment_folder_path, aligned_name)
+                image_path = aligned_path
+            with fits.open(image_path, mode='readonly') as hdul:
                 img = hdul['IMAGE'].data.copy()
                 exp = hdul['EXPOSURE'].data.copy()
+                if image_type == 'aligned':
+                    cr = img/exp
+                    coi_loss_map = get_coi_loss_map(cr, scale=self.scale, func = 'poole2008')
+                    img = img*coi_loss_map
                 err = hdul['ERROR'].data.copy()
                 img[exp/np.max(exp) < 0.99] = np.nan
                 err[exp/np.max(exp) < 0.99] = np.nan
@@ -818,7 +888,7 @@ class DataCleaningMultiple:
             image_dict = {'IMAGE': stacked_img, 'ERROR': stacked_err, 'EXPOSURE':stacked_exp, 'STARMASK': stacked_mask}
         if comment is None:
             comment = 'No background subtraction'
-        other_header_info={'EPOCH': self.epoch_name, 'DATATYPE': datatype}
+        other_header_info={'EPOCH': self.epoch_name, 'DATATYPE': datatype, 'STACKMET': stack_method}
         save_stacked_fits(images_to_save=image_dict, save_path=self.stacked_path, obs_list = observations, target_position=self.target_coord_py,
                           script_name='pipeline_basic.py', compressed=compressed, comment=comment, other_header_info=other_header_info, stack_unit = self.stack_unit)
         if self.verbose:
@@ -907,6 +977,9 @@ class DataCleaningMultiple:
                                            )
         if save:
             self.star_removal = 2
+
+    def restore_fillment(self):
+        pass
 
     def display_all_observations(self, observations: Union[pd.DataFrame, List[Dict[str, Any]],None] = None, 
                        radius = 20, vrange=None, max_cols = 4, image_unit_show='count'):
@@ -1017,71 +1090,71 @@ def display_stacked_images(project_path: Union[str, Path] = None,
                           'color': 'white', 
                           'linewidth': 1, 
                           'text_offset': 5}
-    ax_v.imshow(img_v, vmin=vrange_v[0], vmax=vrange_v[1], origin='lower', cmap='gray')
-    #ax_v.plot(target_coord_py[0], target_coord_py[1], 'rx', markersize=5)
-    #if observation_time is not None:
-    #    text_v = 'V\n'+r'$Swift$/UVOT'+'\n'+f'{observation_time}'
-    #else:
-    #    text_v = 'V\n'+r'$Swift$/UVOT'
-    #ax_v.text(0.95, 0.03, text_v, 
-    #          transform=ax_v.transAxes,ha='right', va='bottom',color='white')
+    ax_v.imshow(img_v, vmin=vrange_v[0], vmax=vrange_v[1], origin='lower', cmap='viridis')
+    ax_v.plot(target_coord_py[0], target_coord_py[1], 'rx', markersize=5)
+    if observation_time is not None:
+        text_v = 'V\n'+r'$Swift$/UVOT'+'\n'+f'{observation_time}'
+    else:
+        text_v = 'V\n'+r'$Swift$/UVOT'
+    ax_v.text(0.95, 0.03, text_v, 
+              transform=ax_v.transAxes,ha='right', va='bottom',color='white')
     ax_v.set_xlim(xrange[0], xrange[1])
     ax_v.set_ylim(yrange[0], yrange[1])
     for spine in ax_v.spines.values():
         spine.set_visible(False)
-    #draw_direction_compass(ax_v, 
-    #                       directions=compass_paras.get('directions', {'N': 0, 'E': 90, 'v': velocityPA_v-180, '☉': sunTargetPA_v-180}),
-    #                       colors=compass_paras.get('colors', 'white'),
-    #                       position=compass_paras.get('position', (0.17, 0.83)), 
-    #                       arrow_length=compass_paras.get('arrow_length', 0.08),
-    #                       arrow_width=compass_paras.get('arrow_width', 0.1),
-    #                       headwidth=compass_paras.get('headwidth', 4),
-    #                       headlength=compass_paras.get('headlength', 3),
-    #                       text_offset=compass_paras.get('text_offset', 0.02), 
-    #                       fontsize=compass_paras.get('fontsize', 10))
-    #draw_scalebar(ax_v,
-    #              length=scalebar_paras.get('length', 100),
-    #              label_top=scalebar_paras.get('label_top', r'$20\,000~$'+'km'),
-    #              label_bottom=scalebar_paras.get('label_bottom', r"45$^{\prime\prime}$"),
-    #              position=scalebar_paras.get('position', (0.85, 0.1)),
-    #              color=scalebar_paras.get('color', 'white'),
-    #              linewidth=scalebar_paras.get('linewidth', 1),
-    #              text_offset=scalebar_paras.get('text_offset', 5),
-    #              )
+    draw_direction_compass(ax_v, 
+                           directions=compass_paras.get('directions', {'N': 0, 'E': 90, 'v': velocityPA_v-180, '☉': sunTargetPA_v-180}),
+                           colors=compass_paras.get('colors', 'white'),
+                           position=compass_paras.get('position', (0.17, 0.83)), 
+                           arrow_length=compass_paras.get('arrow_length', 0.08),
+                           arrow_width=compass_paras.get('arrow_width', 0.1),
+                           headwidth=compass_paras.get('headwidth', 4),
+                           headlength=compass_paras.get('headlength', 3),
+                           text_offset=compass_paras.get('text_offset', 0.02), 
+                           fontsize=compass_paras.get('fontsize', 10))
+    draw_scalebar(ax_v,
+                  length=scalebar_paras.get('length', 100),
+                  label_top=scalebar_paras.get('label_top', r'$20\,000~$'+'km'),
+                  label_bottom=scalebar_paras.get('label_bottom', r"45$^{\prime\prime}$"),
+                  position=scalebar_paras.get('position', (0.85, 0.1)),
+                  color=scalebar_paras.get('color', 'white'),
+                  linewidth=scalebar_paras.get('linewidth', 1),
+                  text_offset=scalebar_paras.get('text_offset', 5),
+                  )
     ax_v.tick_params(axis='both', which='major', direction='in', colors='white', length=3, width=0.5,
                      top=True, bottom=True, left=True, right=True,
                      labelleft=False, labelbottom=False, labeltop=False, labelright=False)
-    ax_uw1.imshow(img_uw1, vmin=vrange_uw1[0], vmax=vrange_uw1[1], origin='lower', cmap='gray')
-    #ax_uw1.plot(target_coord_py[0], target_coord_py[1], 'rx', markersize=5)
-    #if observation_time is not None:
-    #    text_uw1 = 'UVW1\n'+r'$Swift$/UVOT'+'\n'+f'{observation_time}'
-    #else:
-    #    text_uw1 = 'UVW1\n'+r'$Swift$/UVOT'
-    #ax_uw1.text(0.95, 0.03, text_uw1, 
-    #            transform=ax_uw1.transAxes,ha='right', va='bottom',color='white')
+    ax_uw1.imshow(img_uw1, vmin=vrange_uw1[0], vmax=vrange_uw1[1], origin='lower', cmap='viridis')
+    ax_uw1.plot(target_coord_py[0], target_coord_py[1], 'rx', markersize=5)
+    if observation_time is not None:
+        text_uw1 = 'UVW1\n'+r'$Swift$/UVOT'+'\n'+f'{observation_time}'
+    else:
+        text_uw1 = 'UVW1\n'+r'$Swift$/UVOT'
+    ax_uw1.text(0.95, 0.03, text_uw1, 
+                transform=ax_uw1.transAxes,ha='right', va='bottom',color='white')
     ax_uw1.set_xlim(xrange[0], xrange[1])
     ax_uw1.set_ylim(yrange[0], yrange[1])
     for spine in ax_uw1.spines.values():
         spine.set_visible(False)
-    #draw_direction_compass(ax_uw1, 
-    #                       directions=compass_paras.get('directions', {'N': 0, 'E': 90, 'v': velocityPA_uw1-180, '☉': sunTargetPA_uw1-180}),
-    #                       colors=compass_paras.get('colors', 'white'),
-    #                       position=compass_paras.get('position', (0.17, 0.83)), 
-    #                       arrow_length=compass_paras.get('arrow_length', 0.08), 
-    #                       arrow_width=compass_paras.get('arrow_width', 0.1),
-    #                       headwidth=compass_paras.get('headwidth', 4),
-    #                       headlength=compass_paras.get('headlength', 3),
-    #                       text_offset=compass_paras.get('text_offset', 0.02), 
-    #                       fontsize=compass_paras.get('fontsize', 10))
-    #draw_scalebar(ax_uw1,
-    #              length=scalebar_paras.get('length', 100),
-    #              label_top=scalebar_paras.get('label_top', r'$20\,000~$'+'km'),
-    #              label_bottom=scalebar_paras.get('label_bottom', r"45$^{\prime\prime}$"),
-    #              position=scalebar_paras.get('position', (0.85, 0.1)),
-    #              color=scalebar_paras.get('color', 'white'),
-    #              linewidth=scalebar_paras.get('linewidth', 1),
-    #              text_offset=scalebar_paras.get('text_offset', 5),
-    #              )
+    draw_direction_compass(ax_uw1, 
+                           directions=compass_paras.get('directions', {'N': 0, 'E': 90, 'v': velocityPA_uw1-180, '☉': sunTargetPA_uw1-180}),
+                           colors=compass_paras.get('colors', 'white'),
+                           position=compass_paras.get('position', (0.17, 0.83)), 
+                           arrow_length=compass_paras.get('arrow_length', 0.08), 
+                           arrow_width=compass_paras.get('arrow_width', 0.1),
+                           headwidth=compass_paras.get('headwidth', 4),
+                           headlength=compass_paras.get('headlength', 3),
+                           text_offset=compass_paras.get('text_offset', 0.02), 
+                           fontsize=compass_paras.get('fontsize', 10))
+    draw_scalebar(ax_uw1,
+                  length=scalebar_paras.get('length', 100),
+                  label_top=scalebar_paras.get('label_top', r'$20\,000~$'+'km'),
+                  label_bottom=scalebar_paras.get('label_bottom', r"45$^{\prime\prime}$"),
+                  position=scalebar_paras.get('position', (0.85, 0.1)),
+                  color=scalebar_paras.get('color', 'white'),
+                  linewidth=scalebar_paras.get('linewidth', 1),
+                  text_offset=scalebar_paras.get('text_offset', 5),
+                  )
     ax_uw1.tick_params(axis='both', which='major', direction='in', colors='white', length=3, width=0.5, 
                        top=True, bottom=True, left=True, right=True,
                        labelleft=False, labelbottom=False, labeltop=False, labelright=False)
@@ -1090,8 +1163,8 @@ def display_stacked_images(project_path: Union[str, Path] = None,
     for line in ax_uw1.xaxis.get_ticklines() + ax_uw1.yaxis.get_ticklines():
         line.set_alpha(0.5)
     fig.subplots_adjust(wspace=0.05, hspace=0)
-    #plt.tight_layout(pad=0.1)
-    #fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    plt.tight_layout(pad=0.1)
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
     plt.show(block=True)
     if save_path is not None:
         fig.savefig(save_path, dpi=300, bbox_inches='tight', pad_inches=0)
