@@ -20,6 +20,7 @@ from uvotimgpy.base.visualizer import MaskInspector
 from uvotimgpy.base.math_tools import vectorized_filter2d
 from scipy.ndimage import gaussian_filter
 from maskfill import maskfill
+from starcleaner.starcleaner_api import star_identify_by_ml
 
 class StarIdentifier:
     """Identify stars, cosmic rays and other pixels that need to be removed from the image"""
@@ -108,6 +109,34 @@ class StarIdentifier:
         self.last_mask = mask
         return mask  # True 表示检测为异常值，NaN 像素恒为 False
     
+    def by_ml(self, image: np.ndarray, 
+              exclude_region: Optional[Union[np.ndarray, ApertureMask, PixelRegion]] = None,
+              focus_region: Optional[Union[np.ndarray, ApertureMask, PixelRegion]] = None,
+              patch_size: Optional[int] = None, 
+              threshold: float = 0.5, 
+              min_area: Optional[int] = None,
+              wcs: Optional[WCS] = None, 
+              verbose: bool = False,
+              checkpoint: Optional[Union[str, Path]] = None,
+              batch_size: Optional[int] = None,
+              device: Optional[str] = None,
+              apply_morphology_cleanup: Optional[bool] = True,
+              use_catalog: Optional[bool] = None,
+              catalog_magnitude_limit: Optional[float] = 20.0,
+              catalog_cache_dir: Optional[str] = None,
+              ) -> np.ndarray:
+        """
+        Identify by machine learning
+        return: bool type mask"""
+        mask = star_identify_by_ml(image = image, patch_size = patch_size, threshold = threshold, wcs = wcs, verbose = verbose, checkpoint = checkpoint,
+                                   min_area = min_area, batch_size = batch_size, device = device, apply_morphology_cleanup = apply_morphology_cleanup,
+                                   use_catalog = use_catalog, catalog_magnitude_limit = catalog_magnitude_limit, catalog_cache_dir = catalog_cache_dir)
+        if exclude_region is not None or focus_region is not None:
+            exclude_region = get_exclude_region(image.shape, focus_region, exclude_region)
+            mask = mask & ~exclude_region
+        self.last_mask = mask
+        return mask
+    
     def by_manual(self, image: np.ndarray, 
                   row_range: Optional[Tuple[int, int]] = None,
                   col_range: Optional[Tuple[int, int]] = None,
@@ -115,9 +144,11 @@ class StarIdentifier:
                   save_path: Optional[Union[str, Path]] = None,
                   region_plot: Optional[Union[PixelRegion, List[PixelRegion]]] = None,
                   identified_mask: Optional[np.ndarray] = None,
+                  shape = 'circle',
                   default_size: Optional[int] = 5,
                   step: Optional[float] = 0.5,
                   return_type: str = 'array',
+                  use_blit = False,
                   ) -> Union[np.ndarray, List[PixelRegion]]:
         """Identify by manual input
         return_type: 'array' or 'region_list'
@@ -134,9 +165,11 @@ class StarIdentifier:
         selector = RegionSelector(image_copy, vmin=vmin, vmax=vmax, 
                                 row_range=row_range, 
                                 col_range=col_range,
+                                shape=shape,
                                 region_plot=region_plot,
                                 default_size=default_size,
-                                step=step)
+                                step=step,
+                                use_blit=use_blit)
         
         print("Getting regions...")
         # Explicitly call show and wait for window to close
@@ -588,6 +621,8 @@ class BackgroundCleaner:
             mask = self.identifier.by_sigma_clip(image, **kwargs)
         elif identify_method == 'manual':
             mask = self.identifier.by_manual(image, **kwargs)
+        elif identify_method == 'ml':
+            mask = self.identifier.by_ml(image, **kwargs)
         else:
             raise ValueError(f"Unsupported identify method: {identify_method}")
         
@@ -626,7 +661,13 @@ class StarCleaner:
         identify_paras = {'row_range': tuple(int, int) = None, 'col_range': tuple(int, int) = None, \
                         'vmin': float = 0, 'vmax': float = 10, 
                         'region_plot': Union[PixelRegion, List[PixelRegion]] = None,
-                        'return_type': str = 'array', 'default_size': 5, 'step': 0.5}
+                        'return_type': str = 'array', 'default_size': 5, 'step': 0.5, 'shape': 'circle', 'use_blit': False}
+        'ml':
+        identify_paras = {'patch_size': int = 512, 'threshold': float = 0.5, 'min_area': int = 5, 'wcs': WCS = None, 'verbose': bool = False}
+        or
+        identify_paras = {'patch_size': int = 512, 'threshold': float = 0.5, 'min_area': int = 5, 'wcs': WCS = None, 'verbose': bool = False, \
+                          'checkpoint': Union[str, Path] = None, 'batch_size': int = 2, 'device': str = None, 'apply_morphology_cleanup': bool = True, \
+                          'use_catalog': bool = None, 'catalog_magnitude_limit': float = 20.0, 'catalog_cache_dir': str = None,}
         """
         # exclude region
         exclude_region = get_exclude_region(img.shape, focus_region, exclude_region)
@@ -648,7 +689,7 @@ class StarCleaner:
             if identify_paras is None:
                 identify_paras = {'target_coord': (1000, 1000), 'radius': 50, 
                                   'vmin': 0, 'vmax': 10, 'save_path': None, 'region_plot': None, 
-                                  'return_type': 'array', 'default_size': 5, 'step': 0.5}
+                                  'return_type': 'array', 'default_size': 5, 'step': 0.5, 'shape': 'circle', 'use_blit': False}
             target_coord = identify_paras.get('target_coord', (1000, 1000))
             radius = identify_paras.get('radius', 50)
             if radius is not None:
@@ -661,11 +702,34 @@ class StarCleaner:
             vmax = identify_paras.get('vmax', 10)
             save_path = identify_paras.get('save_path', None)
             region_plot = identify_paras.get('region_plot', None)
+            shape = identify_paras.get('shape', 'circle')
             default_size = identify_paras.get('default_size', 5)
             step = identify_paras.get('step', 0.5)
             return_type = identify_paras.get('return_type', 'array')
+            use_blit = identify_paras.get('use_blit', False)
             mask = star_identifier.by_manual(img, row_range=row_range, col_range=col_range, vmin=vmin, vmax=vmax, 
-                                             save_path=save_path, region_plot=region_plot, identified_mask=identified_mask, default_size=default_size, step=step, return_type=return_type)
+                                             save_path=save_path, region_plot=region_plot, identified_mask=identified_mask, 
+                                             shape=shape, default_size=default_size, step=step, return_type=return_type, use_blit=use_blit)
+        elif identify_method == 'ml':
+            if identify_paras is None:
+                identify_paras = {'patch_size': 512, 'threshold': 0.5, 'min_area': None, 'wcs': None, 'verbose': False, 
+                                  'checkpoint': None, 'batch_size': 2, 'device': None, 'apply_morphology_cleanup': True, 
+                                  'use_catalog': None, 'catalog_magnitude_limit': 20.0, 'catalog_cache_dir': None,}
+            patch_size = identify_paras.get('patch_size', 512)
+            threshold = identify_paras.get('threshold', 0.5)
+            min_area = identify_paras.get('min_area', None)
+            wcs = identify_paras.get('wcs', None)
+            verbose = identify_paras.get('verbose', False)
+            checkpoint = identify_paras.get('checkpoint', None)
+            batch_size = identify_paras.get('batch_size', 2)
+            device = identify_paras.get('device', None)
+            apply_morphology_cleanup = identify_paras.get('apply_morphology_cleanup', True)
+            use_catalog = identify_paras.get('use_catalog', None)
+            catalog_magnitude_limit = identify_paras.get('catalog_magnitude_limit', 20.0)
+            catalog_cache_dir = identify_paras.get('catalog_cache_dir', None)
+            mask = star_identifier.by_ml(img, exclude_region=exclude_region, patch_size=patch_size, threshold=threshold, min_area=min_area, wcs=wcs, verbose=verbose, 
+                                         checkpoint=checkpoint, batch_size=batch_size, device=device, apply_morphology_cleanup=apply_morphology_cleanup, 
+                                         use_catalog=use_catalog, catalog_magnitude_limit=catalog_magnitude_limit, catalog_cache_dir=catalog_cache_dir)
         else:
             raise ValueError(f"Currently unsupported identify method: {identify_method}")
         if identified_mask is not None:

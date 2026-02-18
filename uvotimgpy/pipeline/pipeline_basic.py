@@ -15,6 +15,7 @@ import astropy.units as u
 from astropy.nddata import block_reduce
 from astroquery.skyview import SkyView
 from synphot import SourceSpectrum, SpectralElement
+from typing import Iterable, Optional
 
 import matplotlib.pyplot as plt
 
@@ -31,6 +32,8 @@ from uvotimgpy.uvot_file.file_io import save_stacked_fits
 from uvotimgpy.uvot_image.motion_smear_reducer import reduce_smear
 from uvotimgpy.uvot_image.star_cleaner import StarCleaner, save_starmask, delete_starmask, save_filled
 from uvotimgpy.uvot_image.image_correction import correct_offset_in_image, correct_coi_loss_in_image, get_coi_loss_map
+from uvotimgpy.uvot_analysis.scattering_bkg import get_scattering_sk, get_scattering_sk_event, align_scattering, save_scattering_bkg, get_scattering_factor
+from uvotimgpy.base.region import select_region
 
 
 # ===================== 工具函数 =====================
@@ -85,6 +88,48 @@ def table_to_df(table: Union[pd.DataFrame, List[Dict[str, Any]]]) -> pd.DataFram
         return TableConverter.dict_list_to_df(table)
     else:
         raise ValueError("Invalid table")
+
+def renew_name_and_path(
+    obj,
+    key: str,
+    *,
+    context: Optional[dict] = None,
+    joiner=None,
+) -> None:
+    """
+    obj: 任意对象（你的 class instance）
+    key: 'stacked' / 'cleaned' / ...
+    context: format 用的变量字典；默认从 obj 里取 epoch_name/filt_filename
+    joiner: (folder, name) -> path，默认用 paths.get_subpath
+    """
+    if joiner is None:
+        joiner = lambda folder, name: paths.get_subpath(folder, name)
+
+    style_attr = f"{key}_name_style"
+    folder_attr = f"{key}_folder_path"
+    name_attr = f"{key}_name"
+    path_attr = f"{key}_path"
+
+    style = getattr(obj, style_attr)
+    folder = getattr(obj, folder_attr)
+
+    if context is None:
+        context = {
+            "epoch_name": getattr(obj, "epoch_name", None),
+            "filt_filename": getattr(obj, "filt_filename", None),
+        }
+
+    name = style.format(**context)
+    path = joiner(folder, name)
+
+    setattr(obj, name_attr, name)
+    setattr(obj, path_attr, path)
+
+
+def renew_all_paths(obj, *, context: Optional[dict] = None, joiner=None) -> None:
+    for k in ["evt_to_img", "alignment", "cleaned", "stacked"]:
+        if hasattr(obj, f"{k}_name_style") and hasattr(obj, f"{k}_folder_path"):
+            renew_name_and_path(obj, k, context=context, joiner=joiner)
     
 def get_obs_path(data_path, obsid: str, filt: str, return_type: str = 'sk', datatype: str = 'image') -> Path:
     filt_filename = normalize_filter_name(filt, output_format='filename')
@@ -424,7 +469,8 @@ class DataCleaningIndividual:
     """数据清理相关功能"""
     
     def __init__(self, obs: Dict[str, Any], basic_info: BasicInfo, 
-                 target_coord: Optional[Tuple[float, float]] = None, verbose: Optional[bool] = True,
+                 target_coord: Optional[Tuple[float, float]] = None,
+                 verbose: Optional[bool] = True,
                  evt_to_img_folder: Optional[Union[str, Path]] = None, evt_to_img_name_style: Optional[str] = None,
                  alignment_folder: Optional[Union[str, Path]] = None, alignment_name_style: Optional[str] = None,
                  cleaned_folder: Optional[Union[str, Path]] = None, cleaned_name_style: Optional[str] = None
@@ -723,6 +769,50 @@ class DataCleaningIndividual:
         fig.suptitle(f'{self.obsid} {self.ext_no} {self.filt_filename}')
         plt.show(block=True)
         plt.close()
+
+    def create_sk_like_map(self):
+        archive_dir = paths.get_subpath(self.basic_info.project_path, 'scattering_map')
+        data_dir = self.basic_info.data_path
+        temporary_dir = paths.get_subpath(self.basic_info.project_path, 'temporary')
+        if self.datatype == 'image':
+            get_scattering_sk(data_dir=data_dir, obsid=self.obsid, filt=self.filt_filename, temporary_dir=temporary_dir,
+                              scattering_dir=None, delete_raw_like=True)
+            temporary_path = paths.get_subpath(temporary_dir, f'{self.obsid}_{self.filt_filename}_sk_like.fits')
+            align_scattering(temporary_path=temporary_path, archive_dir=archive_dir, data_dir=data_dir, 
+                             obsid=self.obsid, filt=self.filt_filename, ext=self.ext_no, sk_coord=self.sk_coord_py, target_coord=self.target_coord_py)
+        elif self.datatype == 'event':
+            #if group_number is None or target_id is None or target_coord is None:
+            #    raise ValueError(f"group_number, target_id, and target_coord must be provided for event mode")
+            img_path = self.cleaned_path
+            with fits.open(img_path, mode='readonly') as hdul:
+                group_number = hdul[0].header['NSEGMENT']
+                target_id = hdul[0].header['TARGETID']
+                target_coord = (hdul[0].header['COLPIXEL'], hdul[0].header['ROWPIXEL'])
+                stack_method = hdul[0].header['STACKMTH']
+                binby2 = hdul[0].header['BINNED']
+            get_scattering_sk_event(group_number=group_number, target_id=target_id, target_coord=target_coord,
+                                    data_dir=data_dir, obsid=self.obsid, filt=self.filt_filename, temporary_dir=temporary_dir, archive_dir=archive_dir, 
+                                    stack_method=stack_method, binby2=binby2,
+                                    scattering_dir=None, delete_raw_like=True)
+        else:
+            raise ValueError(f"Invalid datatype: {self.datatype}")
+
+    def get_bkg_factor(self, target_region = None, exclude_region = None, focus_region = None, shrink_pixels = 30, if_sigma_clip = None, plot_save = True, plot_show = False):
+        img_path = Path(self.cleaned_path)
+        archive_dir = paths.get_subpath(self.basic_info.project_path, 'scattering_map')
+        bkg_path = paths.get_subpath(archive_dir, f'{self.obsid}_{self.ext_no}_{self.filt_filename}.fits')
+        with fits.open(img_path, memmap=True) as hdul:
+            has_starmask = 'STARMASK' in hdul
+        if not has_starmask and if_sigma_clip is None:
+            if_sigma_clip = True
+        elif if_sigma_clip is None:
+            if_sigma_clip = False
+        #align_scattering(bkg_path, data_dir=data_dir, obsid=self.obsid, filt=self.filt_filename, sk_coord=self.sk_coord_py, target_coord=self.target_coord_py)
+        result, valid_map = get_scattering_factor(img_path=img_path, bkg_path=bkg_path, target_region=target_region, 
+                                            exclude_region=exclude_region, focus_region=focus_region, 
+                                            img_ext=1, bkg_ext=1, shrink_pixels=shrink_pixels, if_sigma_clip=if_sigma_clip, 
+                                            plot_save=plot_save, plot_show=plot_show)
+        save_scattering_bkg(bkg_path=bkg_path, result=result, valid_map=valid_map, img_path=img_path, bkg_ext=1)
         
 class DataCleaningMultiple:
     def __init__(self, observations: Union[pd.DataFrame, List[Dict[str, Any]]], basic_info: BasicInfo, 
@@ -822,8 +912,88 @@ class DataCleaningMultiple:
                                                   )
             obs_cleaning.correct_offset(box_size = box_size, plot = plot)
 
+    def get_sk_like_loop(self):
+        archive_dir = paths.get_subpath(self.basic_info.project_path, 'scattering_map')
+        data_dir = self.basic_info.data_path
+        temporary_dir = paths.get_subpath(self.basic_info.project_path, 'temporary')
+        for obs in self.observations:
+            #obs_cleaning = DataCleaningIndividual(obs, self.basic_info, self.target_coord_py,
+            #                                      verbose = self.verbose,
+            #                                      **self.path_dict
+            #                                      )
+            #label = f"{obs['OBSID']}_{self.filt_filename}"
+            #archive_dir = paths.get_subpath(self.basic_info.project_path, 'scattering_map')
+            #bkg_path = paths.get_subpath(archive_dir, f'{label}_sk_like.fits')
+            ## loop to get sk_like map (ignore different ext)
+            #if not os.path.exists(bkg_path):
+            #    obs_cleaning.create_sk_like_map()
+            temporary_path = paths.get_subpath(temporary_dir, f"{obs['OBSID']}_{self.filt_filename}_sk_like.fits")
+            temporary_exists = os.path.exists(temporary_path)
+            if self.datatype == 'image' and not temporary_exists:
+                get_scattering_sk(data_dir=data_dir, obsid=obs['OBSID'], filt=self.filt_filename, temporary_dir=temporary_dir,
+                                  scattering_dir=None, delete_raw_like=True)
+                #temporary_path = paths.get_subpath(temporary_dir, f'{self.obsid}_{self.filt_filename}_sk_like.fits')
+                #align_scattering(temporary_path=temporary_path, archive_dir=archive_dir, data_dir=data_dir, 
+                #                 obsid=self.obsid, filt=self.filt_filename, ext=self.ext_no, sk_coord=self.sk_coord_py, target_coord=self.target_coord_py)
+            elif self.datatype == 'event' and not temporary_exists:
+                #if group_number is None or target_id is None or target_coord is None:
+                #    raise ValueError(f"group_number, target_id, and target_coord must be provided for event mode")
+                cleaned_name = self.cleaned_name_style.format(obsid=obs['OBSID'], ext_no=obs['EXT_NO'], filt_filename = self.filt_filename)
+                img_path = paths.get_subpath(self.cleaned_folder_path, cleaned_name)
+                with fits.open(img_path, mode='readonly') as hdul:
+                    group_number = hdul[0].header['NSEGMENT']
+                    target_id = self.basic_info.target_id
+                    target_coord = (hdul[0].header['COLPIXEL'], hdul[0].header['ROWPIXEL'])
+                    stack_method = hdul[0].header['STACKMTH']
+                    binby2 = hdul[0].header['BINNED']
+                get_scattering_sk_event(group_number=group_number, target_id=target_id, target_coord=target_coord,
+                                        data_dir=data_dir, obsid=obs['OBSID'], filt=self.filt_filename, temporary_dir=temporary_dir, archive_dir=archive_dir, 
+                                        stack_method=stack_method, binby2=binby2,
+                                        scattering_dir=None, delete_raw_like=True)
+            elif not temporary_exists:
+                raise ValueError(f"Invalid datatype: {self.datatype}")
+        if self.datatype == 'image':
+            for obs in self.observations:
+                sk_coord_py = DS9Converter.ds9_to_coords(obs['x_pixel'], obs['y_pixel'])
+                align_scattering(temporary_path=temporary_path, archive_dir=archive_dir, data_dir=data_dir, 
+                                 obsid=obs['OBSID'], filt=self.filt_filename, ext=obs['EXT_NO'], sk_coord=sk_coord_py, target_coord=self.target_coord_py)
+    
+    def select_region_loop(self, obsid_ext_list: Union[List[Tuple[str, str]], str] = 'all', default_size=30, step=2, vmax=10):
+        exclude_region_dict = {}
+        if obsid_ext_list == 'all':
+            obsid_ext_list = [(obs['OBSID'], obs['EXT_NO']) for obs in self.observations]
+        for obsid, ext in obsid_ext_list:
+            cleaned_name = self.cleaned_name_style.format(obsid=obsid, ext_no=ext, filt_filename=self.filt_filename)
+            cleaned_path = paths.get_subpath(self.cleaned_folder_path, cleaned_name)
+            target_region = select_region(cleaned_path, default_size=default_size, step=step, vmax=vmax)
+            exclude_region_dict[f"{obsid}_{ext}"] = target_region
+        return exclude_region_dict
+
+    def get_bkg_factor_loop(self, target_region = None, target_region_vmax = 10, exclude_region_dict = None, focus_region_dict = None, shrink_pixels = 30, if_sigma_clip = None, plot_save = True, plot_show = False):
+        # get target_region
+        if target_region is None:
+            first_cleaned_path = paths.get_subpath(self.cleaned_folder_path, self.cleaned_name_style.format(obsid=self.observations[0]['OBSID'], ext_no=self.observations[0]['EXT_NO'], filt_filename=self.filt_filename))
+            target_region = select_region(first_cleaned_path, default_size=50, step=5, vmax=target_region_vmax)
+        #if not np.any(target_region):
+        #    Warning("Target region is empty!")
+        for obs in self.observations:
+            label = f"{obs['OBSID']}_{obs['EXT_NO']}"
+            obs_cleaning = DataCleaningIndividual(obs, self.basic_info, self.target_coord_py,
+                                                  verbose = self.verbose,
+                                                  **self.path_dict
+                                                  )
+            exclude_region = exclude_region_dict.get(label, None) if exclude_region_dict else None
+            focus_region = focus_region_dict.get(label, None) if focus_region_dict else None
+            # loop to get bkg map (also for different ext)
+            obs_cleaning.get_bkg_factor(target_region = target_region, exclude_region = exclude_region, focus_region = focus_region, 
+                                        shrink_pixels = shrink_pixels, if_sigma_clip = if_sigma_clip, plot_save = plot_save, plot_show = plot_show)
+
     def stack(self, observations: Union[pd.DataFrame, List[Dict[str, Any]],None]= None, 
-                     stack_method: str = 'sum', compressed: bool = False, comment = None, image_type: str = 'cleaned'):
+                     stack_method: str = 'sum', compressed: bool = False, comment = None, image_type: str = 'cleaned',
+                     remove_bkg_by_scattering_map: bool = False, scattering_map_dir: Optional[Union[str, Path]] = None):
+        """
+        remove_bkg_by_scattering_map: whether to remove background by scattering map. Use FACT_A now.
+        """
         if observations is None:
             observations = self.observations
             filt_filename = self.filt_filename
@@ -865,6 +1035,17 @@ class DataCleaningMultiple:
                     coi_loss_map = get_coi_loss_map(cr, scale=self.scale, func = 'poole2008')
                     img = img*coi_loss_map
                 err = hdul['ERROR'].data.copy()
+                if remove_bkg_by_scattering_map:
+                    if scattering_map_dir is None:
+                        scattering_map_dir = paths.get_subpath(self.basic_info.project_path, 'scattering_map')
+                    scattering_map_path = paths.get_subpath(scattering_map_dir, f'{obs["OBSID"]}_{obs["EXT_NO"]}_{self.filt_filename}.fits')
+                    if not os.path.exists(scattering_map_path):
+                        raise FileNotFoundError(f"Scattering map not found: {scattering_map_path}")
+                    scattering_map = fits.getdata(scattering_map_path, 'BKG')
+                    factor_a = fits.getheader(scattering_map_path, 0)['FACT_A']
+                    factor_b = fits.getheader(scattering_map_path, 0)['FACT_B']
+                    img = img - (scattering_map * factor_a + factor_b)
+                    err = np.sqrt(err**2 + (scattering_map * factor_a + factor_b))
                 img[exp/np.max(exp) < 0.99] = np.nan
                 err[exp/np.max(exp) < 0.99] = np.nan
                 img_list.append(img)
@@ -886,9 +1067,11 @@ class DataCleaningMultiple:
         else:
             stacked_mask = (np.sum(mask_list, axis=0) > 0).astype(int)
             image_dict = {'IMAGE': stacked_img, 'ERROR': stacked_err, 'EXPOSURE':stacked_exp, 'STARMASK': stacked_mask}
-        if comment is None:
+        if comment is None and not remove_bkg_by_scattering_map:
             comment = 'No background subtraction'
-        other_header_info={'EPOCH': self.epoch_name, 'DATATYPE': datatype, 'STACKMET': stack_method}
+        elif remove_bkg_by_scattering_map:
+            comment = 'Background subtracted by scattering map'
+        other_header_info={'EPOCH': self.epoch_name, 'DATATYPE': datatype, 'STACKMET': stack_method, 'BKGSUB': remove_bkg_by_scattering_map}
         save_stacked_fits(images_to_save=image_dict, save_path=self.stacked_path, obs_list = observations, target_position=self.target_coord_py,
                           script_name='pipeline_basic.py', compressed=compressed, comment=comment, other_header_info=other_header_info, stack_unit = self.stack_unit)
         if self.verbose:

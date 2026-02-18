@@ -195,6 +195,56 @@ def save_single_evt_image(evt_file_path: Union[str, pathlib.Path],
     hdul.writeto(output_path, overwrite=True)
     print(f'Saved to {output_path}')
 
+def get_segment_exp(time_list: list, num_segments: int = None, time_endpoints: list = None,total_exposure: float = None):
+    """
+    Get the exposure time / event number for each segment
+    Ratio of the event number relative to the total event number can be derived from the results.
+    """
+    if num_segments is None and time_endpoints is not None:
+        num_segments = len(time_endpoints) - 1
+    event_nums_total = len(time_list)
+    segment_exp_times = []
+    event_nums = []
+    for i in range(num_segments):
+        # 过滤事件
+        mask = (time_list >= time_endpoints[i]) & (time_list < time_endpoints[i+1])
+        event_time = time_list[mask]
+        event_nums.append(len(event_time))
+        exp_time_ratio = len(event_time)/event_nums_total
+        if total_exposure is not None:
+            segment_exp_times.append(exp_time_ratio*total_exposure)
+    if total_exposure is None:
+        return event_nums
+    else:
+        return segment_exp_times, event_nums
+
+
+def for_sk_like(evt_file_path: Union[str, pathlib.Path], sk_file_path: Union[str, pathlib.Path],
+                group_number: int, target_id: Union[str, int], binby2: bool = True):
+    # 读取文件和exp
+    time_list, _, _, header = read_event_file(evt_file_path)
+    #total_exposure = header['EXPOSURE']
+        
+    # 创建WCS
+    hdr_sk = fits.getheader(sk_file_path, ext=1)
+    wcs = WCS(hdr_sk)
+
+    # 分割时间
+    time_utc, time_raw = slice_time(header, group_number)
+        
+    # 获取彗星位置
+    target_col_list, target_row_list = get_target_positions(time_utc, target_id, wcs)
+    if binby2:
+        target_col_list = [col // 2 for col in target_col_list]
+        target_row_list = [row // 2 for row in target_row_list]
+
+    # 获取每一段的曝光时间
+    event_nums = get_segment_exp(time_list, num_segments=group_number, time_endpoints=time_raw, total_exposure=None)
+    total_event_num = len(time_list)
+    event_ratio = [num/total_event_num for num in event_nums]
+
+    return target_col_list, target_row_list, event_ratio
+
 def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
                            exp_file_path: Union[str, pathlib.Path],
                            target_coord: Tuple[float, float],
@@ -217,8 +267,7 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
         叠加方法：'median' (用count_rate) 或 'sum' (用count)
     target_coord : tuple, optional
         col, row
-        
-    Returns
+            Returns
     -------
     tuple
         (stacked_image, stacked_err, stacked_exp, processing_info) - 叠加后的图像、误差图、曝光图和处理信息
@@ -343,6 +392,20 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
 def bin_evt_image(image, image_err=None, image_exp=None, processing_info=None):
     """
     对事件图像进行2x2 binning
+    processing_info = {
+        'num_segments': num_segments,
+        'stack_method': stack_method,
+        'total_exposure': total_exposure,
+        'segment_exposures': total_exposure/group_number,
+        'target_coord': target_coord,
+        'binby2': binby2,
+        'platescale': platescale,
+        'event_nums': event_nums,
+        'event_nums_ratios': event_nums_ratios,
+        'segment_exp_times': segment_exp_times,
+        'segment_elapsed_time':segment_elapsed_time,
+        'wcs_in_result': wcs_in_result
+    }
     """
     if image_err is None:
         binned_image = bin_image(image, block_size=2, method='sum')

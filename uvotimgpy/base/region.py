@@ -4,12 +4,16 @@ from pathlib import Path
 from photutils.aperture import ApertureMask, BoundingBox, Aperture
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
+from matplotlib.transforms import Affine2D
+from matplotlib.widgets import Slider
+from astropy.coordinates import Angle
 from regions import PixelRegion, PixCoord, CirclePixelRegion, RectanglePixelRegion, CircleAnnulusPixelRegion
 from functools import reduce
 from operator import or_, and_
 from scipy.ndimage import median_filter, label, find_objects
 from scipy.ndimage import binary_dilation, binary_erosion
 from astropy import units as u
+from astropy.io import fits
 
 class RegionConverter:
     @staticmethod
@@ -160,18 +164,22 @@ class RegionCombiner:
         if not masks:
             raise TypeError("掩膜列表不能为空")
             
-        first_type = type(masks[0])
-        if not all(isinstance(mask, first_type) for mask in masks):
-            raise TypeError("掩膜列表中的元素类型必须一致")
+        all_arrays = all(isinstance(m, np.ndarray) for m in masks)
+        all_regions = all(isinstance(m, PixelRegion) for m in masks)
             
-        if isinstance(masks[0], np.ndarray):
-            if not all(mask.dtype == bool for mask in masks):
+        if all_arrays:
+            if not all(m.dtype == bool for m in masks):
                 raise TypeError("NumPy数组掩膜必须是布尔类型")
-            return 'array'
-        elif isinstance(masks[0], PixelRegion):
-            return 'region'
-        else:
-            raise TypeError("不支持的掩膜类型")
+            return "array"
+
+        if all_regions:
+            return "region"
+
+        # 既不是全 array，也不是全 region，说明混用了两类或出现不支持类型
+        bad_types = {type(m).__name__ for m in masks if not isinstance(m, (np.ndarray, PixelRegion))}
+        if bad_types:
+            raise TypeError(f"不支持的掩膜类型: {sorted(bad_types)}")
+        raise TypeError("掩膜列表中的元素类型必须一致（必须全为 NumPy 数组或全为 PixelRegion）")
     
     @staticmethod
     def _check_array_shapes(masks: List[np.ndarray]) -> None:
@@ -267,242 +275,1113 @@ def mask_image(image: np.ndarray,
         return masked_image
     return image
 
+#class RegionSelector:
+#    def __init__(self, image_data, vmin=0, vmax=None, 
+#                 row_range=None, col_range=None, shape='circle', region_plot=None, default_size=5, step=0.5):
+#        """
+#        Parameters
+#        ----------
+#        image_data : numpy.ndarray
+#            输入图像数据
+#        vmin, vmax : float, optional
+#            显示范围
+#        row_range : tuple, optional
+#            显示的行范围，格式为(start, end)
+#        col_range : tuple, optional
+#            显示的列范围，格式为(start, end)
+#        shape : str, optional
+#            选择区域的形状，'circle' 或 'square'
+#        """
+#        self.image = image_data
+#        
+#        self.fig, self.ax = plt.subplots()
+#        self.ax.set_adjustable('box')
+#        self.ax.set_aspect('equal')
+#    
+#        self.regions = []
+#        self.patches = []
+#        self.current_size = default_size
+#        self.step = step
+#        self.shape = shape
+#        
+#        # Display parameters
+#        self.vmin = vmin
+#        self.vmax = vmax if vmax is not None else np.percentile(self.image, 99)
+#        
+#        # Display image and cursor
+#        self.display = self.ax.imshow(self.image, origin='lower', cmap='viridis',
+#                                    vmin=self.vmin, vmax=self.vmax,
+#                                    extent=[-0.5, self.image.shape[1]-0.5, -0.5, self.image.shape[0]-0.5])
+#        self.colorbar = plt.colorbar(self.display)
+#        if region_plot is not None:
+#            if isinstance(region_plot, list):
+#                for region_item in region_plot:
+#                    region_item.plot(ax=self.ax, color='orange', linestyle='--', lw=1, alpha=0.7)
+#            else:
+#                region_item = region_plot
+#                region_item.plot(ax=self.ax, color='orange', linestyle='--', lw=1, alpha=0.7)
+#        
+#        # Set display range if provided
+#        if row_range is not None:
+#            self.ax.set_ylim(row_range)
+#        if col_range is not None:
+#            self.ax.set_xlim(col_range)
+#        
+#        # Preview patch (initially invisible)
+#        center = (self.image.shape[1]/2, self.image.shape[0]/2)  # (col, row)
+#        if self.shape == 'circle':
+#            self.preview_patch = Circle(center, self.current_size, 
+#                                      fill=False, color='red', linestyle='--', 
+#                                      alpha=0, visible=False)
+#        else:
+#            size = self.current_size * 2
+#            self.preview_patch = Rectangle((center[0]-self.current_size, center[1]-self.current_size),
+#                                        size, size, fill=False, color='red', linestyle='--',
+#                                        alpha=0, visible=False)
+#        self.ax.add_patch(self.preview_patch)
+#        
+#        # Set title with instructions
+#        self.instruction_text = (
+#            'Left Click: Select Region  A: Toggle Circle/Square\n'
+#            'W/E: Decrease/Increase Size  V/B: Decrease/Increase Min  N/M: Decrease/Increase Max\n'
+#            'Z: Undo  R: Reset View  Enter: Finish\n'
+#            'Arrow Keys: Pan View  I/O: Zoom In/Out'
+#        )
+#        self.status_text = f'Current size: {self.current_size:.1f} | Shape: {self.shape}'
+#        self._update_title()
+#        
+#        # Connect events
+#        self.fig.canvas.mpl_connect('key_press_event', self._onkey)
+#        self.fig.canvas.mpl_connect('button_press_event', self._onclick)
+#
+#    def _update_title(self):
+#        """更新标题，包括说明和状态信息"""
+#        full_title = f'{self.instruction_text}\n{self.status_text}'
+#        self.ax.set_title(full_title)
+#        
+#    def _update_display(self):
+#        self.display.set_clim(vmin=self.vmin, vmax=self.vmax)
+#        self.fig.canvas.draw()
+#        
+#    def _show_preview(self):
+#        # Get current view center
+#        col_lim = self.ax.get_xlim()
+#        row_lim = self.ax.get_ylim()
+#        center_col = (col_lim[1] + col_lim[0]) / 2
+#        center_row = (row_lim[1] + row_lim[0]) / 2
+#        
+#        # Remove old preview patch
+#        self.preview_patch.remove()
+#        
+#        # Create new preview patch
+#        if self.shape == 'circle':
+#            self.preview_patch = Circle((center_col, center_row), self.current_size,
+#                                     fill=False, color='red', linestyle='--', alpha=0.8)
+#        else:
+#            size = self.current_size * 2
+#            self.preview_patch = Rectangle((center_col-self.current_size, center_row-self.current_size),
+#                                        size, size, fill=False, color='red', linestyle='--', alpha=0.8)
+#        
+#        self.ax.add_patch(self.preview_patch)
+#        self.fig.canvas.draw()
+#        
+#        # Flash effect
+#        try:
+#            plt.pause(0.1)
+#        except:
+#            pass
+#        self.preview_patch.set_alpha(0)
+#        self.fig.canvas.draw()
+#        
+#    def _onclick(self, event):
+#        if event.inaxes != self.ax:
+#            return
+#            
+#        if event.button == 1:  # Left click
+#            col, row = event.xdata, event.ydata
+#            center = PixCoord(x=col, y=row)
+#            
+#            if self.shape == 'circle':
+#                region = CirclePixelRegion(center=center, radius=self.current_size)
+#                patch = Circle((col, row), self.current_size, 
+#                             fill=False, color='red', alpha=0.5)
+#            else:
+#                # 创建方形区域
+#                region = RectanglePixelRegion(
+#                    center=center,
+#                    width=self.current_size * 2,
+#                    height=self.current_size * 2
+#                )
+#                patch = Rectangle((col-self.current_size, row-self.current_size),
+#                                self.current_size * 2, self.current_size * 2,
+#                                fill=False, color='red', alpha=0.5)
+#            
+#            self.regions.append(region)
+#            self.patches.append(patch)
+#            self.ax.add_patch(patch)
+#            self.fig.canvas.draw()
+#            
+#    def _onkey(self, event):
+#        if event.key == 'z':  # Undo
+#            if self.patches:
+#                self.patches[-1].remove()
+#                self.patches.pop()
+#                self.regions.pop()
+#                self.fig.canvas.draw()
+#                
+#        elif event.key == 'a':  # Toggle shape (changed from 's' to 'a')
+#            self.shape = 'square' if self.shape == 'circle' else 'circle'
+#            self.status_text = f'Current size: {self.current_size:.1f} | Shape: {self.shape}'
+#            self._update_title()
+#            self._show_preview()  # 添加形状切换的视觉提示
+#                
+#        elif event.key == 'enter':  # Finish
+#            plt.close()
+#            
+#        elif event.key == 'r':  # Reset view
+#            self.ax.set_xlim(0, self.image.shape[1])
+#            self.ax.set_ylim(0, self.image.shape[0])
+#            self.fig.canvas.draw()
+#            
+#        elif event.key in ['left', 'right', 'up', 'down']:  # Pan view
+#            curr_col_lim = self.ax.get_xlim()
+#            curr_row_lim = self.ax.get_ylim()
+#            
+#            col_width = abs(curr_col_lim[1] - curr_col_lim[0])
+#            row_height = abs(curr_row_lim[1] - curr_row_lim[0])
+#
+#            col_move = col_width * 0.1
+#            row_move = row_height * 0.1
+#            
+#            if event.key == 'left':
+#                new_col_lim = (curr_col_lim[0] + col_move, curr_col_lim[1] + col_move)
+#                self.ax.set_xlim(new_col_lim)
+#            elif event.key == 'right':
+#                new_col_lim = (curr_col_lim[0] - col_move, curr_col_lim[1] - col_move)
+#                self.ax.set_xlim(new_col_lim)
+#            elif event.key == 'up':
+#                new_row_lim = (curr_row_lim[0] - row_move, curr_row_lim[1] - row_move)
+#                self.ax.set_ylim(new_row_lim)
+#            elif event.key == 'down':
+#                new_row_lim = (curr_row_lim[0] + row_move, curr_row_lim[1] + row_move)
+#                self.ax.set_ylim(new_row_lim)
+#
+#            self.fig.canvas.draw()
+#            
+#        elif event.key in ['i', 'o']:  # Zoom
+#            col_lim = self.ax.get_xlim()
+#            row_lim = self.ax.get_ylim()
+#            center_col = (col_lim[1] + col_lim[0]) / 2
+#            center_row = (row_lim[1] + row_lim[0]) / 2
+#            width = col_lim[1] - col_lim[0]
+#            height = row_lim[1] - row_lim[0]
+#            
+#            if event.key == 'i':  # Zoom in
+#                factor = 0.8
+#            else:  # Zoom out
+#                factor = 1.25
+#                
+#            self.ax.set_xlim(center_col - width/2 * factor, 
+#                            center_col + width/2 * factor)
+#            self.ax.set_ylim(center_row - height/2 * factor, 
+#                            center_row + height/2 * factor)
+#            self.fig.canvas.draw()
+#            
+#        elif event.key in ['v', 'b', 'n', 'm']:  # Adjust display range
+#            if event.key == 'v':
+#                self.vmin -= self.vmax * 0.05
+#            elif event.key == 'b':
+#                self.vmin = min(self.vmax, self.vmin + self.vmax * 0.05)
+#            elif event.key == 'n':
+#                self.vmax = max(self.vmin, self.vmax - self.vmax * 0.05)
+#            elif event.key == 'm':
+#                self.vmax += self.vmax * 0.05
+#            self._update_display()
+#            
+#        elif event.key in ['w', 'e']:  # Adjust size
+#            if event.key == 'w':
+#                self.current_size = max(1, self.current_size - self.step)
+#            elif event.key == 'e':
+#                self.current_size += self.step
+#            #print(f"Current size: {self.current_size:.1f}")
+#            self.status_text = f'Current size: {self.current_size:.1f} | Shape: {self.shape}'
+#            self._update_title()
+#            self._show_preview()
+#            
+#    def get_regions(self):
+#        plt.show()
+#        return self.regions
+
+
+#class RegionSelector:
+#    def __init__(self, image_data, vmin=0, vmax=None,
+#                 row_range=None, col_range=None, shape='circle',
+#                 region_plot=None, default_size=5, step=0.5):
+#
+#        self.image = image_data
+#
+#        # --- layout: leave space for widgets ---
+#        self.fig, self.ax = plt.subplots()
+#        self.fig.subplots_adjust(bottom=0.23)
+#
+#        self.ax.set_adjustable('box')
+#        self.ax.set_aspect('equal')
+#
+#        self.regions = []
+#        self.patches = []
+#        self.current_size = default_size   # half-width (kept as-is for w/e)
+#        self.step = step
+#        self.shape = shape
+#
+#        # square-specific parameters (NEW)
+#        self.square_angle_deg = 0.0
+#        # height in pixels; default uses current "square" size (2*current_size)
+#        self.square_height = float(self.current_size * 2)
+#
+#        # Display parameters
+#        self.vmin = vmin
+#        self.vmax = vmax if vmax is not None else np.percentile(self.image, 99)
+#
+#        self.display = self.ax.imshow(
+#            self.image, origin='lower', cmap='viridis',
+#            vmin=self.vmin, vmax=self.vmax,
+#            extent=[-0.5, self.image.shape[1]-0.5, -0.5, self.image.shape[0]-0.5]
+#        )
+#        self.colorbar = plt.colorbar(self.display)
+#
+#        if region_plot is not None:
+#            if isinstance(region_plot, list):
+#                for region_item in region_plot:
+#                    region_item.plot(ax=self.ax, color='orange', linestyle='--', lw=1, alpha=0.7)
+#            else:
+#                region_plot.plot(ax=self.ax, color='orange', linestyle='--', lw=1, alpha=0.7)
+#
+#        if row_range is not None:
+#            self.ax.set_ylim(row_range)
+#        if col_range is not None:
+#            self.ax.set_xlim(col_range)
+#
+#        # Preview patch (initially invisible)
+#        center = (self.image.shape[1]/2, self.image.shape[0]/2)  # (col, row)
+#        if self.shape == 'circle':
+#            self.preview_patch = Circle(center, self.current_size,
+#                                        fill=False, color='red', linestyle='--',
+#                                        alpha=0, visible=False)
+#        else:
+#            width = self.current_size * 2
+#            height = self.square_height
+#            self.preview_patch = self._make_rotated_rect_patch(
+#                center_col=center[0], center_row=center[1],
+#                width=width, height=height, angle_deg=self.square_angle_deg,
+#                color='red', linestyle='--', alpha=0, fill=False
+#            )
+#            self.preview_patch.set_visible(False)
+#
+#        self.ax.add_patch(self.preview_patch)
+#
+#        # instructions
+#        self.instruction_text = (
+#            'Left Click: Select Region  A: Toggle Circle/Square\n'
+#            'W/E: Decrease/Increase Size  V/B: Decrease/Increase Min  N/M: Decrease/Increase Max\n'
+#            'Z: Undo  R: Reset View  Enter: Finish\n'
+#            'Arrow Keys: Pan View  I/O: Zoom In/Out'
+#        )
+#        self._refresh_status_text()
+#        self._update_title()
+#
+#        # widgets (NEW)
+#        self._init_square_widgets()
+#        self._update_widget_visibility()
+#
+#        # events
+#        self.fig.canvas.mpl_connect('key_press_event', self._onkey)
+#        self.fig.canvas.mpl_connect('button_press_event', self._onclick)
+#
+#    # -------------------- NEW helpers --------------------
+#    def _refresh_status_text(self):
+#        if self.shape == 'square':
+#            self.status_text = (
+#                f'Current size(half-width): {self.current_size:.1f} | Shape: {self.shape} | '
+#                f'Angle: {self.square_angle_deg:.1f}° | Height: {self.square_height:.1f}'
+#            )
+#        else:
+#            self.status_text = f'Current size: {self.current_size:.1f} | Shape: {self.shape}'
+#
+#    def _make_rotated_rect_patch(self, center_col, center_row, width, height, angle_deg,
+#                                 color='red', linestyle='--', alpha=0.8, fill=False):
+#        # Create axis-aligned rectangle by lower-left, then rotate around center with a transform
+#        llx = center_col - width / 2
+#        lly = center_row - height / 2
+#        rect = Rectangle((llx, lly), width, height, fill=fill,
+#                         edgecolor=color, color=color, linestyle=linestyle, alpha=alpha)
+#
+#        trans = Affine2D().rotate_deg_around(center_col, center_row, angle_deg) + self.ax.transData
+#        rect.set_transform(trans)
+#        return rect
+#
+#    def _init_square_widgets(self):
+#        # --- Angle slider (0–360 deg, CCW) ---
+#        ax_angle = self.fig.add_axes([0.12, 0.12, 0.65, 0.03])
+#        self.slider_angle = Slider(
+#            ax_angle,
+#            'Angle (deg)',
+#            0.0,
+#            360.0,
+#            valinit=self.square_angle_deg
+#        )
+#    
+#        # --- Height slider (positive, px) ---
+#        # 上限给 image 的最大边长，足够用
+#        max_side = float(max(self.image.shape))
+#        ax_h = self.fig.add_axes([0.12, 0.06, 0.65, 0.03])
+#        self.slider_height = Slider(
+#            ax_h,
+#            'Height (px)',
+#            1.0,
+#            max_side,
+#            valinit=self.square_height
+#        )
+#    
+#        def on_angle_change(val):
+#            self.square_angle_deg = float(val) % 360.0
+#            if self.shape == 'square':
+#                self._refresh_status_text()
+#                self._update_title()
+#                self._show_preview()
+#    
+#        def on_height_change(val):
+#            self.square_height = float(val)
+#            if self.shape == 'square':
+#                self._refresh_status_text()
+#                self._update_title()
+#                self._show_preview()
+#    
+#        self.slider_angle.on_changed(on_angle_change)
+#        self.slider_height.on_changed(on_height_change)
+#
+#    def _update_widget_visibility(self):
+#        # show widgets only for square
+#        visible = (self.shape == 'square')
+#        self.slider_angle.ax.set_visible(visible)
+#        self.slider_height.ax.set_visible(visible)
+#        self.fig.canvas.draw_idle()
+#
+#    # -------------------- existing methods (modified minimally) --------------------
+#    def _update_title(self):
+#        full_title = f'{self.instruction_text}\n{self.status_text}'
+#        self.ax.set_title(full_title)
+#
+#    def _update_display(self):
+#        self.display.set_clim(vmin=self.vmin, vmax=self.vmax)
+#        self.fig.canvas.draw()
+#
+#    def _show_preview(self):
+#        col_lim = self.ax.get_xlim()
+#        row_lim = self.ax.get_ylim()
+#        center_col = (col_lim[1] + col_lim[0]) / 2
+#        center_row = (row_lim[1] + row_lim[0]) / 2
+#
+#        # remove old preview patch
+#        try:
+#            self.preview_patch.remove()
+#        except Exception:
+#            pass
+#
+#        if self.shape == 'circle':
+#            self.preview_patch = Circle((center_col, center_row), self.current_size,
+#                                        fill=False, color='red', linestyle='--', alpha=0.8)
+#        else:
+#            width = self.current_size * 2
+#            height = float(self.square_height)
+#            self.preview_patch = self._make_rotated_rect_patch(
+#                center_col=center_col, center_row=center_row,
+#                width=width, height=height, angle_deg=self.square_angle_deg,
+#                color='red', linestyle='--', alpha=0.8, fill=False
+#            )
+#
+#        self.ax.add_patch(self.preview_patch)
+#        self.fig.canvas.draw()
+#
+#        # flash effect (keep as your original)
+#        try:
+#            plt.pause(0.1)
+#        except Exception:
+#            pass
+#        self.preview_patch.set_alpha(0)
+#        self.fig.canvas.draw()
+#
+#    def _onclick(self, event):
+#        if event.inaxes != self.ax:
+#            return
+#
+#        if event.button == 1:
+#            col, row = event.xdata, event.ydata
+#            center = PixCoord(x=col, y=row)
+#
+#            if self.shape == 'circle':
+#                region = CirclePixelRegion(center=center, radius=self.current_size)
+#                patch = Circle((col, row), self.current_size,
+#                               fill=False, color='red', alpha=0.5)
+#            else:
+#                width = self.current_size * 2
+#                height = float(self.square_height)
+#                angle = Angle(self.square_angle_deg, unit='deg')  # regions expects Angle
+#
+#                region = RectanglePixelRegion(
+#                    center=center,
+#                    width=width,
+#                    height=height,
+#                    angle=angle
+#                )
+#                patch = self._make_rotated_rect_patch(
+#                    center_col=col, center_row=row,
+#                    width=width, height=height, angle_deg=self.square_angle_deg,
+#                    color='red', linestyle='-', alpha=0.5, fill=False
+#                )
+#
+#            self.regions.append(region)
+#            self.patches.append(patch)
+#            self.ax.add_patch(patch)
+#            self.fig.canvas.draw()
+#
+#    def _onkey(self, event):
+#        if event.key == 'z':
+#            if self.patches:
+#                self.patches[-1].remove()
+#                self.patches.pop()
+#                self.regions.pop()
+#                self.fig.canvas.draw()
+#
+#        elif event.key == 'a':
+#            self.shape = 'square' if self.shape == 'circle' else 'circle'
+#            # when switching to square, keep height default sensible if user never touched it
+#            if self.shape == 'square' and (self.square_height is None or self.square_height <= 0):
+#                self.square_height = float(self.current_size * 2)
+#
+#            self._refresh_status_text()
+#            self._update_title()
+#            self._update_widget_visibility()
+#            self._show_preview()
+#
+#        elif event.key == 'enter':
+#            plt.close()
+#
+#        elif event.key == 'r':
+#            self.ax.set_xlim(0, self.image.shape[1])
+#            self.ax.set_ylim(0, self.image.shape[0])
+#            self.fig.canvas.draw()
+#
+#        elif event.key in ['left', 'right', 'up', 'down']:
+#            curr_col_lim = self.ax.get_xlim()
+#            curr_row_lim = self.ax.get_ylim()
+#
+#            col_width = abs(curr_col_lim[1] - curr_col_lim[0])
+#            row_height = abs(curr_row_lim[1] - curr_row_lim[0])
+#
+#            col_move = col_width * 0.1
+#            row_move = row_height * 0.1
+#
+#            if event.key == 'left':
+#                self.ax.set_xlim(curr_col_lim[0] + col_move, curr_col_lim[1] + col_move)
+#            elif event.key == 'right':
+#                self.ax.set_xlim(curr_col_lim[0] - col_move, curr_col_lim[1] - col_move)
+#            elif event.key == 'up':
+#                self.ax.set_ylim(curr_row_lim[0] - row_move, curr_row_lim[1] - row_move)
+#            elif event.key == 'down':
+#                self.ax.set_ylim(curr_row_lim[0] + row_move, curr_row_lim[1] + row_move)
+#
+#            self.fig.canvas.draw()
+#
+#        elif event.key in ['i', 'o']:
+#            col_lim = self.ax.get_xlim()
+#            row_lim = self.ax.get_ylim()
+#            center_col = (col_lim[1] + col_lim[0]) / 2
+#            center_row = (row_lim[1] + row_lim[0]) / 2
+#            width = col_lim[1] - col_lim[0]
+#            height = row_lim[1] - row_lim[0]
+#
+#            factor = 0.8 if event.key == 'i' else 1.25
+#
+#            self.ax.set_xlim(center_col - width/2 * factor, center_col + width/2 * factor)
+#            self.ax.set_ylim(center_row - height/2 * factor, center_row + height/2 * factor)
+#            self.fig.canvas.draw()
+#
+#        elif event.key in ['v', 'b', 'n', 'm']:
+#            if event.key == 'v':
+#                self.vmin -= self.vmax * 0.05
+#            elif event.key == 'b':
+#                self.vmin = min(self.vmax, self.vmin + self.vmax * 0.05)
+#            elif event.key == 'n':
+#                self.vmax = max(self.vmin, self.vmax - self.vmax * 0.05)
+#            elif event.key == 'm':
+#                self.vmax += self.vmax * 0.05
+#            self._update_display()
+#
+#        elif event.key in ['w', 'e']:
+#            if event.key == 'w':
+#                self.current_size = max(1, self.current_size - self.step)
+#            elif event.key == 'e':
+#                self.current_size += self.step
+#
+#            # keep your original "status + preview" behavior
+#            self._refresh_status_text()
+#            self._update_title()
+#            self._show_preview()
+#
+#    def get_regions(self):
+#        plt.show()
+#        return self.regions
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+from matplotlib.patches import Circle, Rectangle
+from matplotlib.transforms import Affine2D
+from matplotlib.widgets import Slider
+
+from astropy.coordinates import Angle
+from regions import PixCoord, CirclePixelRegion, RectanglePixelRegion
+
+
 class RegionSelector:
-    def __init__(self, image_data, vmin=0, vmax=None, 
-                 row_range=None, col_range=None, shape='circle', region_plot=None, default_size=5, step=0.5):
-        """
-        Parameters
-        ----------
-        image_data : numpy.ndarray
-            输入图像数据
-        vmin, vmax : float, optional
-            显示范围
-        row_range : tuple, optional
-            显示的行范围，格式为(start, end)
-        col_range : tuple, optional
-            显示的列范围，格式为(start, end)
-        shape : str, optional
-            选择区域的形状，'circle' 或 'square'
-        """
+    """
+    - Left click: add region
+    - Mouse move: live preview follows cursor (no flashing)
+    - Optional blit for preview (use_blit=True) recommended for Qt/Tk GUI backends
+    - Arrow keys pan / i,o zoom are clamped to image bounds (fixes “stuck then jump+shrink” bug)
+    """
+
+    def __init__(
+        self,
+        image_data,
+        vmin=0,
+        vmax=None,
+        row_range=None,
+        col_range=None,
+        shape="circle",
+        region_plot=None,
+        default_size=5,
+        step=0.5,
+        use_blit=False,  # Notebook: often False; %matplotlib qt: True usually OK
+    ):
         self.image = image_data
-        
+
+        # --- layout ---
         self.fig, self.ax = plt.subplots()
-        self.ax.set_adjustable('box')
-        self.ax.set_aspect('equal')
-    
+        self.fig.subplots_adjust(bottom=0.23)
+        self.ax.set_adjustable("box")
+        self.ax.set_aspect("equal")
+
+        # state
         self.regions = []
         self.patches = []
-        self.current_size = default_size
-        self.step = step
+        self.current_size = float(default_size)
+        self.step = float(step)
         self.shape = shape
-        
-        # Display parameters
-        self.vmin = vmin
-        self.vmax = vmax if vmax is not None else np.percentile(self.image, 99)
-        
-        # Display image and cursor
-        self.display = self.ax.imshow(self.image, origin='lower', cmap='viridis',
-                                    vmin=self.vmin, vmax=self.vmax,
-                                    extent=[-0.5, self.image.shape[1]-0.5, -0.5, self.image.shape[0]-0.5])
+
+        # square params
+        self.square_angle_deg = 0.0
+        self.square_height = float(self.current_size * 2)
+
+        # display params
+        self.vmin = float(vmin)
+        self.vmax = float(vmax) if vmax is not None else float(np.percentile(self.image, 99))
+
+        # show image (NOTE: extent is [-0.5, n-0.5] so bounds must match everywhere)
+        self.display = self.ax.imshow(
+            self.image,
+            origin="lower",
+            cmap="viridis",
+            vmin=self.vmin,
+            vmax=self.vmax,
+            extent=[
+                -0.5,
+                self.image.shape[1] - 0.5,
+                -0.5,
+                self.image.shape[0] - 0.5,
+            ],
+        )
         self.colorbar = plt.colorbar(self.display)
+
+        # ---- bounds consistent with extent + disable autoscale (important) ----
+        self._xmin = -0.5
+        self._xmax = self.image.shape[1] - 0.5
+        self._ymin = -0.5
+        self._ymax = self.image.shape[0] - 0.5
+        self.ax.set_autoscale_on(False)
+        # ---------------------------------------------------------------------
+
+        # optional overlay regions
         if region_plot is not None:
             if isinstance(region_plot, list):
                 for region_item in region_plot:
-                    region_item.plot(ax=self.ax, color='orange', linestyle='--', lw=1, alpha=0.7)
+                    region_item.plot(ax=self.ax, color="orange", linestyle="--", lw=1, alpha=0.7)
             else:
-                region_item = region_plot
-                region_item.plot(ax=self.ax, color='orange', linestyle='--', lw=1, alpha=0.7)
-        
-        # Set display range if provided
+                region_plot.plot(ax=self.ax, color="orange", linestyle="--", lw=1, alpha=0.7)
+
+        # initial view
         if row_range is not None:
             self.ax.set_ylim(row_range)
         if col_range is not None:
             self.ax.set_xlim(col_range)
-        
-        # Preview patch (initially invisible)
-        center = (self.image.shape[1]/2, self.image.shape[0]/2)  # (col, row)
-        if self.shape == 'circle':
-            self.preview_patch = Circle(center, self.current_size, 
-                                      fill=False, color='red', linestyle='--', 
-                                      alpha=0, visible=False)
+
+        # ---- preview patch (created once; updated on mouse move) ----
+        self.preview_color = "red"
+        self.preview_alpha = 0.8
+        self.preview_linestyle = "--"
+
+        center = (self.image.shape[1] / 2, self.image.shape[0] / 2)
+        if self.shape == "circle":
+            self.preview_patch = Circle(
+                center,
+                self.current_size,
+                fill=False,
+                color=self.preview_color,
+                linestyle=self.preview_linestyle,
+                alpha=self.preview_alpha,
+                visible=False,
+            )
         else:
-            size = self.current_size * 2
-            self.preview_patch = Rectangle((center[0]-self.current_size, center[1]-self.current_size),
-                                        size, size, fill=False, color='red', linestyle='--',
-                                        alpha=0, visible=False)
+            width = self.current_size * 2
+            height = float(self.square_height)
+            self.preview_patch = self._make_rotated_rect_patch(
+                center_col=center[0],
+                center_row=center[1],
+                width=width,
+                height=height,
+                angle_deg=self.square_angle_deg,
+                color=self.preview_color,
+                linestyle=self.preview_linestyle,
+                alpha=self.preview_alpha,
+                fill=False,
+            )
+            self.preview_patch.set_visible(False)
+
         self.ax.add_patch(self.preview_patch)
-        
-        # Set title with instructions
+
+        # ---- live preview + optional blit ----
+        self._last_mouse = None
+        self._use_blit = bool(use_blit)
+        self._background = None  # for blit
+        # -------------------------------------
+
+        # instructions
         self.instruction_text = (
-            'Left Click: Select Region  A: Toggle Circle/Square\n'
-            'W/E: Decrease/Increase Size  V/B: Decrease/Increase Min  N/M: Decrease/Increase Max\n'
-            'Z: Undo  R: Reset View  Enter: Finish\n'
-            'Arrow Keys: Pan View  I/O: Zoom In/Out'
+            "Left Click: Select Region  A: Toggle Circle/Square\n"
+            "W/E: Decrease/Increase Size  V/B: Decrease/Increase Min  N/M: Decrease/Increase Max\n"
+            "Z: Undo  R: Reset View  Enter: Finish\n"
+            "Arrow Keys: Pan View  I/O: Zoom In/Out"
         )
-        self.status_text = f'Current size: {self.current_size:.1f} | Shape: {self.shape}'
+        self._refresh_status_text()
         self._update_title()
-        
-        # Connect events
-        self.fig.canvas.mpl_connect('key_press_event', self._onkey)
-        self.fig.canvas.mpl_connect('button_press_event', self._onclick)
+
+        # widgets
+        self._init_square_widgets()
+        self._update_widget_visibility()
+
+        # events
+        self.fig.canvas.mpl_connect("key_press_event", self._onkey)
+        self.fig.canvas.mpl_connect("button_press_event", self._onclick)
+        self.fig.canvas.mpl_connect("motion_notify_event", self._onmove)
+
+    # -------------------- UI text --------------------
+    def _refresh_status_text(self):
+        if self.shape == "square":
+            self.status_text = (
+                f"Current size(half-width): {self.current_size:.1f} | Shape: {self.shape} | "
+                f"Angle: {self.square_angle_deg:.1f}° | Height: {self.square_height:.1f}"
+            )
+        else:
+            self.status_text = f"Current size: {self.current_size:.1f} | Shape: {self.shape}"
 
     def _update_title(self):
-        """更新标题，包括说明和状态信息"""
-        full_title = f'{self.instruction_text}\n{self.status_text}'
-        self.ax.set_title(full_title)
-        
+        self.ax.set_title(f"{self.instruction_text}\n{self.status_text}")
+
+    # -------------------- drawing utils --------------------
+    def _make_rotated_rect_patch(
+        self,
+        center_col,
+        center_row,
+        width,
+        height,
+        angle_deg,
+        color="red",
+        linestyle="--",
+        alpha=0.8,
+        fill=False,
+    ):
+        llx = center_col - width / 2
+        lly = center_row - height / 2
+        rect = Rectangle(
+            (llx, lly),
+            width,
+            height,
+            fill=fill,
+            edgecolor=color,
+            color=color,
+            linestyle=linestyle,
+            alpha=alpha,
+        )
+        trans = Affine2D().rotate_deg_around(center_col, center_row, angle_deg) + self.ax.transData
+        rect.set_transform(trans)
+        return rect
+
     def _update_display(self):
         self.display.set_clim(vmin=self.vmin, vmax=self.vmax)
-        self.fig.canvas.draw()
-        
-    def _show_preview(self):
-        # Get current view center
-        col_lim = self.ax.get_xlim()
-        row_lim = self.ax.get_ylim()
-        center_col = (col_lim[1] + col_lim[0]) / 2
-        center_row = (row_lim[1] + row_lim[0]) / 2
-        
-        # Remove old preview patch
-        self.preview_patch.remove()
-        
-        # Create new preview patch
-        if self.shape == 'circle':
-            self.preview_patch = Circle((center_col, center_row), self.current_size,
-                                     fill=False, color='red', linestyle='--', alpha=0.8)
+        self._background = None
+        self.fig.canvas.draw_idle()
+
+    # -------------------- widgets --------------------
+    def _init_square_widgets(self):
+        ax_angle = self.fig.add_axes([0.12, 0.12, 0.65, 0.03])
+        self.slider_angle = Slider(ax_angle, "Angle (deg)", 0.0, 360.0, valinit=self.square_angle_deg)
+
+        max_side = float(max(self.image.shape))
+        ax_h = self.fig.add_axes([0.12, 0.06, 0.65, 0.03])
+        self.slider_height = Slider(ax_h, "Height (px)", 1.0, max_side, valinit=self.square_height)
+
+        def on_angle_change(val):
+            self.square_angle_deg = float(val) % 360.0
+            if self.shape == "square":
+                self._refresh_status_text()
+                self._update_title()
+                self._background = None
+                self._refresh_preview_now()
+
+        def on_height_change(val):
+            self.square_height = float(val)
+            if self.shape == "square":
+                self._refresh_status_text()
+                self._update_title()
+                self._background = None
+                self._refresh_preview_now()
+
+        self.slider_angle.on_changed(on_angle_change)
+        self.slider_height.on_changed(on_height_change)
+
+    def _update_widget_visibility(self):
+        visible = self.shape == "square"
+        self.slider_angle.ax.set_visible(visible)
+        self.slider_height.ax.set_visible(visible)
+        self.fig.canvas.draw_idle()
+
+    # -------------------- clamp view (fix jump/shrink bug) --------------------
+    def _clamp_view(self, x0, x1, y0, y1):
+        if x0 > x1:
+            x0, x1 = x1, x0
+        if y0 > y1:
+            y0, y1 = y1, y0
+
+        w = x1 - x0
+        h = y1 - y0
+        full_w = self._xmax - self._xmin
+        full_h = self._ymax - self._ymin
+
+        # X
+        if w >= full_w:
+            x0, x1 = self._xmin, self._xmax
         else:
-            size = self.current_size * 2
-            self.preview_patch = Rectangle((center_col-self.current_size, center_row-self.current_size),
-                                        size, size, fill=False, color='red', linestyle='--', alpha=0.8)
-        
-        self.ax.add_patch(self.preview_patch)
-        self.fig.canvas.draw()
-        
-        # Flash effect
+            if x0 < self._xmin:
+                x1 += (self._xmin - x0)
+                x0 = self._xmin
+            if x1 > self._xmax:
+                x0 -= (x1 - self._xmax)
+                x1 = self._xmax
+
+        # Y
+        if h >= full_h:
+            y0, y1 = self._ymin, self._ymax
+        else:
+            if y0 < self._ymin:
+                y1 += (self._ymin - y0)
+                y0 = self._ymin
+            if y1 > self._ymax:
+                y0 -= (y1 - self._ymax)
+                y1 = self._ymax
+
+        return x0, x1, y0, y1
+
+    # -------------------- live preview (no flashing) --------------------
+    def _show_preview(self):
+        self.preview_patch.set_visible(True)
+        self.preview_patch.set_alpha(self.preview_alpha)
+
+    def _ensure_preview_patch_type(self, col=None, row=None):
+        if col is None or row is None:
+            x0, x1 = self.ax.get_xlim()
+            y0, y1 = self.ax.get_ylim()
+            col = (x0 + x1) / 2
+            row = (y0 + y1) / 2
+
+        want_circle = (self.shape == "circle")
+        is_circle = isinstance(self.preview_patch, Circle)
+        is_rect = isinstance(self.preview_patch, Rectangle)
+
+        if (want_circle and is_circle) or ((not want_circle) and is_rect):
+            return
+
         try:
-            plt.pause(0.1)
-        except:
+            self.preview_patch.remove()
+        except Exception:
             pass
-        self.preview_patch.set_alpha(0)
-        self.fig.canvas.draw()
-        
+
+        if want_circle:
+            self.preview_patch = Circle(
+                (col, row),
+                self.current_size,
+                fill=False,
+                color=self.preview_color,
+                linestyle=self.preview_linestyle,
+                alpha=self.preview_alpha,
+                visible=True,
+            )
+        else:
+            width = self.current_size * 2
+            height = float(self.square_height)
+            llx = col - width / 2
+            lly = row - height / 2
+            rect = Rectangle(
+                (llx, lly),
+                width,
+                height,
+                fill=False,
+                edgecolor=self.preview_color,
+                color=self.preview_color,
+                linestyle=self.preview_linestyle,
+                alpha=self.preview_alpha,
+                visible=True,
+            )
+            rect.set_transform(
+                Affine2D().rotate_deg_around(col, row, self.square_angle_deg) + self.ax.transData
+            )
+            self.preview_patch = rect
+
+        self.ax.add_patch(self.preview_patch)
+        self._background = None
+
+    def _update_preview_at(self, col, row):
+        if self.shape == "circle":
+            self.preview_patch.center = (col, row)
+            self.preview_patch.radius = self.current_size
+        else:
+            width = self.current_size * 2
+            height = float(self.square_height)
+            llx = col - width / 2
+            lly = row - height / 2
+
+            self.preview_patch.set_xy((llx, lly))
+            self.preview_patch.set_width(width)
+            self.preview_patch.set_height(height)
+            self.preview_patch.set_transform(
+                Affine2D().rotate_deg_around(col, row, self.square_angle_deg) + self.ax.transData
+            )
+
+    def _redraw_preview(self):
+        if not self._use_blit:
+            self.fig.canvas.draw_idle()
+            return
+
+        canvas = self.fig.canvas
+        if self._background is None:
+            canvas.draw()
+            self._background = canvas.copy_from_bbox(self.ax.bbox)
+
+        canvas.restore_region(self._background)
+        self.ax.draw_artist(self.preview_patch)
+        canvas.blit(self.ax.bbox)
+
+    def _refresh_preview_now(self):
+        # called after key/slider changes even if mouse is not moved
+        if self._last_mouse is None:
+            self._ensure_preview_patch_type()
+            self._show_preview()
+            self._redraw_preview()
+            return
+
+        col, row = self._last_mouse
+        self._ensure_preview_patch_type(col, row)
+        self._show_preview()
+        self._update_preview_at(col, row)
+        self._redraw_preview()
+
+    # -------------------- events --------------------
+    def _onmove(self, event):
+        if event.inaxes != self.ax:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+
+        col, row = float(event.xdata), float(event.ydata)
+        self._last_mouse = (col, row)
+
+        self._ensure_preview_patch_type(col, row)
+        self._show_preview()
+        self._update_preview_at(col, row)
+        self._redraw_preview()
+
     def _onclick(self, event):
         if event.inaxes != self.ax:
             return
-            
-        if event.button == 1:  # Left click
-            col, row = event.xdata, event.ydata
-            center = PixCoord(x=col, y=row)
-            
-            if self.shape == 'circle':
-                region = CirclePixelRegion(center=center, radius=self.current_size)
-                patch = Circle((col, row), self.current_size, 
-                             fill=False, color='red', alpha=0.5)
-            else:
-                # 创建方形区域
-                region = RectanglePixelRegion(
-                    center=center,
-                    width=self.current_size * 2,
-                    height=self.current_size * 2
-                )
-                patch = Rectangle((col-self.current_size, row-self.current_size),
-                                self.current_size * 2, self.current_size * 2,
-                                fill=False, color='red', alpha=0.5)
-            
-            self.regions.append(region)
-            self.patches.append(patch)
-            self.ax.add_patch(patch)
-            self.fig.canvas.draw()
-            
+        if event.button != 1:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+
+        col, row = float(event.xdata), float(event.ydata)
+        center = PixCoord(x=col, y=row)
+
+        if self.shape == "circle":
+            region = CirclePixelRegion(center=center, radius=self.current_size)
+            patch = Circle((col, row), self.current_size, fill=False, color="red", alpha=0.5)
+        else:
+            width = self.current_size * 2
+            height = float(self.square_height)
+            angle = Angle(self.square_angle_deg, unit="deg")
+
+            region = RectanglePixelRegion(center=center, width=width, height=height, angle=angle)
+            patch = self._make_rotated_rect_patch(
+                center_col=col,
+                center_row=row,
+                width=width,
+                height=height,
+                angle_deg=self.square_angle_deg,
+                color="red",
+                linestyle="-",
+                alpha=0.5,
+                fill=False,
+            )
+
+        self.regions.append(region)
+        self.patches.append(patch)
+        self.ax.add_patch(patch)
+
+        self._background = None
+        self.fig.canvas.draw_idle()
+
     def _onkey(self, event):
-        if event.key == 'z':  # Undo
+        if event.key == "z":
             if self.patches:
                 self.patches[-1].remove()
                 self.patches.pop()
                 self.regions.pop()
-                self.fig.canvas.draw()
-                
-        elif event.key == 'a':  # Toggle shape (changed from 's' to 'a')
-            self.shape = 'square' if self.shape == 'circle' else 'circle'
-            self.status_text = f'Current size: {self.current_size:.1f} | Shape: {self.shape}'
+                self._background = None
+                self.fig.canvas.draw_idle()
+
+        elif event.key == "a":
+            self.shape = "square" if self.shape == "circle" else "circle"
+            if self.shape == "square" and (self.square_height is None or self.square_height <= 0):
+                self.square_height = float(self.current_size * 2)
+
+            self._refresh_status_text()
             self._update_title()
-            self._show_preview()  # 添加形状切换的视觉提示
-                
-        elif event.key == 'enter':  # Finish
+            self._update_widget_visibility()
+            self._background = None
+            self._refresh_preview_now()
+
+        elif event.key == "enter":
             plt.close()
-            
-        elif event.key == 'r':  # Reset view
-            self.ax.set_xlim(0, self.image.shape[1])
-            self.ax.set_ylim(0, self.image.shape[0])
-            self.fig.canvas.draw()
-            
-        elif event.key in ['left', 'right', 'up', 'down']:  # Pan view
-            curr_col_lim = self.ax.get_xlim()
-            curr_row_lim = self.ax.get_ylim()
-            
-            col_width = abs(curr_col_lim[1] - curr_col_lim[0])
-            row_height = abs(curr_row_lim[1] - curr_row_lim[0])
 
-            col_move = col_width * 0.1
-            row_move = row_height * 0.1
-            
-            if event.key == 'left':
-                new_col_lim = (curr_col_lim[0] + col_move, curr_col_lim[1] + col_move)
-                self.ax.set_xlim(new_col_lim)
-            elif event.key == 'right':
-                new_col_lim = (curr_col_lim[0] - col_move, curr_col_lim[1] - col_move)
-                self.ax.set_xlim(new_col_lim)
-            elif event.key == 'up':
-                new_row_lim = (curr_row_lim[0] - row_move, curr_row_lim[1] - row_move)
-                self.ax.set_ylim(new_row_lim)
-            elif event.key == 'down':
-                new_row_lim = (curr_row_lim[0] + row_move, curr_row_lim[1] + row_move)
-                self.ax.set_ylim(new_row_lim)
+        elif event.key == "r":
+            self.ax.set_xlim(self._xmin, self._xmax)
+            self.ax.set_ylim(self._ymin, self._ymax)
+            self._background = None
+            self.fig.canvas.draw_idle()
 
-            self.fig.canvas.draw()
-            
-        elif event.key in ['i', 'o']:  # Zoom
-            col_lim = self.ax.get_xlim()
-            row_lim = self.ax.get_ylim()
-            center_col = (col_lim[1] + col_lim[0]) / 2
-            center_row = (row_lim[1] + row_lim[0]) / 2
-            width = col_lim[1] - col_lim[0]
-            height = row_lim[1] - row_lim[0]
-            
-            if event.key == 'i':  # Zoom in
-                factor = 0.8
-            else:  # Zoom out
-                factor = 1.25
-                
-            self.ax.set_xlim(center_col - width/2 * factor, 
-                            center_col + width/2 * factor)
-            self.ax.set_ylim(center_row - height/2 * factor, 
-                            center_row + height/2 * factor)
-            self.fig.canvas.draw()
-            
-        elif event.key in ['v', 'b', 'n', 'm']:  # Adjust display range
-            if event.key == 'v':
+        elif event.key in ["left", "right", "up", "down"]:
+            x0, x1 = self.ax.get_xlim()
+            y0, y1 = self.ax.get_ylim()
+
+            w = x1 - x0
+            h = y1 - y0
+            dx = w * 0.1
+            dy = h * 0.1
+
+            # intuitive: left -> view moves left (x decreases)
+            if event.key == "left":
+                x0, x1 = x0 - dx, x1 - dx
+            elif event.key == "right":
+                x0, x1 = x0 + dx, x1 + dx
+            elif event.key == "up":
+                y0, y1 = y0 + dy, y1 + dy
+            elif event.key == "down":
+                y0, y1 = y0 - dy, y1 - dy
+
+            x0, x1, y0, y1 = self._clamp_view(x0, x1, y0, y1)
+            self.ax.set_xlim(x0, x1)
+            self.ax.set_ylim(y0, y1)
+
+            self._background = None
+            self.fig.canvas.draw_idle()
+
+        elif event.key in ["i", "o"]:
+            x0, x1 = self.ax.get_xlim()
+            y0, y1 = self.ax.get_ylim()
+
+            cx = (x0 + x1) / 2
+            cy = (y0 + y1) / 2
+            w = x1 - x0
+            h = y1 - y0
+
+            factor = 0.8 if event.key == "i" else 1.25
+            nw = w * factor
+            nh = h * factor
+
+            x0, x1 = cx - nw / 2, cx + nw / 2
+            y0, y1 = cy - nh / 2, cy + nh / 2
+
+            x0, x1, y0, y1 = self._clamp_view(x0, x1, y0, y1)
+            self.ax.set_xlim(x0, x1)
+            self.ax.set_ylim(y0, y1)
+
+            self._background = None
+            self.fig.canvas.draw_idle()
+
+        elif event.key in ["v", "b", "n", "m"]:
+            if event.key == "v":
                 self.vmin -= self.vmax * 0.05
-            elif event.key == 'b':
+            elif event.key == "b":
                 self.vmin = min(self.vmax, self.vmin + self.vmax * 0.05)
-            elif event.key == 'n':
+            elif event.key == "n":
                 self.vmax = max(self.vmin, self.vmax - self.vmax * 0.05)
-            elif event.key == 'm':
+            elif event.key == "m":
                 self.vmax += self.vmax * 0.05
             self._update_display()
-            
-        elif event.key in ['w', 'e']:  # Adjust size
-            if event.key == 'w':
-                self.current_size = max(1, self.current_size - self.step)
-            elif event.key == 'e':
+
+        elif event.key in ["w", "e"]:
+            if event.key == "w":
+                self.current_size = max(1.0, self.current_size - self.step)
+            elif event.key == "e":
                 self.current_size += self.step
-            #print(f"Current size: {self.current_size:.1f}")
-            self.status_text = f'Current size: {self.current_size:.1f} | Shape: {self.shape}'
+
+            self._refresh_status_text()
             self._update_title()
-            self._show_preview()
-            
+            self._background = None
+            self._refresh_preview_now()
+
+    # -------------------- API --------------------
     def get_regions(self):
         plt.show()
         return self.regions
+
+def select_region(img_path, default_size=5, step=0.5, vmax=10):
+    with fits.open(img_path, mode='readonly', memmap=True) as hdul:
+        img = hdul[1].data.copy()
+    plt.close('all')
+    selector = RegionSelector(img, vmin=0, vmax=vmax, 
+                              row_range=None, 
+                              col_range=None,
+                              shape='circle',
+                              default_size=default_size,
+                              step=step,
+                              use_blit=False)
+    print("Getting regions...")
+    plt.show(block=True)
+    plt.close()
+    regions = selector.get_regions()
+    print("Regions obtained.")#, regions)
+    combined_regions = RegionCombiner.union(regions)
+    target_region = RegionConverter.region_to_bool_array(combined_regions, image_shape=img.shape)
+    return target_region
 
 def save_regions(regions: List[PixelRegion], file_path: Union[str, Path], correct: Optional[float] = 1) -> None:
     """
@@ -525,7 +1404,8 @@ def save_regions(regions: List[PixelRegion], file_path: Union[str, Path], correc
                 x_ds9 = region.center.x + correct  # col -> x
                 y_ds9 = region.center.y + correct  # row -> y
                 w, h = region.width, region.height
-                f.write(f"box({x_ds9},{y_ds9},{w},{h},0)\n")
+                angle = region.angle.to_value(u.deg)
+                f.write(f"box({x_ds9},{y_ds9},{w},{h},{angle})\n")
 
 
 def update_regions(regions: List[PixelRegion], file_path: Union[str, Path], correct: Optional[float] = 1) -> None:

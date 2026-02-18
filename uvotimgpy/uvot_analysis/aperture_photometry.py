@@ -11,12 +11,25 @@ import stsynphot as stsyn
 from sbpy.activity import phase_HalleyMarcus, Afrho
 from sbpy.data import Ephem
 import matplotlib.pyplot as plt
+from pathlib import Path
+from astropy.io import fits
 
 from uvotimgpy.base.region import RegionStatistics, RegionConverter, create_circle_region, create_circle_annulus_region
 from uvotimgpy.utils.image_operation import calc_radial_profile
 from uvotimgpy.base.math_tools import ErrorPropagation
 from uvotimgpy.utils.spectrum_operation import format_bandpass, SolarSpectrum, calculate_flux, TypicalWaveSfluxd
 
+class BackgroundImageCreator:
+    @staticmethod
+    def image_mode(filter: str, 
+                   ):
+        pass
+        # rotate_image(image, angle)
+        # crop_image(sk_hdu.data, self.sk_coord_py, self.target_coord_py, fill_value=np.nan)
+
+    @staticmethod
+    def event_mode():
+        pass
 
 class BackgroundEstimator:
     """背景估计类，提供两种静态方法计算背景"""
@@ -260,7 +273,25 @@ class BackgroundEstimator:
             
         except RuntimeError:
             raise RuntimeError("Failed to fit the radial profile")
-        
+
+    def from_scattering_map(map_path: Union[str, Path], factor_type: str = 'sum'):
+        """
+        factor_type: 'sum', 'mean', 'median'
+        """
+        with fits.open(map_path, mode='readonly') as hdul:
+            scattering_map = hdul[0].data
+            factor_med = hdul[0].header['FACT_MED']
+            factor_ave = hdul[0].header['FACT_AVE']
+            factor_sum = hdul[0].header['FACT_SUM']
+            if factor_type == 'sum':
+                factor = factor_sum
+            elif factor_type == 'mean':
+                factor = factor_ave
+            elif factor_type == 'median':
+                factor = factor_med
+            else:
+                raise ValueError(f"Unsupported factor type: {factor_type}")
+        return scattering_map * factor
 
 def perform_photometry(image: np.ndarray,
                       background: float,

@@ -12,6 +12,8 @@ class ProjectPaths:
         self.packages = self.work.joinpath('packages')
     
     def get_subpath(self, base_path, *args):
+        if isinstance(base_path, str):
+            base_path = Path(base_path)
         return base_path.joinpath(*args)
     
     @property

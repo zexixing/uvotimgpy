@@ -15,6 +15,7 @@ from sbpy.activity.gas import VectorialModel
 
 import matplotlib.pyplot as plt
 
+from stsynphot.spparser import parse_spec
 from uvotimgpy.config import paths
 from uvotimgpy.pipeline.pipeline_basic import is_path_like, load_path, table_to_df, table_to_list, get_obs_path, BasicInfo, DataPreparation
 from uvotimgpy.base.math_tools import ErrorPropagation, UnitConverter
@@ -80,6 +81,7 @@ class PhotometryAnalysis:
                  aperture_motion: bool = True,
                  elapsed_time: float = None,
                  bkg_region: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray, float, Tuple[float, float]]] = None,
+                 bkg_subtracted: bool = None,
                  obs_paras: Optional[Dict[str, Any]] = {},
                  reddening: Optional[float] = 0,
                  scale: float = 1.004,
@@ -130,6 +132,7 @@ class PhotometryAnalysis:
         self.bkg_err_for_multi_aperture = None
         self.sky_motion = obs_paras.get('Sky_motion', self.header['Sky_motion'])
         self.sky_motion_pa = obs_paras.get('Sky_mot_PA', self.header['Sky_mot_PA'])
+        self.motion = None
         self.aperture = aperture
         self.bkg_region = bkg_region
         self.elapsed_time = elapsed_time
@@ -137,6 +140,9 @@ class PhotometryAnalysis:
         self.verbose = verbose
         self.bad_pixel_mask = bad_pixel_mask
         self.radius_inner = None
+        self.bkg_radius_outer = None
+        if bkg_subtracted is None:
+            self.bkg_subtracted = self.header.get('BKGSUB', False)
 
     def get_regions(self):
         if self.aperture is None:
@@ -149,6 +155,7 @@ class PhotometryAnalysis:
                                                                self.sky_motion, 
                                                                self.sky_motion_pa, 
                                                                self.scale)
+                self.motion = self.sky_motion/60 * self.elapsed_time / self.scale
             else:
                 self.aperture = create_circle_region(self.target_coord_py, self.aperture)
         elif isinstance(self.aperture, tuple):
@@ -164,7 +171,11 @@ class PhotometryAnalysis:
         self.aperture_valid_number = np.sum(valid_bool)
 
         if self.bkg_region is None:
-            raise ValueError("Background region is not set.")
+            if not self.bkg_subtracted:
+                raise ValueError("Background region is not set and background subtraction is not performed.")
+            elif self.bkg_subtracted:
+                self.bkg_radius_inner = None
+                self.bkg_radius_outer = None
         elif isinstance(self.bkg_region, Union[float, int]):
             self.bkg_radius_outer = self.bkg_region
             self.bkg_region = create_circle_region(self.target_coord_py, self.bkg_region)
@@ -179,7 +190,8 @@ class PhotometryAnalysis:
                         vrange: Optional[Tuple[float, float]] = None,
                         ):
         # 图示测量区域
-        bkg_region = RegionConverter.to_bool_array_general(self.bkg_region, combine_regions=True, shape=self.image.shape)[0]
+        if self.bkg_region is not None:
+            bkg_region = RegionConverter.to_bool_array_general(self.bkg_region, combine_regions=True, shape=self.image.shape)[0]
         aperture = RegionConverter.to_bool_array_general(self.aperture, combine_regions=True, shape=self.image.shape)[0]
         if self.bad_pixel_mask is not None:
             img[self.bad_pixel_mask] = np.nan
@@ -190,17 +202,28 @@ class PhotometryAnalysis:
         else:
             vmin = vrange[0]
             vmax = vrange[1]
-        plt.imshow(img, vmin=vmin, vmax=vmax)
+        plt.imshow(img, vmin=vmin, vmax=vmax, origin='lower')
         if xradius is None and self.bkg_radius_outer is not None:
             xradius = self.bkg_radius_outer + 20
+        else:
+            if self.motion is not None:
+                xradius = self.radius_outer + self.motion/2 + 20
+            else:
+                xradius = self.radius_outer + 20
         if yradius is None and self.bkg_radius_outer is not None:
             yradius = self.bkg_radius_outer + 20
+        else:
+            if self.motion is not None:
+                yradius = self.radius_outer + self.motion/2 + 20
+            else:
+                yradius = self.radius_outer + 20
         if xradius is not None:
             plt.xlim(self.target_coord_py[0]-xradius, self.target_coord_py[0]+xradius)
         if yradius is not None:
             plt.ylim(self.target_coord_py[1]-yradius, self.target_coord_py[1]+yradius)
         plt.contour(aperture, levels=[0.5], colors='red', linewidths=0.5)
-        plt.contour(bkg_region, levels=[0.5], colors='white', linewidths=0.5)
+        if self.bkg_region is not None:
+            plt.contour(bkg_region, levels=[0.5], colors='white', linewidths=0.5)
         plt.show(block=True)
         plt.close()
     
@@ -282,22 +305,25 @@ class PhotometryAnalysis:
         """
         image = self.image.copy()
         error = self.error.copy()
-        self.get_background(method=method, multi_apertures_params=multi_apertures_params, 
-                                mean_or_median=bkg_mean_or_median)
-        if method == 'single_pixel':
-            if self.bkg_for_single_pixel is None and self.bkg_err_for_single_pixel is None:
-                raise ValueError("Background (single pixel) values are not obtained.")
-            background_img_map = np.full_like(image, self.bkg_for_single_pixel)
-            background_err_map = np.full_like(image, self.bkg_err_for_single_pixel)
-            self.net_image, self.net_error = ErrorPropagation.subtract(image, error, background_img_map, background_err_map)
-            self.countrate, self.countrate_err = self.get_total_signal(image = self.net_image, error = self.net_error, )
-        elif method == 'multi_region':
-            if self.bkg_for_multi_aperture is None and self.bkg_err_for_multi_aperture is None:
-                raise ValueError("Background (multiple apertures) values are not obtained.")
-            signal, signal_error = self.get_total_signal(image = image, error = error)
-            self.countrate, self.countrate_err = ErrorPropagation.subtract(signal, signal_error, 
-                                                                           self.bkg_for_multi_aperture, 
-                                                                           self.bkg_err_for_multi_aperture)
+        if not self.bkg_subtracted:
+            self.get_background(method=method, multi_apertures_params=multi_apertures_params, 
+                                    mean_or_median=bkg_mean_or_median)
+            if method == 'single_pixel':
+                if self.bkg_for_single_pixel is None and self.bkg_err_for_single_pixel is None:
+                    raise ValueError("Background (single pixel) values are not obtained.")
+                background_img_map = np.full_like(image, self.bkg_for_single_pixel)
+                background_err_map = np.full_like(image, self.bkg_err_for_single_pixel)
+                self.net_image, self.net_error = ErrorPropagation.subtract(image, error, background_img_map, background_err_map)
+                self.countrate, self.countrate_err = self.get_total_signal(image = self.net_image, error = self.net_error, )
+            elif method == 'multi_region':
+                if self.bkg_for_multi_aperture is None and self.bkg_err_for_multi_aperture is None:
+                    raise ValueError("Background (multiple apertures) values are not obtained.")
+                signal, signal_error = self.get_total_signal(image = image, error = error)
+                self.countrate, self.countrate_err = ErrorPropagation.subtract(signal, signal_error, 
+                                                                               self.bkg_for_multi_aperture, 
+                                                                               self.bkg_err_for_multi_aperture)
+        else:
+            self.countrate, self.countrate_err = self.get_total_signal(image = image, error = error)
         if self.verbose:
             print(f'{self.filt_displayname} image: '
                   f'net_countrate = ({smart_float_format(self.countrate)} +/- '
@@ -548,7 +574,7 @@ class OHAnalysis:
     
     def get_oh_countrate_from_image(self): # from OH image
         # use circle/ring aperture or smeared circle/ring aperture
-        pass
+        pass 
 
     def get_oh_countrate_from_profile(self): # from OH profile
         pass
@@ -658,6 +684,7 @@ class ReddeningAnalysis:
     def __init__(self, basic_info: BasicInfo,  
                  aperture: Tuple[Union[float, None], float] = (None, 10),
                  bkg_region: Tuple[float, float] = (60, 90),
+                 bkg_method: str = 'multi_region',
                  aperture_motion_v: bool = True,
                  elapsed_time_v: Optional[float] = None,
                  aperture_motion_uw1: bool = False,
@@ -667,6 +694,7 @@ class ReddeningAnalysis:
         self.epoch_name = basic_info.epoch_name
         self.aperture = aperture
         self.bkg_region = bkg_region
+        self.bkg_method = bkg_method
         self.aperture_motion_v = aperture_motion_v
         self.aperture_motion_uw1 = aperture_motion_uw1
         self.elapsed_time_v = elapsed_time_v
@@ -696,16 +724,18 @@ class ReddeningAnalysis:
                                                bkg_region = self.bkg_region, reddening = None,
                                                verbose = False)
         phot_analysis_uw1.get_regions()
-
-        if self.aperture_motion_uw1:
-            def create_motion_region_uw1(center):
-                return create_smeared_region_from_obs(center, self.radius_outer, self.elapsed_time_uw1, 
-                                                      phot_analysis_uw1.sky_motion, phot_analysis_uw1.sky_motion_pa, scale=1.004)
-        else:
-            create_motion_region_uw1 = None
-        phot_analysis_uw1.do_aperture_photometry(method = 'multi_region',
-                                                 multi_apertures_params = {'region_creation_func': create_motion_region_uw1,
-                                                                           'n_samples': 2000})
+        if self.bkg_method == 'multi_region':
+            if self.aperture_motion_uw1:
+                def create_motion_region_uw1(center):
+                    return create_smeared_region_from_obs(center, self.radius_outer, self.elapsed_time_uw1, 
+                                                          phot_analysis_uw1.sky_motion, phot_analysis_uw1.sky_motion_pa, scale=1.004)
+            else:
+                create_motion_region_uw1 = None
+            phot_analysis_uw1.do_aperture_photometry(method = 'multi_region',
+                                                     multi_apertures_params = {'region_creation_func': create_motion_region_uw1,
+                                                                               'n_samples': 2000})
+        elif self.bkg_method == 'single_pixel':
+            phot_analysis_uw1.do_aperture_photometry(method = 'single_pixel')
         self.phot_analysis_uw1 = phot_analysis_uw1
 
         phot_analysis_v = PhotometryAnalysis(f'{self.epoch_name}_uvv.fits', basic_info = self.basic_info,
@@ -715,15 +745,18 @@ class ReddeningAnalysis:
                                              bkg_region = self.bkg_region, reddening = None,
                                              verbose = False)
         phot_analysis_v.get_regions()
-        if self.aperture_motion_v:
-            def create_motion_region_v(center):
-                return create_smeared_region_from_obs(center, self.radius_outer, self.elapsed_time_v, 
-                                                      phot_analysis_v.sky_motion, phot_analysis_v.sky_motion_pa, scale=1.004)
-        else:
-            create_motion_region_v = None
-        phot_analysis_v.do_aperture_photometry(method = 'multi_region',
-                                               multi_apertures_params = {'region_creation_func': create_motion_region_v,
-                                                                         'n_samples': 2000})
+        if self.bkg_method == 'multi_region':
+            if self.aperture_motion_v:
+                def create_motion_region_v(center):
+                    return create_smeared_region_from_obs(center, self.radius_outer, self.elapsed_time_v, 
+                                                          phot_analysis_v.sky_motion, phot_analysis_v.sky_motion_pa, scale=1.004)
+            else:
+                create_motion_region_v = None
+            phot_analysis_v.do_aperture_photometry(method = 'multi_region',
+                                                   multi_apertures_params = {'region_creation_func': create_motion_region_v,
+                                                                             'n_samples': 2000})
+        elif self.bkg_method == 'single_pixel':
+            phot_analysis_v.do_aperture_photometry(method = 'single_pixel')
         self.phot_analysis_v = phot_analysis_v
 
         oh_analysis = OHAnalysis(basic_info=self.basic_info,

@@ -186,7 +186,7 @@ def rescale_images(images: Union[np.ndarray, List[np.ndarray]],
         return rescaled_images
 
 def rotate_image(image: np.ndarray, 
-                target_coord: Tuple[Union[float, int], Union[float, int]], 
+                rotate_center: Tuple[Union[float, int], Union[float, int]], 
                 angle: float,
                 fill_value: Union[float, None] = np.nan,
                 image_err: Optional[np.ndarray] = None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
@@ -196,15 +196,15 @@ def rotate_image(image: np.ndarray,
     Parameters
     ----------
     image : 输入图像
-    target_coord : (col, row)源的坐标
+    rotate_center : (col, row)源的坐标
     angle : 旋转角度（度）
     fill_value : 填充值
     """
-    if image.dtype.byteorder == '>':
-        image = image.byteswap().newbyteorder()
+    if image.dtype.byteorder not in ('=', '<'):
+        image = image.byteswap().view(image.dtype.newbyteorder('<'))
     rotated_img =  rotate(image, 
                           -angle,
-                          center=target_coord,
+                          center=rotate_center,
                           preserve_range=True,
                           mode='constant',
                           cval=fill_value,    # 指定填充值
@@ -212,7 +212,7 @@ def rotate_image(image: np.ndarray,
     if image_err is None:
         return rotated_img
     else:
-        rotated_err = rotate_image(image = image_err, target_coord = target_coord, angle = angle, fill_value = fill_value)
+        rotated_err = rotate_image(image = image_err, target_coord = rotate_center, angle = angle, fill_value = fill_value)
         return rotated_img, rotated_err
 
 def crop_image(image: np.ndarray, 
@@ -333,7 +333,7 @@ def stack_images(images: List[np.ndarray],
             warnings.warn("Some pixels may be not well exposed, please check the exposure map with sum_exposure_map().")
     all_nan = np.all(np.isnan(images), axis=0)
     if method == 'mean':
-        if input_unit == 'counts' and exposure_list is not None:
+        if input_unit == 'count' and exposure_list is not None:
             images = images_by_exposure(images, exposure_list, method='divide')
             if image_err is not None:
                 image_err = images_by_exposure(image_err, exposure_list, method='divide')
@@ -347,7 +347,7 @@ def stack_images(images: List[np.ndarray],
             result[all_nan] = np.nan
             return result
     elif method == 'median':
-        if input_unit == 'counts' and exposure_list is not None:
+        if input_unit == 'count' and exposure_list is not None:
             images = images_by_exposure(images, exposure_list, method='divide')
             if image_err is not None:
                 image_err = images_by_exposure(image_err, exposure_list, method='divide')
@@ -362,7 +362,7 @@ def stack_images(images: List[np.ndarray],
             result[all_nan] = np.nan
             return result
     elif method == 'sum':
-        if input_unit == 'counts/s' and exposure_list is not None:
+        if input_unit == 'count/s' and exposure_list is not None:
             images = images_by_exposure(images, exposure_list, method='multiply')
             if image_err is not None:
                 image_err = images_by_exposure(image_err, exposure_list, method='multiply')
@@ -1304,3 +1304,53 @@ def profile_to_image(profile_r, profile_value, distance_map=None, radius=None, f
         raise ValueError("distance_map or radius must be provided")
     image = profile_interp(distance_map)
     return image
+
+def center_of_image(image: np.ndarray):
+    H = len(image)
+    W = len(image[0])
+    center_col = (W - 1) / 2
+    center_row = (H - 1) / 2
+    return center_col, center_row
+
+def upscale_mean_fill(
+    image: np.ndarray,
+    n: int,
+    conserve_flux: bool = False,) -> np.ndarray:
+    """
+    Enlarge a 2D image by an integer factor n using local-mean block filling.
+
+    Each original pixel becomes an n×n block filled with the mean of its
+    surrounding neighborhood (here: the pixel value itself, so equivalent
+    to constant block replication). This matches typical astronomical
+    area-style upscaling.
+
+    Parameters
+    ----------
+    image : 2D ndarray
+        Input image.
+    n : int
+        Upscaling factor (n >= 1).
+    conserve_flux : bool, optional
+        If True, divide the result by n^2 so that total sum of pixels
+        is conserved.
+
+    Returns
+    -------
+    upscaled : 2D ndarray
+        Enlarged image of shape (ny*n, nx*n).
+    """
+    if n < 1 or int(n) != n:
+        raise ValueError("n must be a positive integer")
+
+    img = np.asarray(image, dtype=float)
+
+    if img.ndim != 2:
+        raise ValueError("image must be 2D")
+
+    # Block replication (fast, no loops)
+    up = np.repeat(np.repeat(img, n, axis=0), n, axis=1)
+
+    if conserve_flux:
+        up /= n * n
+
+    return up
