@@ -25,7 +25,7 @@ from uvotimgpy.base.math_tools import UnitConverter
 from uvotimgpy.base.file_and_table import TableConverter, target_name_converter
 from uvotimgpy.base.visualizer import multi_show, draw_direction_compass, MaskInspector, draw_scalebar
 from uvotimgpy.base.instruments import normalize_filter_name, get_effective_area
-from uvotimgpy.utils.image_operation import DS9Converter, crop_image, stack_images
+from uvotimgpy.utils.image_operation import DS9Converter, crop_image, stack_images, shrink_valid_image
 from uvotimgpy.utils.spectrum_operation import SolarSpectrum
 from uvotimgpy.uvot_file.file_organization import ObservationLogLoader, ObservationLogger
 from uvotimgpy.uvot_file.file_io import save_stacked_fits
@@ -657,6 +657,8 @@ class DataCleaningIndividual:
         identify_paras = {'target_coord': tuple(int, int) = (1000, 1000), 'radius': int = 50, \
                         'vmin': float = 0, 'vmax': float = 10, 
                         'region_plot': Union[PixelRegion, List[PixelRegion]] = None}
+        'ml':
+        identify_paras = {'patch_size': int = 512, 'threshold': float = 0.5, 'min_area': int = 5, 'wcs': WCS = None, 'verbose': bool = False}
         """
         self.star_mask_steps, self.mask = save_starmask(img_path = self.cleaned_path, 
                                                         img_extension = 'IMAGE',
@@ -690,8 +692,8 @@ class DataCleaningIndividual:
         """
         'neighbors':
         fill_paras = {'radius': int = 4, 'method': str = 'nearest', 'mean_or_median': str = 'mean'} # 'median_filter', 'uniform_filter'
-        'tile_median':
-        fill_paras = {'tile_size': int = 40}
+        'tile_map':
+        fill_paras = {'tile_size': int = 40, 'factor': 1.5, 'smooth_sigma': 4, 'method': 'median', 'verbose': True}
         'rings':
         fill_paras = {'center': tuple(int, int), 'step': float, 'method': str = 'median', \
                       'start': float = None, 'end': float = None} # 'median', 'mean'
@@ -797,7 +799,7 @@ class DataCleaningIndividual:
         else:
             raise ValueError(f"Invalid datatype: {self.datatype}")
 
-    def get_bkg_factor(self, target_region = None, exclude_region = None, focus_region = None, shrink_pixels = 30, if_sigma_clip = None, plot_save = True, plot_show = False):
+    def get_bkg_factor(self, target_region = None, exclude_region = None, focus_region = None, bkg_region = None, shrink_pixels = 30, if_sigma_clip = None, plot_save = True, plot_show = False):
         img_path = Path(self.cleaned_path)
         archive_dir = paths.get_subpath(self.basic_info.project_path, 'scattering_map')
         bkg_path = paths.get_subpath(archive_dir, f'{self.obsid}_{self.ext_no}_{self.filt_filename}.fits')
@@ -808,11 +810,11 @@ class DataCleaningIndividual:
         elif if_sigma_clip is None:
             if_sigma_clip = False
         #align_scattering(bkg_path, data_dir=data_dir, obsid=self.obsid, filt=self.filt_filename, sk_coord=self.sk_coord_py, target_coord=self.target_coord_py)
-        result, valid_map = get_scattering_factor(img_path=img_path, bkg_path=bkg_path, target_region=target_region, 
-                                            exclude_region=exclude_region, focus_region=focus_region, 
+        result, valid_map_save = get_scattering_factor(img_path=img_path, bkg_path=bkg_path, target_region=target_region, 
+                                            exclude_region=exclude_region, focus_region=focus_region, bkg_region=bkg_region,
                                             img_ext=1, bkg_ext=1, shrink_pixels=shrink_pixels, if_sigma_clip=if_sigma_clip, 
                                             plot_save=plot_save, plot_show=plot_show)
-        save_scattering_bkg(bkg_path=bkg_path, result=result, valid_map=valid_map, img_path=img_path, bkg_ext=1)
+        save_scattering_bkg(bkg_path=bkg_path, result=result, valid_map_save=valid_map_save, img_path=img_path, bkg_ext=1)
         
 class DataCleaningMultiple:
     def __init__(self, observations: Union[pd.DataFrame, List[Dict[str, Any]]], basic_info: BasicInfo, 
@@ -969,27 +971,44 @@ class DataCleaningMultiple:
             exclude_region_dict[f"{obsid}_{ext}"] = target_region
         return exclude_region_dict
 
-    def get_bkg_factor_loop(self, target_region = None, target_region_vmax = 10, exclude_region_dict = None, focus_region_dict = None, shrink_pixels = 30, if_sigma_clip = None, plot_save = True, plot_show = False):
+    def get_bkg_factor_loop(self, target_region = None, target_region_vmax = 10, exclude_region_dict = None, focus_region_dict = None, bkg_region_dict = None, shrink_pixels = 30, if_sigma_clip = None, plot_save = True, plot_show = False):
         # get target_region
         if target_region is None:
             first_cleaned_path = paths.get_subpath(self.cleaned_folder_path, self.cleaned_name_style.format(obsid=self.observations[0]['OBSID'], ext_no=self.observations[0]['EXT_NO'], filt_filename=self.filt_filename))
             target_region = select_region(first_cleaned_path, default_size=50, step=5, vmax=target_region_vmax)
         #if not np.any(target_region):
         #    Warning("Target region is empty!")
+        focus_is_mapping = isinstance(focus_region_dict, dict)
+        global_focus_region = None if focus_is_mapping else focus_region_dict
+        exclude_is_mapping = isinstance(exclude_region_dict, dict)
+        global_exclude_region = None if exclude_is_mapping else exclude_region_dict
+        bkg_is_mapping = isinstance(bkg_region_dict, dict)
+        global_bkg_region = None if bkg_is_mapping else bkg_region_dict
         for obs in self.observations:
             label = f"{obs['OBSID']}_{obs['EXT_NO']}"
             obs_cleaning = DataCleaningIndividual(obs, self.basic_info, self.target_coord_py,
                                                   verbose = self.verbose,
                                                   **self.path_dict
                                                   )
-            exclude_region = exclude_region_dict.get(label, None) if exclude_region_dict else None
-            focus_region = focus_region_dict.get(label, None) if focus_region_dict else None
+            if exclude_is_mapping:
+                exclude_region = exclude_region_dict.get(label, None)
+            else:
+                exclude_region = global_exclude_region
+            if focus_is_mapping:
+                focus_region = focus_region_dict.get(label, None)
+            else:
+                focus_region = global_focus_region
+            if bkg_is_mapping:
+                bkg_region = bkg_region_dict.get(label, None)
+            else:
+                bkg_region = global_bkg_region
             # loop to get bkg map (also for different ext)
-            obs_cleaning.get_bkg_factor(target_region = target_region, exclude_region = exclude_region, focus_region = focus_region, 
+            obs_cleaning.get_bkg_factor(target_region = target_region, exclude_region = exclude_region, focus_region = focus_region, bkg_region = bkg_region,
                                         shrink_pixels = shrink_pixels, if_sigma_clip = if_sigma_clip, plot_save = plot_save, plot_show = plot_show)
 
     def stack(self, observations: Union[pd.DataFrame, List[Dict[str, Any]],None]= None, 
-                     stack_method: str = 'sum', compressed: bool = False, comment = None, image_type: str = 'cleaned',
+                     stack_method: str = 'sum', compressed: bool = False, shrink_pixels: Union[int, None] = 30,
+                     comment = None, image_type: str = 'cleaned',
                      remove_bkg_by_scattering_map: bool = False, scattering_map_dir: Optional[Union[str, Path]] = None):
         """
         remove_bkg_by_scattering_map: whether to remove background by scattering map. Use FACT_A now.
@@ -1046,8 +1065,13 @@ class DataCleaningMultiple:
                     factor_b = fits.getheader(scattering_map_path, 0)['FACT_B']
                     img = img - (scattering_map * factor_a + factor_b)
                     err = np.sqrt(err**2 + (scattering_map * factor_a + factor_b))
-                img[exp/np.max(exp) < 0.99] = np.nan
-                err[exp/np.max(exp) < 0.99] = np.nan
+                #img[exp/np.max(exp) < 0.99] = np.nan
+                #err[exp/np.max(exp) < 0.99] = np.nan
+                exp[exp/np.max(exp) < 0.99] = np.nan
+                if shrink_pixels is not None:
+                    exp = shrink_valid_image(exp, shrink_pixels=shrink_pixels) if (shrink_pixels and shrink_pixels > 0) else exp
+                img[np.isnan(exp)] = np.nan
+                err[np.isnan(exp)] = np.nan
                 img_list.append(img)
                 exp_list.append(exp)
                 err_list.append(err)
@@ -1057,7 +1081,7 @@ class DataCleaningMultiple:
         stacked_img, stacked_err = stack_images(images = img_list, method=stack_method, image_err = err_list, 
                                                 median_err_params = {'method': 'mean', 'mask': True}, input_unit = 'count', exposure_list = exp_list
                                                 )
-        stacked_exp = np.sum(exp_list, axis=0)
+        stacked_exp = np.nansum(exp_list, axis=0)
         if stack_method == 'mean' or stack_method == 'median':
             self.stack_unit = 'count/s'
         elif stack_method == 'sum':
@@ -1139,8 +1163,8 @@ class DataCleaningMultiple:
         """
         'neighbors':
         fill_paras = {'radius': int = 4, 'method': str = 'nearest', 'mean_or_median': str = 'mean'} # 'median_filter', 'uniform_filter'
-        'tile_median':
-        fill_paras = {'tile_size': int = 40}
+        'tile_map':
+        fill_paras = {'tile_size': int = 40, 'factor': 1.5, 'smooth_sigma': 4, 'method': 'median', 'verbose': True}
         'rings':
         fill_paras = {'center': tuple(int, int), 'step': float, 'method': str = 'median', \
                       'start': float = None, 'end': float = None} # 'median', 'mean'

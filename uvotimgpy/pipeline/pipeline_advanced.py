@@ -143,6 +143,8 @@ class PhotometryAnalysis:
         self.bkg_radius_outer = None
         if bkg_subtracted is None:
             self.bkg_subtracted = self.header.get('BKGSUB', False)
+        else:
+            self.bkg_subtracted = bkg_subtracted
 
     def get_regions(self):
         if self.aperture is None:

@@ -478,7 +478,7 @@ def fit_poisson_a_b(img, flat, maxiter=200):
 
     # 初值：先用无常数项的 MLE
     a0 = np.nansum(img) / np.nansum(flat)
-    # 用残差的中位数给 c0（取非负）
+    # 用残差的中位数给 b0（取非负）
     b0 = np.nanmedian(img - a0 * flat)
     b0 = float(max(0.0, b0))
 
@@ -491,7 +491,7 @@ def fit_poisson_a_b(img, flat, maxiter=200):
             return np.inf
         return np.sum(mu - img * np.log(mu + eps))
 
-    # 约束：a>=0, c>=0
+    # 约束：a>=0, b>=0
     res = minimize(
         nll,
         x0=np.array([a0, b0], dtype=np.float64),
@@ -500,13 +500,120 @@ def fit_poisson_a_b(img, flat, maxiter=200):
         options={"maxiter": maxiter},
     )
     if not res.success:
-        raise RuntimeError(f"Poisson fit failed: {res.message}")
-
-    a_hat, b_hat = res.x
+        #raise RuntimeError(f"Poisson fit failed: {res.message}")
+        print(f"Poisson fit failed: {res.message}; using initial values a0={a0}, b0={b0}")
+        a_hat, b_hat = a0, b0
+    else:
+        a_hat, b_hat = res.x
     return float(a_hat), float(b_hat)
 
-def get_scattering_factor(img_path, bkg_path, target_region=None, exclude_region=None, focus_region=None,
-                          img_ext=1, bkg_ext=1, shrink_pixels=5, if_sigma_clip=False, plot_save=False, plot_show=False):
+def fit_poisson_a_plane(img, flat, mask=None, maxiter=200, eps=1e-12):
+    """
+    Fit k ~ Poisson( a*F + b0 + bx*x + by*y )
+
+    Parameters
+    ----------
+    img  : 2D array (counts) or 1D array (counts for valid pixels)
+    flat : 2D array (template) or 1D array (template for valid pixels)
+    mask : 2D boolean array, True means masked (excluded). Only used if img/flat are 2D.
+           If None, valid pixels are those with finite img/flat and flat>0.
+    maxiter : optimizer max iterations
+
+    Returns
+    -------
+    a, b0, bx, by : floats
+    Notes
+    -----
+    - x,y are pixel coordinates (col,row) from np.indices, then centered: x' = x-mean(x), y' = y-mean(y)
+    - No bounds on parameters; positivity enforced only through mu>0 in the likelihood.
+    """
+
+    img = np.asarray(img, dtype=np.float64)
+    flat = np.asarray(flat, dtype=np.float64)
+
+    if img.shape != flat.shape:
+        raise ValueError(f"img and flat must have same shape, got {img.shape} vs {flat.shape}")
+
+    if img.ndim == 2:
+        ny, nx = img.shape
+        yy, xx = np.indices((ny, nx))  # yy=row, xx=col
+
+        if mask is None:
+            valid = np.isfinite(img) & np.isfinite(flat) & (flat > 0)
+        else:
+            mask = np.asarray(mask, dtype=bool)
+            if mask.shape != img.shape:
+                raise ValueError(f"mask must match img shape, got {mask.shape} vs {img.shape}")
+            valid = (~mask) & np.isfinite(img) & np.isfinite(flat) & (flat > 0)
+
+        k = img[valid]
+        F = flat[valid]
+        x = xx[valid].astype(np.float64, copy=False)
+        y = yy[valid].astype(np.float64, copy=False)
+
+    else:
+        raise ValueError("This function expects 2D img/flat (optionally with a 2D mask).")
+
+    if k.size < 10:
+        raise ValueError(f"Too few valid pixels for fitting: {k.size}")
+
+    # center coordinates to reduce coupling between (b0) and (bx,by)
+    xc = x - np.mean(x)
+    yc = y - np.mean(y)
+
+    # --- initialization ---
+    denom = np.sum(F)
+    a0 = (np.sum(k) / denom) if denom > 0 else 0.0
+
+    # initial b0 from residual median (robust)
+    r0 = k - a0 * F
+    b00 = float(np.median(r0))
+
+    # initial plane from least squares on residual (unweighted)
+    # r0 ~ b0 + bx*xc + by*yc
+    A = np.column_stack([np.ones_like(xc), xc, yc])
+    try:
+        b_init, *_ = np.linalg.lstsq(A, r0, rcond=None)
+        b00_ls, bx0, by0 = b_init
+        # blend median & LS for stability
+        b00 = 0.5 * b00 + 0.5 * float(b00_ls)
+    except np.linalg.LinAlgError:
+        bx0, by0 = 0.0, 0.0
+
+    x0 = np.array([a0, b00, bx0, by0], dtype=np.float64)
+
+    # --- Poisson negative log-likelihood ---
+    def nll(theta):
+        a, b0, bx, by = theta
+        mu = a * F + b0 + bx * xc + by * yc
+        if np.any(mu <= 0):
+            return np.inf
+        return np.sum(mu - k * np.log(mu + eps))
+
+    res = minimize(
+        nll,
+        x0=x0,
+        method="L-BFGS-B",     # 即使不设 bounds 也可用；你也可以换 "BFGS"
+        options={"maxiter": maxiter},
+    )
+    if not res.success:
+        raise RuntimeError(f"Poisson fit (a,b0,plane) failed: {res.message}")
+
+    a_hat, b0_hat, bx_hat, by_hat = res.x
+    return float(a_hat), float(b0_hat), float(bx_hat), float(by_hat)
+
+def update_factor_b(img, bkg, bkg_region, factor_a, factor_b, mask=None):
+    bkg_region = RegionConverter.to_bool_array(bkg_region, image_shape=img.shape)
+    net = img - (bkg * factor_a + factor_b)
+    net_region = net[(~mask) & bkg_region]
+    factor_b_update = np.nanmean(net_region)
+    factor_b_new = factor_b_update + factor_b
+    return factor_b_new
+
+def get_scattering_factor(img_path, bkg_path, 
+                          target_region=None, exclude_region=None, focus_region=None, bkg_region=None, 
+                          img_ext=1, bkg_ext=1, shrink_pixels=5, if_sigma_clip=False, 
+                          plot_save=False, plot_show=False):
 
     with fits.open(img_path, mode='readonly', memmap=True) as hdul:
         img = hdul[img_ext].data  # 不 copy
@@ -520,11 +627,10 @@ def get_scattering_factor(img_path, bkg_path, target_region=None, exclude_region
             clipped = sigma_clip(img[np.isfinite(img)], sigma=3, maxiters=3, masked=True)
             mask_copy[np.isfinite(img)] = clipped.mask
             mask |= select_mask_regions(mask_copy, min_area=4, max_area=None)
-
         if 'EXPOSURE' in hdul:
             exp = hdul['EXPOSURE'].data
-            exp_mask = (exp != np.nanmax(exp))
-
+            exp[exp == 0] = np.nan
+            exp_mask = (exp != np.nanmedian(exp))
     with fits.open(bkg_path, mode='readonly', memmap=True) as hdul:
         bkg = hdul[bkg_ext].data  # 不 copy
         bkg[exp_mask] = np.nan
@@ -532,14 +638,18 @@ def get_scattering_factor(img_path, bkg_path, target_region=None, exclude_region
     # regions -> mask（这块可能最慢；如果循环调用，强烈建议外部预先算好bool mask传进来）
     if target_region is not None:
         mask |= RegionConverter.to_bool_array(target_region, image_shape=img.shape)
-    if exclude_region is not None or focus_region is not None:
+    if exclude_region is not None:
         #mask |= RegionConverter.to_bool_array_general(exclude_region, combine_regions=True, shape=img.shape)[0]
-        mask |= get_exclude_region(img.shape, focus_region=focus_region, exclude_region=exclude_region)
+        mask |= get_exclude_region(img.shape, focus_region=None, exclude_region=exclude_region)
+    mask_fitting = mask.copy()
+    valid_map_save = (~mask) & np.isfinite(img) & np.isfinite(bkg) & (bkg > 0)
+    if focus_region is not None:
+        mask_fitting |= get_exclude_region(img.shape, focus_region=focus_region, exclude_region=None)
 
     # 有效像素：未mask、img/bkg有限、且bkg!=0
-    valid_map = (~mask) & np.isfinite(img) & np.isfinite(bkg)
-    k_bg = img[valid_map].astype(np.float64, copy=False)
-    F_bg = bkg[valid_map].astype(np.float64, copy=False)
+    valid_map_fitting = (~mask_fitting) & np.isfinite(img) & np.isfinite(bkg) & (bkg > 0)
+    k_bg = img[valid_map_fitting].astype(np.float64, copy=False)
+    F_bg = bkg[valid_map_fitting].astype(np.float64, copy=False)
 
     # 只对有效像素做 1D 比值（避免全图除法）
     ratio = (k_bg / F_bg).astype(np.float64, copy=False)
@@ -549,6 +659,18 @@ def get_scattering_factor(img_path, bkg_path, target_region=None, exclude_region
     factor_sum = np.nansum(k_bg)/np.nansum(F_bg)
     std = ratio.std(ddof=0)
     factor_a, factor_b = fit_poisson_a_b(k_bg, F_bg)
+    if bkg_region is not None:
+        factor_b_updated = update_factor_b(img, bkg, bkg_region, factor_a, factor_b, mask=~valid_map_save)
+        factor_b_correction = factor_b_updated - factor_b
+        factor_b = factor_b_updated
+
+    #factor_plane_a, factor_plane_b0, factor_plane_bx, factor_plane_by = fit_poisson_a_plane(img=img, flat=bkg, mask = valid_map_fitting)
+
+    #ratio_a_b = (k_bg - factor_b)/F_bg
+    yy, xx = np.indices(img.shape)
+    x = xx[valid_map_fitting].astype(np.float64, copy=False)
+    y = yy[valid_map_fitting].astype(np.float64, copy=False)
+    ratio_a_b = (k_bg - factor_b)/F_bg
 
     #sky_model = a_hat * bkg + b_hat
     result = {
@@ -558,6 +680,11 @@ def get_scattering_factor(img_path, bkg_path, target_region=None, exclude_region
         'std': std,
         'factor_a': factor_a,
         'factor_b': factor_b,
+        'factor_b_correction': factor_b_correction,
+        #'factor_plane_a': factor_plane_a,
+        #'factor_plane_b0': factor_plane_b0,
+        #'factor_plane_bx': factor_plane_bx,
+        #'factor_plane_by': factor_plane_by,
     }
 
 
@@ -571,23 +698,25 @@ def get_scattering_factor(img_path, bkg_path, target_region=None, exclude_region
         # 做个可视化用的masked版本（只在plot时创建）
         #img_vis = np.array(img/bkg, copy=True)
         img_vis = np.array((img- factor_b)/bkg, copy=True)
-        img_vis[~valid_map] = np.nan
+        img_vis[~valid_map_fitting] = np.nan
         axes[2].imshow(img_vis, origin='lower', vmin=factor_mean-2*std, vmax=factor_mean+2*std)
         axes[2].set_title('Masked factor image')
         axes[2].set_xticklabels([])
         axes[2].set_yticklabels([])
-        axes[3].hist(ratio, bins=100, range=(factor_mean-5*std, factor_mean+5*std)); axes[2].set_title('Factor')
-        axes[3].axvline(factor_mean, color='green', linestyle='-', lw=0.5, label='factor (mean)')
-        axes[3].axvline(factor_median, color='blue', linestyle='-', lw=0.5, label='factor (median)')
-        axes[3].axvline(factor_sum, color='red', linestyle='-', lw=0.5, label='factor (sum)')
-        axes[3].axvline(factor_a + factor_b/np.nanmean(F_bg), color='purple', linestyle='-', lw=0.5, label='factor (a + b/mean(BKG))')
-        axes[3].axvline(factor_sum+std, color='red', linestyle='--', lw=0.5, label='f (sum) + std')
-        axes[3].axvline(factor_sum-std, color='red', linestyle='--', lw=0.5, label='f (sum) - std')
+        axes[3].hist(ratio_a_b, bins=100, range=(factor_a-5*std, factor_a+5*std)); axes[2].set_title('Factor a')
+        #axes[3].axvline(factor_mean, color='green', linestyle='-', lw=0.5, label='factor (mean)')
+        #axes[3].axvline(factor_median, color='blue', linestyle='-', lw=0.5, label='factor (median)')
+        axes[3].axvline(factor_a, color='red', linestyle='-', lw=0.5, label='factor (a)')
+        #axes[3].axvline(factor_plane_a, color='red', linestyle='-', lw=0.5, label='factor a')
+        #axes[3].axvline(factor_a+std, color='red', linestyle='--', lw=0.5, label='f (sum) + std')
+        #axes[3].axvline(factor_a-std, color='red', linestyle='--', lw=0.5, label='f (sum) - std')
         axes[3].legend(loc='lower left', fontsize=8)
         axes[1].imshow(bkg, origin='lower')
         axes[1].set_title('Bkg (sk like)')
         axes[1].set_xticklabels([])
         axes[1].set_yticklabels([])
+        #axes[4].imshow(img - (factor_plane_a*bkg + factor_plane_b0 + factor_plane_bx * (xx-np.mean(xx)) + factor_plane_by * (yy-np.mean(yy))), 
+        #               origin='lower', vmin=0, vmax=2*std*np.nanmedian(bkg))
         axes[4].imshow(img - (factor_a*bkg + factor_b), origin='lower', vmin=0, vmax=2*std*np.nanmedian(bkg))
         #axes[4].imshow(img - factor_sum*bkg, origin='lower', vmin=0, vmax=2*std*np.nanmedian(bkg))
         axes[4].set_title('Residual image')
@@ -606,13 +735,13 @@ def get_scattering_factor(img_path, bkg_path, target_region=None, exclude_region
             plt.show(block=True)
         plt.close(fig)
 
-    return result, valid_map
+    return result, valid_map_save
 
 
 def save_scattering_bkg(
     bkg_path,
     result,
-    valid_map,
+    valid_map_save,
     img_path,
     bkg_ext=1,
     ):
@@ -627,7 +756,7 @@ def save_scattering_bkg(
     #    raise ValueError(f"Factor is not finite or zero: {factor}")
     #err_rel = float(std / factor_median)
 
-    mask_i8 = np.asarray(~valid_map, dtype=np.int8)
+    mask_i8 = np.asarray(~valid_map_save, dtype=np.int8)
 
     # 直接在原 bkg_path 上 update
     with fits.open(bkg_path, mode='update', memmap=True) as hdul:
@@ -651,7 +780,12 @@ def save_scattering_bkg(
         hdul[0].header['FACT_SUM'] = (float(result['factor_sum']), 'Factor applied to background (sum of img/bkg)')
         hdul[0].header['SCLSTD']  = (float(result['std']), 'Std of (img/bkg) used for scaling')
         hdul[0].header['FACT_A']  = (float(result['factor_a']), 'a_hat of the sky model')
-        hdul[0].header['FACT_B']  = (float(result['factor_b']), 'b_hat of the sky model')
+        hdul[0].header['FACT_B']  = (float(result['factor_b']), 'final b_hat of the sky model')
+        hdul[0].header['FACT_BCR']  = (float(result['factor_b_correction']), 'correction of b_hat')
+        #hdul[0].header['FACTP_A']  = (float(result['factor_plane_a']), 'a_hat of the sky model (plane)')
+        #hdul[0].header['FACTP_B0']  = (float(result['factor_plane_b0']), 'b0_hat of the sky model (plane)')
+        #hdul[0].header['FACTP_BX']  = (float(result['factor_plane_bx']), 'bx_hat of the sky model (plane)')
+        #hdul[0].header['FACTP_BY']  = (float(result['factor_plane_by']), 'by_hat of the sky model (plane)')
         #hdul[0].header['ERR_REL'] = (err_rel, 'Relative error of the background (std/factor)')
 
         # 写/更新 MASK（压缩）
@@ -719,12 +853,12 @@ def get_bkg_sk_api(*, data_dir, obsid, filt, ext,
     elif if_sigma_clip is None:
         if_sigma_clip = False
     bkg_path = paths.get_subpath(archive_dir, f'{obsid}_{ext}_{filt_filename}.fits')
-    result, valid_map = get_scattering_factor(img_path=img_path, bkg_path=bkg_path, target_region=target_region, 
+    result, valid_map_save = get_scattering_factor(img_path=img_path, bkg_path=bkg_path, target_region=target_region, 
                                         exclude_region=exclude_region, focus_region=focus_region, 
                                         img_ext=img_ext, bkg_ext=bkg_ext, shrink_pixels=shrink_pixels, if_sigma_clip=if_sigma_clip, 
                                         plot_save=plot_save, plot_show=plot_show)
     
-    save_scattering_bkg(bkg_path=bkg_path, result=result, valid_map=valid_map, img_path=img_path, bkg_ext=bkg_ext)
+    save_scattering_bkg(bkg_path=bkg_path, result=result, valid_map_save=valid_map_save, img_path=img_path, bkg_ext=bkg_ext)
     #p = Path(bkg_path)
     #if p.exists():
     #    p.unlink()

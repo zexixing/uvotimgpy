@@ -131,6 +131,7 @@ class StarIdentifier:
         mask = star_identify_by_ml(image = image, patch_size = patch_size, threshold = threshold, wcs = wcs, verbose = verbose, checkpoint = checkpoint,
                                    min_area = min_area, batch_size = batch_size, device = device, apply_morphology_cleanup = apply_morphology_cleanup,
                                    use_catalog = use_catalog, catalog_magnitude_limit = catalog_magnitude_limit, catalog_cache_dir = catalog_cache_dir)
+        mask[~np.isfinite(image)] = False
         if exclude_region is not None or focus_region is not None:
             exclude_region = get_exclude_region(image.shape, focus_region, exclude_region)
             mask = mask & ~exclude_region
@@ -559,8 +560,8 @@ class PixelFiller:
         filled[mask] = median_map[mask]
         return filled
     
-    def by_tile_median(self, image: np.ndarray, tile_size: int, 
-                       mask: np.ndarray, return_template: bool = False,
+    def by_tile_map(self, image: np.ndarray, tile_size: int, 
+                       mask: np.ndarray, return_template: bool = False, method ='median',
                        factor: float = 1.5, smooth_sigma: int = 4, verbose: bool = True) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
         将图像按 tile 分块，每块用该块的中位数值填充。
@@ -573,7 +574,13 @@ class PixelFiller:
             np.ndarray: 用 tile 中值填充的图像。
         """
         ny, nx = image.shape
-        template = tile_image(image, tile_size, func=np.median, mask=mask)
+        if method == 'median':
+            func = np.median
+        elif method == 'mean':
+            func = np.mean
+        else:
+            raise ValueError(f"Unsupported method: {method}")
+        template = tile_image(image, tile_size, func=func, mask=mask)
         nan_mask = np.isnan(template) #& mask
         nan_exist = np.count_nonzero(nan_mask) > 0
         loop_count = 0
@@ -582,7 +589,7 @@ class PixelFiller:
                 if loop_count > 0 and verbose:
                     print(f'loop_count: {loop_count}')
                 tile_size = int(tile_size*factor)
-                template_new = tile_image(image, tile_size, func=np.median, mask=mask)
+                template_new = tile_image(image, tile_size, func=func, mask=mask)
                 template[nan_mask] = template_new[nan_mask]
                 nan_mask = np.isnan(template) #& mask
                 nan_exist = np.count_nonzero(nan_mask) > 0
@@ -746,8 +753,8 @@ class StarCleaner:
         """
         'neighbors':
         fill_paras = {'radius': int = 4, 'method': str = 'nearest', 'mean_or_median': str = 'mean'} # 'median_filter', 'uniform_filter'
-        'tile_median':
-        fill_paras = {'tile_size': 40, 'factor': 1.5, 'smooth_sigma': 4, 'verbose': True}
+        'tile_map':
+        fill_paras = {'tile_size': 40, 'factor': 1.5, 'smooth_sigma': 4, 'method': 'median', 'verbose': True}
         'rings':
         fill_paras = {'center': tuple(int, int), 'step': float, 'method': str = 'median', \
                       'start': float = None, 'end': float = None} # 'median', 'mean'
@@ -767,14 +774,15 @@ class StarCleaner:
             method = fill_paras.get('method', 'nearest') # 'median_filter'
             mean_or_median = fill_paras.get('mean_or_median', 'mean')
             filled = star_filler.by_neighbors(img, mask=mask, radius=radius, method=method, mean_or_median=mean_or_median)
-        elif fill_method == 'tile_median':
+        elif fill_method == 'tile_map':
             if fill_paras is None:
-                fill_paras = {'tile_size': 40, 'factor': 1.5, 'smooth_sigma': 4, 'verbose': True}
+                fill_paras = {'tile_size': 40, 'factor': 1.5, 'smooth_sigma': 4, 'method': 'median', 'verbose': True}
             tile_size = fill_paras.get('tile_size', 40)
             factor = fill_paras.get('factor', 1.5)
             smooth_sigma = fill_paras.get('smooth_sigma', 4)
             verbose = fill_paras.get('verbose', True)
-            filled = star_filler.by_tile_median(img, tile_size=tile_size, mask=mask, factor=factor, smooth_sigma=smooth_sigma, verbose=verbose)
+            method = fill_paras.get('method', 'median')
+            filled = star_filler.by_tile_map(img, tile_size=tile_size, mask=mask, factor=factor, smooth_sigma=smooth_sigma, verbose=verbose, method=method)
         elif fill_method == 'rings':
             if fill_paras is None:
                 fill_paras = {'center': (1000, 1000), 'step': 2, 'method': 'median', 'start': None, 'end': None}
@@ -849,13 +857,15 @@ def save_starmask(img_path: Union[str, Path],
             hdus = [hdu.copy() for hdu in hdul]
 
         if idx_starmask is not None:
-            old_u8 = np.asarray(hdus[idx_starmask].data).astype(np.uint8)
+            old_data = np.asarray(hdus[idx_starmask].data)
+            old_u8 = (old_data > 0).astype(np.uint8)
+            #old_u8 = np.asarray(hdus[idx_starmask].data).astype(np.uint8)
             merged_u8 = np.bitwise_or(old_u8, new_mask_u8)
-            hdr_starmask = hdus[idx_starmask].header.copy()
+            #hdr_starmask = hdus[idx_starmask].header.copy()
             del hdus[idx_starmask]
             hdu_starmask = fits.CompImageHDU(
                 data=merged_u8,
-                header=hdr_starmask,
+                #header=hdr_starmask,
                 compression_type='RICE_1',
                 name='STARMASK'
             )
