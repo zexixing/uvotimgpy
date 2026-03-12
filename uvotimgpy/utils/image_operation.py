@@ -820,6 +820,7 @@ def calc_radial_profile(image: np.ndarray,
         结束半径，默认为图像中心到角落的距离
     method : str
         计算方法，'median'或'mean'或'max'
+    power = 0: linear (width = step always)
 
     Returns
     -------

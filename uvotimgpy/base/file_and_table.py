@@ -849,3 +849,56 @@ def dates_to_plot_dates(date_input):
     else:
         raise ValueError(f"不支持的输入类型: {type(date_input)}")
 
+
+def write_profile_csv(path, radii, values, errors, comment=None):
+
+    radii = np.asarray(radii)
+    values = np.asarray(values)
+    errors = np.asarray(errors)
+
+    if not (len(radii) == len(values) == len(errors)):
+        raise ValueError("radii, values, errors must have the same length")
+
+    with open(path, "w", newline="") as f:
+
+        if comment is not None:
+            for line in comment.split("\n"):
+                f.write(f"# {line}\n")
+
+        writer = csv.writer(f)
+        writer.writerow(["radii", "values", "errors"])
+
+        for r, v, e in zip(radii, values, errors):
+            writer.writerow([r, v, e])
+
+
+def read_profile_csv(path):
+
+    radii = []
+    values = []
+    errors = []
+    comment_lines = []
+
+    with open(path, "r") as f:
+
+        # 读取comment
+        pos = f.tell()
+        line = f.readline()
+
+        while line.startswith("#"):
+            comment_lines.append(line[1:].strip())
+            pos = f.tell()
+            line = f.readline()
+
+        f.seek(pos)
+
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            radii.append(float(row["radii"]))
+            values.append(float(row["values"]))
+            errors.append(float(row["errors"]))
+
+    comment = "\n".join(comment_lines)
+
+    return np.array(radii), np.array(values), np.array(errors)

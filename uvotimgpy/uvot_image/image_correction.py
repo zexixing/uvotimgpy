@@ -33,10 +33,10 @@ def correct_offset_in_image(img_path: Union[str, Path],
     if save:
         true_coord_py = (round(col_orig), round(row_orig))
         img_shifted, err_shifted = crop_image(img, true_coord_py, target_coord, fill_value=np.nan, image_err=err)
-        if datatype == 'image':
-            exp_shifted = crop_image(exp, true_coord_py, target_coord, fill_value=0)
-        elif datatype == 'Multiple':
-            print("Multiple datatypes found! Offset of exposure map is not corrected.")
+        #if datatype == 'image':
+        exp_shifted = crop_image(exp, true_coord_py, target_coord, fill_value=0)
+        #elif datatype == 'Multiple':
+        #    print("Multiple datatypes found! Offset of exposure map is not corrected.")
         if has_starmask:
             mask_shifted = crop_image(mask, true_coord_py, target_coord, fill_value=0)
         with fits.open(img_path, mode='update') as hdul:
@@ -46,8 +46,8 @@ def correct_offset_in_image(img_path: Union[str, Path],
             primary_hdu.header['OFFCORR'] = (True, 'Offset correction applied')
             hdul[img_extension].data = img_shifted
             hdul['ERROR'].data = err_shifted
-            if datatype == 'image':
-                hdul['EXPOSURE'].data = exp_shifted
+            #if datatype == 'image':
+            hdul['EXPOSURE'].data = exp_shifted
             if has_starmask:
                 hdul['STARMASK'].data = mask_shifted
         #self.offset_correction = 2

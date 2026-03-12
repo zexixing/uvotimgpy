@@ -453,7 +453,7 @@ def create_vectorial_model(
     
     return VectorialModel(**model_kwargs)
 
-def save_vectorial_model_to_csv(vm, filename, comments=None):
+def save_vectorial_model_to_csv(vm, filepath, comments=None):
     """
     Save VectorialModel parameters and column density data to CSV file.
     
@@ -461,11 +461,11 @@ def save_vectorial_model_to_csv(vm, filename, comments=None):
     ----------
     vm : VectorialModel
         The VectorialModel instance to save
-    filename : str
-        Output CSV filename
+    filepath : str
+        Output CSV filepath
     """
     
-    with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+    with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.writer(csvfile)
         
         # Write header with metadata
@@ -551,13 +551,13 @@ def save_vectorial_model_to_csv(vm, filename, comments=None):
         for grid_val, column_density_val, volume_density_val in zip(grid_values, column_density_values, volume_density_values):
             writer.writerow([grid_val, column_density_val, volume_density_val])
 
-def read_vectorial_model_csv(filename):
+def read_vectorial_model_csv(filepath):
     """
     Read VectorialModel CSV file and return a simple dictionary.
     
     Parameters
     ----------
-    filename : str
+    filepath : str
         Path to the CSV file
         
     Returns
@@ -567,7 +567,7 @@ def read_vectorial_model_csv(filename):
     """
     result = {}
     
-    with open(filename, 'r', encoding='utf-8') as csvfile:
+    with open(filepath, 'r', encoding='utf-8') as csvfile:
         reader = csv.reader(csvfile)
         
         data_section = False
@@ -726,7 +726,7 @@ class ColumnDensityProfile:
     
     @staticmethod
     def from_file(
-        filename: str,
+        filepath: str,
         rho: Optional[Union[Tuple[float, float, float], List[float], np.ndarray]] = None,
         limit_rho: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
@@ -735,7 +735,7 @@ class ColumnDensityProfile:
         
         Parameters
         ----------
-        filename : str
+        filepath : str
             CSV文件路径
         rho : tuple, list, or array, optional
             如果是元组: (start_km, stop_km, step_km)
@@ -750,7 +750,7 @@ class ColumnDensityProfile:
             (rho_km, column_densities_cm2) - 都是无单位的numpy数组
         """
         # 读取数据
-        data = read_vectorial_model_csv(filename)
+        data = read_vectorial_model_csv(filepath)
         
         # 处理rho输入
         if rho is None:
@@ -1012,11 +1012,22 @@ def scale_from_total_number(total_number_data: float,
                             base_q: float) -> float:
     return base_q * (total_number_data / total_number_model)
 
+
 class OHProfileFitter:
     """
-    用于拟合OH profile的类，同时优化reddening和q_factor两个参数。
+    用于拟合 OH profile 的类，同时优化 reddening、q_factor 和常数背景 bkg 三个参数。
+
+    参数说明
+    ----------
+    reddening : 尘埃红化参数
+    q_factor  : 相对于 base_q 的缩放因子，best_q = base_q * q_factor
+    bkg       : OH profile 中的常数背景，单位为 count rate
+
+    模型形式
+    ----------
+    countrate_oh(rho) = countrate_uw1(rho) - reddening_func(reddening) * countrate_v(rho) - bkg
     """
-    
+
     def __init__(
         self,
         rho: np.ndarray,
@@ -1027,258 +1038,304 @@ class OHProfileFitter:
         oh_countrate_to_column_density_factor: float = 1.0,
         countrate_uw1_err: Optional[np.ndarray] = None,
         countrate_v_err: Optional[np.ndarray] = None,
+        rho_fit_range: Optional[Tuple[Optional[float], Optional[float]]] = None,
     ):
-        """
-        初始化拟合器。
-        
-        Parameters
-        ----------
-        rho : np.ndarray
-            距离数组
-        countrate_uw1 : np.ndarray
-            UW1波段的亮度profile (unit: count/s)
-        countrate_v : np.ndarray
-            V波段的亮度profile (unit: count/s)
-        column_density_model : dict
-            {'rho': np.ndarray, 'column_density': np.ndarray, 'base_q': float}
-        reddening_func : Callable
-            红化函数，接受reddening参数并返回修正因子
-        oh_countrate_to_column_density_factor : float
-            从OH亮度到柱密度的转换因子
-        countrate_uw1_err : Optional[np.ndarray]
-            UW1 profile的误差
-        countrate_v_err : Optional[np.ndarray]
-            V profile的误差
-        """
-        # 验证输入
         assert len(rho) == len(countrate_uw1) == len(countrate_v), \
-            "距离和profile数组长度必须相同"
+            "距离和 profile 数组长度必须相同"
         assert 'rho' in column_density_model and 'column_density' in column_density_model and 'base_q' in column_density_model, \
-            "column_density_model必须包含'rho', 'column_density'和'base_q'"
-        
-        # 存储数据
-        self.rho = rho
-        self.countrate_uw1 = countrate_uw1
-        self.countrate_v = countrate_v
-        self.rho_model = column_density_model['rho']
-        self.colden_model = column_density_model['column_density']
-        self.base_q = column_density_model['base_q']
+            "column_density_model 必须包含 'rho', 'column_density' 和 'base_q'"
+
+        self.rho = np.asarray(rho, dtype=float)
+        self.countrate_uw1 = np.asarray(countrate_uw1, dtype=float)
+        self.countrate_v = np.asarray(countrate_v, dtype=float)
+
+        self.rho_model = np.asarray(column_density_model['rho'], dtype=float)
+        self.colden_model = np.asarray(column_density_model['column_density'], dtype=float)
+        self.base_q = float(column_density_model['base_q'])
+
         self.reddening_func = reddening_func
-        self.oh_factor = oh_countrate_to_column_density_factor
-        
-        # 处理误差
+        self.oh_factor = float(oh_countrate_to_column_density_factor)
+
         if countrate_uw1_err is None:
-            self.countrate_uw1_err = np.ones_like(countrate_uw1) * 0.01 * np.max(countrate_uw1)
+            self.countrate_uw1_err = np.ones_like(self.countrate_uw1) * 0.01 * np.nanmax(np.abs(self.countrate_uw1))
         else:
-            self.countrate_uw1_err = countrate_uw1_err
-            
+            self.countrate_uw1_err = np.asarray(countrate_uw1_err, dtype=float)
+
         if countrate_v_err is None:
-            self.countrate_v_err = np.ones_like(countrate_v) * 0.01 * np.max(countrate_v)
+            self.countrate_v_err = np.ones_like(self.countrate_v) * 0.01 * np.nanmax(np.abs(self.countrate_v))
         else:
-            self.countrate_v_err = countrate_v_err
-        
-        # 创建插值函数
+            self.countrate_v_err = np.asarray(countrate_v_err, dtype=float)
+        self.rho_fit_range = rho_fit_range
+        self.fit_mask = self._build_fit_mask()
+        if not np.any(self.fit_mask):
+            raise ValueError("rho_fit_range 没有选中任何数据点")
+
         self._create_interpolator()
+
+    def _build_fit_mask(self) -> np.ndarray:
+        """根据 rho_fit_range 构造用于拟合的布尔 mask"""
+        mask = np.isfinite(self.rho)
     
+        if self.rho_fit_range is None:
+            return mask
+    
+        rho_min, rho_max = self.rho_fit_range
+    
+        if rho_min is not None:
+            mask &= (self.rho >= rho_min)
+        if rho_max is not None:
+            mask &= (self.rho <= rho_max)
+    
+        return mask
+
     def _create_interpolator(self):
         """创建柱密度模型的插值函数"""
         self.colden_interp = interp1d(
-            self.rho_model, 
-            self.colden_model, 
-            kind='linear', 
+            self.rho_model,
+            self.colden_model,
+            kind='linear',
             fill_value='extrapolate'
         )
-    
+
     def calculate_oh_error(self, reddening: float) -> np.ndarray:
-        """计算OH profile的误差传播"""
+        """
+        计算 OH profile 的误差传播。
+        注意：bkg 是待拟合常数，不视作测量误差来源，因此这里不额外加入 bkg 的误差项。
+        """
         f_red = self.reddening_func(reddening)
         oh_err = np.sqrt(self.countrate_uw1_err**2 + (f_red * self.countrate_v_err)**2)
         return oh_err
-    
+
     def column_density_model_func(self, rho: np.ndarray, q_factor: float) -> np.ndarray:
         """计算模型柱密度"""
         return self.colden_interp(rho) * q_factor
-    
+
+    def countrate_oh_data(self, reddening: float, bkg: float) -> np.ndarray:
+        """计算扣除 dust 和常数背景后的 OH count-rate profile"""
+        f_red = self.reddening_func(reddening)
+        return self.countrate_uw1 - self.countrate_v * f_red - bkg
+
     def residual_function(self, params: np.ndarray) -> float:
         """计算残差平方和（标量）"""
-        reddening, q_factor = params
-        
-        # 计算OH profile
-        f_red = self.reddening_func(reddening)
-        countrate_oh = self.countrate_uw1 - self.countrate_v * f_red
+        reddening, q_factor, bkg = params
+
+        countrate_oh = self.countrate_oh_data(reddening, bkg)
         oh_err = self.calculate_oh_error(reddening)
-        
-        # 转换为柱密度
+
         column_density_oh = countrate_oh * self.oh_factor
         column_density_err = oh_err * self.oh_factor
-        
-        # 计算模型
+
         try:
             column_density_model = self.column_density_model_func(self.rho, q_factor)
         except Exception:
             return np.inf
-        
-        # 计算加权残差
-        residuals = (column_density_oh - column_density_model) / column_density_err
-        
-        # 去除无效值
-        valid = np.isfinite(residuals)
+
+        valid = (
+            self.fit_mask &
+            np.isfinite(column_density_oh) &
+            np.isfinite(column_density_model) &
+            np.isfinite(column_density_err) &
+            (column_density_err > 0)
+        )
         if not np.any(valid):
             return np.inf
-        
-        return np.sum(residuals[valid]**2)
-    
+
+        residuals = (column_density_oh[valid] - column_density_model[valid]) / column_density_err[valid]
+        return np.sum(residuals**2)
+
     def residual_vector(self, params: np.ndarray) -> np.ndarray:
-        """计算残差向量（用于least_squares）"""
-        reddening, q_factor = params
-        
-        # 计算OH profile
-        f_red = self.reddening_func(reddening)
-        countrate_oh = self.countrate_uw1 - self.countrate_v * f_red
+        """计算残差向量（用于 least_squares）"""
+        reddening, q_factor, bkg = params
+
+        countrate_oh = self.countrate_oh_data(reddening, bkg)
         oh_err = self.calculate_oh_error(reddening)
-        
-        # 转换为柱密度
+
         column_density_oh = countrate_oh * self.oh_factor
         column_density_err = oh_err * self.oh_factor
-        
-        # 计算模型
+
         try:
             column_density_model = self.column_density_model_func(self.rho, q_factor)
         except Exception:
-            return np.full_like(self.rho, 1e10)
-        
-        # 返回加权残差向量
-        residuals = (column_density_oh - column_density_model) / column_density_err
-        
-        # 处理无效值
-        residuals[~np.isfinite(residuals)] = 1e10
-        
+            residuals = np.zeros_like(self.rho, dtype=float)
+            residuals[self.fit_mask] = 1e10
+            return residuals
+
+        residuals = np.zeros_like(self.rho, dtype=float)
+        valid = (
+            self.fit_mask &
+            np.isfinite(column_density_oh) &
+            np.isfinite(column_density_model) &
+            np.isfinite(column_density_err) &
+            (column_density_err > 0)
+        )
+        residuals[valid] = (column_density_oh[valid] - column_density_model[valid]) / column_density_err[valid]
         return residuals
-    
-    def _fit_least_squares(
-        self, 
-        initial_guess: Tuple[float, float],
-        bounds: Tuple[list, list]
+
+    def _fit_least_squares_free(
+        self,
+        x0_free: np.ndarray,
+        bounds_free: Tuple[np.ndarray, np.ndarray],
+        build_full_params: Callable[[np.ndarray], np.ndarray],
     ) -> Dict[str, Any]:
-        """使用least_squares方法拟合"""
+        """对自由参数做 least_squares 拟合"""
+
+        def residual_vector_free(free_params):
+            full_params = build_full_params(free_params)
+            return self.residual_vector(full_params)
+
         result = least_squares(
-            self.residual_vector,
-            initial_guess,
-            bounds=bounds,
+            residual_vector_free,
+            x0_free,
+            bounds=bounds_free,
             max_nfev=5000
         )
-        
+
         if not result.success:
             warnings.warn(f"最小二乘拟合未收敛: {result.message}")
-        
-        reddening_fit, q_factor_fit = result.x
-        
-        # 估计误差
+
+        full_best = build_full_params(result.x)
+
         try:
             J = result.jac
-            n_data = len(self.rho)
-            n_params = 2
-            sigma_squared = result.cost / (n_data - n_params) if n_data > n_params else 1.0
-            
+            n_data = np.sum(self.fit_mask)
+            n_free = len(result.x)
+            sigma_squared = result.cost / (n_data - n_free) if n_data > n_free else 1.0
+
             try:
-                cov = np.linalg.inv(J.T @ J) * sigma_squared
+                cov_free = np.linalg.inv(J.T @ J) * sigma_squared
             except np.linalg.LinAlgError:
-                cov = np.linalg.pinv(J.T @ J) * sigma_squared
-            
-            pcov = cov
-            perr = np.sqrt(np.diag(np.abs(cov)))
-            reddening_err, q_factor_err = perr
-            
+                cov_free = np.linalg.pinv(J.T @ J) * sigma_squared
+
         except Exception as e:
-            warnings.warn(f"误差估计失败: {e}")
-            reddening_err = 0.1 * abs(reddening_fit)
-            q_factor_err = 0.1 * abs(q_factor_fit)
-            pcov = None
-        
+            warnings.warn(f"自由参数误差估计失败: {e}")
+            cov_free = None
+
         return {
-            'x': result.x,
+            'x_full': full_best,
             'success': result.success,
-            'pcov': pcov,
-            'errors': (reddening_err, q_factor_err)
+            'cov_free': cov_free,
+            'x_free': result.x,
         }
-    
-    def _fit_minimize(
-        self, 
-        bounds: list
+
+    def _fit_minimize_free(
+        self,
+        bounds_free: list,
+        build_full_params: Callable[[np.ndarray], np.ndarray],
     ) -> Dict[str, Any]:
-        """使用differential_evolution方法拟合"""
+        """对自由参数做 differential_evolution 拟合"""
+
+        def objective_free(free_params):
+            full_params = build_full_params(np.asarray(free_params, dtype=float))
+            return self.residual_function(full_params)
+
         result = differential_evolution(
-            self.residual_function,
-            bounds,
+            objective_free,
+            bounds_free,
             seed=42,
             maxiter=1000,
             popsize=15
         )
-        
+
         if not result.success:
             warnings.warn(f"优化未收敛: {result.message}")
-        
-        reddening_fit, q_factor_fit = result.x
-        
-        # 估计误差
+
+        full_best = build_full_params(result.x)
+
         try:
             eps = np.sqrt(np.finfo(float).eps)
-            hess = np.zeros((2, 2))
-            
-            for i in range(2):
+            n_free = len(result.x)
+            hess = np.zeros((n_free, n_free))
+
+            for i in range(n_free):
                 def grad_i(x):
-                    return approx_fprime(x, self.residual_function, eps)[i]
-                
+                    return approx_fprime(x, objective_free, eps)[i]
                 hess[i] = approx_fprime(result.x, grad_i, eps)
-            
-            pcov = 0.5 * np.linalg.inv(hess)
-            perr = np.sqrt(np.diag(np.abs(pcov)))
-            reddening_err, q_factor_err = perr
-            
+
+            try:
+                cov_free = 0.5 * np.linalg.inv(hess)
+            except np.linalg.LinAlgError:
+                cov_free = 0.5 * np.linalg.pinv(hess)
+
         except Exception as e:
-            warnings.warn(f"误差估计失败: {e}")
-            reddening_err = 0.1 * abs(reddening_fit)
-            q_factor_err = 0.1 * abs(q_factor_fit)
-            pcov = None
-        
+            warnings.warn(f"自由参数误差估计失败: {e}")
+            cov_free = None
+
         return {
-            'x': result.x,
+            'x_full': full_best,
             'success': result.success,
-            'pcov': pcov,
-            'errors': (reddening_err, q_factor_err)
+            'cov_free': cov_free,
+            'x_free': result.x,
         }
-    
+
+    def _expand_covariance_and_errors(
+        self,
+        cov_free: Optional[np.ndarray],
+        free_indices: list,
+        full_params: np.ndarray
+    ) -> Tuple[Optional[np.ndarray], Tuple[float, float, float]]:
+        """
+        把自由参数协方差矩阵扩展到完整 3x3 矩阵。
+        固定参数对应误差设为 0，协方差对应行为 0。
+        """
+        pcov = np.zeros((3, 3), dtype=float)
+        errors = np.zeros(3, dtype=float)
+
+        if cov_free is None:
+            for i in range(3):
+                errors[i] = 0.1 * abs(full_params[i]) if np.isfinite(full_params[i]) else np.nan
+            return None, tuple(errors)
+
+        for i_free, i_full in enumerate(free_indices):
+            for j_free, j_full in enumerate(free_indices):
+                pcov[i_full, j_full] = cov_free[i_free, j_free]
+
+        diag = np.diag(pcov)
+        errors = np.sqrt(np.abs(diag))
+        return pcov, tuple(errors)
+
     def _calculate_fit_statistics(
-        self, 
-        reddening_fit: float, 
-        q_factor_fit: float
+        self,
+        reddening_fit: float,
+        q_factor_fit: float,
+        bkg_fit: float,
+        n_params: int
     ) -> Dict[str, Any]:
         """计算拟合统计量"""
-        # 计算最终结果
-        f_red_fit = self.reddening_func(reddening_fit)
-        countrate_oh_best = self.countrate_uw1 - self.countrate_v * f_red_fit
+        countrate_oh_best = self.countrate_oh_data(reddening_fit, bkg_fit)
         column_density_best_model = self.column_density_model_func(self.rho, q_factor_fit)
-        
-        # 计算卡方
+
         oh_err_fit = self.calculate_oh_error(reddening_fit)
+        countrate_oh_best_err = oh_err_fit
         column_density_oh_final = countrate_oh_best * self.oh_factor
         column_density_err_final = oh_err_fit * self.oh_factor
-        
-        residuals = (column_density_oh_final - column_density_best_model) / column_density_err_final
-        valid = np.isfinite(residuals)
-        chi2 = np.sum(residuals[valid]**2)
-        n_data = np.sum(valid)
-        n_params = 2
+
+        valid = (
+            self.fit_mask &
+            np.isfinite(column_density_oh_final) &
+            np.isfinite(column_density_best_model) &
+            np.isfinite(column_density_err_final) &
+            (column_density_err_final > 0)
+        )
+
+        if np.any(valid):
+            residuals = (column_density_oh_final[valid] - column_density_best_model[valid]) / column_density_err_final[valid]
+            chi2 = np.sum(residuals**2)
+            n_data = np.sum(valid)
+        else:
+            chi2 = np.inf
+            n_data = 0
+
         reduced_chi2 = chi2 / (n_data - n_params) if n_data > n_params else np.nan
-        
+
         return {
             'countrate_oh_best': countrate_oh_best,
+            'countrate_oh_best_err': countrate_oh_best_err,
             'column_density_best_model': column_density_best_model,
             'chi2': chi2,
             'reduced_chi2': reduced_chi2,
             'n_data_points': n_data
         }
-    
+
     @staticmethod
     def fit(
         rho: np.ndarray,
@@ -1286,27 +1343,28 @@ class OHProfileFitter:
         countrate_v: np.ndarray,
         column_density_model: dict,
         reddening_func: Callable[[float], float],
-        reddening_bounds: Tuple[float, float] = (0.0, 1.0),
-        true_q_bounds: Tuple[float, float] = (1e26, 1e30),
+        reddening_bounds: Tuple[float, float] = (0.0, 40.0),
+        best_q_bounds: Tuple[float, float] = (1e24, 1e32),
+        bkg_bounds: Tuple[float, float] = (0.0, 0.0),
         countrate_uw1_err: Optional[np.ndarray] = None,
         countrate_v_err: Optional[np.ndarray] = None,
         oh_countrate_to_column_density_factor: float = 1.0,
-        initial_guess: Optional[Tuple[float, float]] = None,
+        initial_guess: Optional[Tuple[float, float, float]] = None,
+        rho_fit_range: Optional[Tuple[Optional[float], Optional[float]]] = None,
         method: str = 'least_squares',
     ) -> Dict[str, Any]:
         """
-        执行OH profile拟合的静态方法。
-        
+        执行 OH profile 拟合的静态方法。
+
         Parameters
         ----------
-        [参数说明与原函数相同]
-        
-        Returns
-        -------
-        Dict[str, Any]
-            包含拟合结果的字典
+        bkg_bounds : Tuple[float, float], default (0.0, 0.0)
+            OH profile 常数背景 bkg 的边界，单位为 count rate。
+            bkg_bounds 可包含负值；若上下界相同，则视为固定背景。
+        initial_guess : Optional[Tuple[float, float, float]]
+            (reddening_init, q_factor_init, bkg_init)
+            注意这里第二个量仍然是 q_factor，不是 best_q。
         """
-        # 创建拟合器实例
         fitter = OHProfileFitter(
             rho=rho,
             countrate_uw1=countrate_uw1,
@@ -1315,138 +1373,131 @@ class OHProfileFitter:
             reddening_func=reddening_func,
             oh_countrate_to_column_density_factor=oh_countrate_to_column_density_factor,
             countrate_uw1_err=countrate_uw1_err,
-            countrate_v_err=countrate_v_err
+            countrate_v_err=countrate_v_err,
+            rho_fit_range=rho_fit_range,
         )
-        
-        # 准备边界
-        base_q = column_density_model['base_q']
+
+        base_q = float(column_density_model['base_q'])
+
         reddening_bounds = list(reddening_bounds)
-        true_q_bounds = list(true_q_bounds)
-        
-        # 转换为q_factor bounds
-        q_factor_bounds = [true_q_bounds[0]/base_q, true_q_bounds[1]/base_q]
-        
-        # 检查是否有固定参数（边界相同）
+        best_q_bounds = list(best_q_bounds)
+        bkg_bounds = list(bkg_bounds)
+
+        q_factor_bounds = [best_q_bounds[0] / base_q, best_q_bounds[1] / base_q]
+
         reddening_fixed = np.isclose(reddening_bounds[0], reddening_bounds[1], rtol=1e-10)
         q_factor_fixed = np.isclose(q_factor_bounds[0], q_factor_bounds[1], rtol=1e-10)
-        
-        # 设置初始猜测值
+        bkg_fixed = np.isclose(bkg_bounds[0], bkg_bounds[1], rtol=1e-10)
+
+        fixed_flags = [reddening_fixed, q_factor_fixed, bkg_fixed]
+        lower_bounds = [reddening_bounds[0], q_factor_bounds[0], bkg_bounds[0]]
+        upper_bounds = [reddening_bounds[1], q_factor_bounds[1], bkg_bounds[1]]
+
         if initial_guess is None:
-            # 对于固定参数，使用固定值；否则使用中点
             reddening_init = reddening_bounds[0] if reddening_fixed else (reddening_bounds[0] + reddening_bounds[1]) / 2
             q_factor_init = q_factor_bounds[0] if q_factor_fixed else np.sqrt(q_factor_bounds[0] * q_factor_bounds[1])
-            initial_guess = (reddening_init, q_factor_init)
-        
-        # 处理固定参数的情况
-        if reddening_fixed and q_factor_fixed:
-            # 两个参数都固定，直接计算结果
-            warnings.warn("两个参数都被固定，无法进行拟合优化")
-            reddening_fit = reddening_bounds[0]
-            q_factor_fit = q_factor_bounds[0]
+            bkg_init = bkg_bounds[0] if bkg_fixed else (bkg_bounds[0] + bkg_bounds[1]) / 2
+            initial_guess_full = np.array([reddening_init, q_factor_init, bkg_init], dtype=float)
+        else:
+            if len(initial_guess) != 3:
+                raise ValueError("initial_guess 必须是长度为 3 的 tuple: (reddening, q_factor, bkg)")
+            initial_guess_full = np.array(initial_guess, dtype=float)
+
+        # 对固定参数强制使用固定值；对自由参数把初值裁剪到边界内
+        for i in range(3):
+            if fixed_flags[i]:
+                initial_guess_full[i] = lower_bounds[i]
+            else:
+                initial_guess_full[i] = np.clip(initial_guess_full[i], lower_bounds[i], upper_bounds[i])
+
+        free_indices = [i for i, fixed in enumerate(fixed_flags) if not fixed]
+        n_free = len(free_indices)
+
+        def build_full_params(free_params: np.ndarray) -> np.ndarray:
+            full = initial_guess_full.copy()
+            for j, i_full in enumerate(free_indices):
+                full[i_full] = free_params[j]
+            return full
+
+        if n_free == 0:
+            warnings.warn("所有参数都被固定，无法进行拟合优化")
+            full_best = initial_guess_full.copy()
+            success = True
+            pcov = np.zeros((3, 3), dtype=float)
             reddening_err = 0.0
             q_factor_err = 0.0
-            pcov = np.zeros((2, 2))
-            success = True
+            bkg_err = 0.0
             method_used = 'fixed'
-        elif reddening_fixed or q_factor_fixed:
-            # 一个参数固定，转为一维优化问题
-            if reddening_fixed:
-                # 固定reddening，优化q_factor
-                def objective_1d(q_factor):
-                    return fitter.residual_function([reddening_bounds[0], q_factor])
-                
-                from scipy.optimize import minimize_scalar
-                result = minimize_scalar(
-                    objective_1d,
-                    bounds=(q_factor_bounds[0], q_factor_bounds[1]),
-                    method='bounded'
-                )
-                
-                reddening_fit = reddening_bounds[0]
-                q_factor_fit = result.x
-                reddening_err = 0.0
-                q_factor_err = 0.1 * abs(q_factor_fit)  # 简单误差估计
-                pcov = None
-                success = result.success
-                method_used = f'{method}_1d'
-            else:
-                # 固定q_factor，优化reddening
-                def objective_1d(reddening):
-                    return fitter.residual_function([reddening, q_factor_bounds[0]])
-                
-                from scipy.optimize import minimize_scalar
-                result = minimize_scalar(
-                    objective_1d,
-                    bounds=(reddening_bounds[0], reddening_bounds[1]),
-                    method='bounded'
-                )
-                
-                reddening_fit = result.x
-                q_factor_fit = q_factor_bounds[0]
-                reddening_err = 0.1 * abs(reddening_fit)  # 简单误差估计
-                q_factor_err = 0.0
-                pcov = None
-                success = result.success
-                method_used = f'{method}_1d'
         else:
-            # 正常的二维优化
-            # 执行拟合
+            x0_free = np.array([initial_guess_full[i] for i in free_indices], dtype=float)
+            lb_free = np.array([lower_bounds[i] for i in free_indices], dtype=float)
+            ub_free = np.array([upper_bounds[i] for i in free_indices], dtype=float)
+            bounds_free = (lb_free, ub_free)
+
             if method == 'least_squares':
                 try:
-                    fit_result = fitter._fit_least_squares(
-                        initial_guess,
-                        bounds=(
-                            [reddening_bounds[0], q_factor_bounds[0]],
-                            [reddening_bounds[1], q_factor_bounds[1]]
-                        )
+                    fit_result = fitter._fit_least_squares_free(
+                        x0_free=x0_free,
+                        bounds_free=bounds_free,
+                        build_full_params=build_full_params
                     )
-                    method_used = method
+                    method_used = 'least_squares'
                 except Exception as e:
-                    warnings.warn(f"least_squares失败: {e}，尝试使用minimize方法")
-                    method = 'minimize'
-                    fit_result = fitter._fit_minimize([reddening_bounds, q_factor_bounds])
+                    warnings.warn(f"least_squares 失败: {e}，尝试使用 minimize 方法")
+                    fit_result = fitter._fit_minimize_free(
+                        bounds_free=list(zip(lb_free, ub_free)),
+                        build_full_params=build_full_params
+                    )
                     method_used = 'minimize'
-            
             elif method == 'minimize':
-                fit_result = fitter._fit_minimize([reddening_bounds, q_factor_bounds])
-                method_used = method
-            
+                fit_result = fitter._fit_minimize_free(
+                    bounds_free=list(zip(lb_free, ub_free)),
+                    build_full_params=build_full_params
+                )
+                method_used = 'minimize'
             else:
                 raise ValueError(f"未知的方法: {method}")
-            
-            # 提取结果
-            reddening_fit, q_factor_fit = fit_result['x']
-            reddening_err, q_factor_err = fit_result['errors']
-            pcov = fit_result['pcov']
+
+            full_best = fit_result['x_full']
             success = fit_result['success']
-        
-        # 计算统计量
-        stats = fitter._calculate_fit_statistics(reddening_fit, q_factor_fit)
-        
-        # 判断结果是否在边界上（相对容差1%或绝对容差0.01）
+            pcov, errors = fitter._expand_covariance_and_errors(
+                cov_free=fit_result['cov_free'],
+                free_indices=free_indices,
+                full_params=full_best
+            )
+            reddening_err, q_factor_err, bkg_err = errors
+
+        reddening_fit, q_factor_fit, bkg_fit = full_best
+
+        stats = fitter._calculate_fit_statistics(reddening_fit, q_factor_fit, bkg_fit, n_free)
+
         def is_at_boundary(value, lower, upper, rtol=0.01, atol=0.01):
-            """判断值是否在边界上"""
             return np.isclose(value, lower, rtol=rtol, atol=atol) or \
                    np.isclose(value, upper, rtol=rtol, atol=atol)
-        
+
         at_boundary = {
             'reddening': is_at_boundary(reddening_fit, reddening_bounds[0], reddening_bounds[1]),
             'q_factor': is_at_boundary(q_factor_fit, q_factor_bounds[0], q_factor_bounds[1]),
-            'true_q': is_at_boundary(base_q * q_factor_fit, true_q_bounds[0], true_q_bounds[1])
+            'best_q': is_at_boundary(base_q * q_factor_fit, best_q_bounds[0], best_q_bounds[1]),
+            'bkg': is_at_boundary(bkg_fit, bkg_bounds[0], bkg_bounds[1]),
         }
-        
-        # 返回结果
+
         return {
             'reddening': reddening_fit,
             'reddening_err': reddening_err,
+            'oh_factor': fitter.oh_factor,
             'q_factor': q_factor_fit,
             'q_factor_err': q_factor_err,
-            'true_q': base_q * q_factor_fit,
-            'true_q_err': base_q * q_factor_err,
+            'best_q': base_q * q_factor_fit,
+            'best_q_err': base_q * q_factor_err,
+            'bkg': bkg_fit,                     # 单位: count rate
+            'bkg_err': bkg_err,                # 单位: count rate
             'chi2': stats['chi2'],
             'reduced_chi2': stats['reduced_chi2'],
-            'covariance': pcov,
+            'covariance': pcov,                # 参数顺序: [reddening, q_factor, bkg]
+            'radii': fitter.rho,
             'countrate_oh_best': stats['countrate_oh_best'],
+            'countrate_oh_best_err': stats['countrate_oh_best_err'],
             'column_density_best_model': stats['column_density_best_model'],
             'n_data_points': stats['n_data_points'],
             'success': success,
@@ -1454,10 +1505,10 @@ class OHProfileFitter:
             'at_boundary': at_boundary,
             'parameters_fixed': {
                 'reddening': reddening_fixed,
-                'q_factor': q_factor_fixed
+                'q_factor': q_factor_fixed,
+                'bkg': bkg_fixed,
             }
         }
-
 
 # 使用示例
 if __name__ == "__main__":
@@ -1482,7 +1533,7 @@ if __name__ == "__main__":
     #    },
     #    reddening_func=lambda r: 10**(-0.4 * r),
     #    reddening_bounds=(1.0, 1.0),
-    #    true_q_bounds=(1e27, 1e29),
+    #    best_q_bounds=(1e27, 1e29),
     #    countrate_uw1_err=None,
     #    countrate_v_err=None,
     #    oh_countrate_to_column_density_factor=1e12,
@@ -1490,7 +1541,7 @@ if __name__ == "__main__":
     #)
     #
     #print(f"Reddening: {result['reddening']:.3f} ± {result['reddening_err']:.3f}")
-    #print(f"True Q: {result['true_q']:.2e} ± {result['true_q_err']:.2e}")
+    #print(f"True Q: {result['best_q']:.2e} ± {result['best_q_err']:.2e}")
     #print(result)
 
 

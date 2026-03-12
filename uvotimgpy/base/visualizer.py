@@ -6,7 +6,7 @@ from typing import Union, List, Dict, Any, Optional, Tuple
 import math
 import pandas as pd
 import plotly.express as px
-
+from pathlib import Path
 
 class MaskInspector:
     def __init__(self, image: np.ndarray, mask: np.ndarray):
@@ -364,7 +364,7 @@ def linear_stretch(img, p_low=2.0, p_high=98.0, mask=None, return_threshold=Fals
     else:
         return out
 
-def figs_to_gif(figs, save_path, duration=500):
+def figs_to_gif(figs, save_path, duration=500, last_duration=2000):
     """
     Save figures as GIF.
 
@@ -376,6 +376,9 @@ def figs_to_gif(figs, save_path, duration=500):
         Output file path
     duration : int
         Duration of each frame in milliseconds
+    last_duration : int or None
+        Duration of the last frame in milliseconds.
+        If None, use `duration` for all frames.
     """
     frames = []
     for fig in figs:
@@ -384,14 +387,21 @@ def figs_to_gif(figs, save_path, duration=500):
         buf = np.asarray(canvas.buffer_rgba())
         frames.append(Image.fromarray(buf))
 
+    n = len(frames)
+    if last_duration is None:
+        durations = duration
+    else:
+        durations = [duration] * (n - 1) + [last_duration]
+
     # 存 GIF：每帧 1000 毫秒（1s）
+    save_path = Path(save_path)
     frames[0].save(
         save_path,
         save_all=True,
         append_images=frames[1:],
-        duration=duration,   # 毫秒！不是秒
-        loop=0,          # 无限循环
-        disposal=2       # 避免残影
+        duration=durations,
+        loop=0,
+        disposal=2 # 避免残影
     )
 
 def plot_obs_timeline(

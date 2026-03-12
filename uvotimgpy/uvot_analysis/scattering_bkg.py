@@ -606,6 +606,7 @@ def update_factor_b(img, bkg, bkg_region, factor_a, factor_b, mask=None):
     bkg_region = RegionConverter.to_bool_array(bkg_region, image_shape=img.shape)
     net = img - (bkg * factor_a + factor_b)
     net_region = net[(~mask) & bkg_region]
+    #net_region = net[bkg_region]
     factor_b_update = np.nanmean(net_region)
     factor_b_new = factor_b_update + factor_b
     return factor_b_new
@@ -629,8 +630,9 @@ def get_scattering_factor(img_path, bkg_path,
             mask |= select_mask_regions(mask_copy, min_area=4, max_area=None)
         if 'EXPOSURE' in hdul:
             exp = hdul['EXPOSURE'].data
-            exp[exp == 0] = np.nan
-            exp_mask = (exp != np.nanmedian(exp))
+            exp[np.abs(exp) < 1e-8] = np.nan
+            bkg_value = np.nanmedian(exp)
+            exp_mask = (exp != bkg_value)
     with fits.open(bkg_path, mode='readonly', memmap=True) as hdul:
         bkg = hdul[bkg_ext].data  # 不 copy
         bkg[exp_mask] = np.nan

@@ -1738,8 +1738,9 @@ def create_sector_region(center, direction, span, image_shape, radius=None, retu
     direction : float
         扇形中心方向（度），从正上方开始逆时针旋转的角度
         0度=上, 90度=左, 180度=下, 270度=右
-    angle_span : float
+    span : float
         扇形张角（度），0-360度
+        是full span，而不是half span
     image_shape : tuple
         图像形状 (height, width)
     
