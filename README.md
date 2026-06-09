@@ -1,7 +1,7 @@
 # uvotimgpy
 
 `uvotimgpy` is a work-in-progress Python package for processing and analyzing
-astronomical images, with tools mainly aimed at Swift/UVOT and HST workflows.
+small body images, with tools mainly aimed at Swift/UVOT.
 
 
 ## Package Layout
