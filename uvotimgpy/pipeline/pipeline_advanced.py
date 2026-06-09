@@ -430,7 +430,7 @@ class OHAnalysis:
         self.delta = self.observation_info['delta']
         self.rhv = self.observation_info['r_rate']
         self.reddening = reddening
-        self.beta = RatioCalculator_V_UV.dust_countrate_ratio_from_reddening(reddening=self.reddening, obs_time=self.obs_time)
+        self.beta = RatioCalculator_V_UV.dust_countrate_ratio_from_reddening_CR(reddening=self.reddening, obs_time=self.obs_time)
         self.g_factor = None
         self.netimg_v, self.netimg_v_err = netimg_v # countrate img
         self.netimg_uw1, self.netimg_uw1_err = netimg_uw1 # countrate img

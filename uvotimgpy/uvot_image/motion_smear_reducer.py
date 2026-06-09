@@ -10,6 +10,12 @@ from uvotimgpy.utils.image_operation import align_images, stack_images, DS9Conve
 from uvotimgpy.base.math_tools import icrf_to_fk5
 from uvotimgpy.base.file_and_table import get_ephemeris_batch
 
+from astropy.coordinates import SkyCoord
+from astropy.stats import sigma_clipped_stats
+from photutils.detection import DAOStarFinder
+from astroquery.vizier import Vizier
+
+
 def read_event_file(evt_file_path: Union[str, pathlib.Path]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, fits.Header]:
     """
     读取事件文件
@@ -24,7 +30,7 @@ def read_event_file(evt_file_path: Union[str, pathlib.Path]) -> Tuple[np.ndarray
     tuple
         (time_list, x_list, y_list, header)
     """
-    with fits.open(evt_file_path) as hdul:
+    with fits.open(evt_file_path, mode='readonly') as hdul:
         data = hdul[1].data
         header = hdul[1].header
         
@@ -194,6 +200,24 @@ def save_single_evt_image(evt_file_path: Union[str, pathlib.Path],
     hdul = fits.HDUList([primary_hdu, hdu_img])
     hdul.writeto(output_path, overwrite=True)
     print(f'Saved to {output_path}')
+
+def read_single_evt_image(evt_file_path: Union[str, pathlib.Path]):
+    """
+    保存单个事件图像
+    """
+    _, col_list, row_list, header = read_event_file(evt_file_path)
+    image = create_image_from_events(col_list, row_list)
+    wcs = create_wcs_from_header(header)
+    #primary_hdu = fits.PrimaryHDU()
+    #primary_hdu.header.extend(header)
+    #primary_hdu.header.update(wcs.to_header())
+    #hdu_img = fits.ImageHDU(image, name='IMAGE')
+    #hdu_img.header.extend(header)
+    #hdu_img.header.update(wcs.to_header())
+    #hdul = fits.HDUList([primary_hdu, hdu_img])
+    #hdul.writeto(output_path, overwrite=True)
+    #print(f'Saved to {output_path}')
+    return image, header, wcs
 
 def get_segment_exp(time_list: list, num_segments: int = None, time_endpoints: list = None,total_exposure: float = None):
     """

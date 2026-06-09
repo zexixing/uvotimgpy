@@ -14,7 +14,9 @@ def correct_offset_in_image(img_path: Union[str, Path],
                             target_coord: Tuple[float, float], 
                             datatype: Optional[str] = None,
                             box_size: Tuple[int, int] = (41, 41), plot: bool = False,
-                            save: bool = False, verbose: bool = False) -> np.ndarray:
+                            save: bool = False, verbose: bool = False,
+                            return_number: bool = False,
+                            return_int: bool = True) -> np.ndarray:
     """
     修正offset
     box_size: width, height
@@ -53,6 +55,14 @@ def correct_offset_in_image(img_path: Union[str, Path],
         #self.offset_correction = 2
         if verbose:
             print(f'Offset correction applied, saved to {img_path}')
+    if return_number and return_int:
+        coloff = round(col_orig) - round(target_coord[0])
+        rowoff = round(row_orig) - round(target_coord[1])
+        return coloff, rowoff, col_orig, row_orig, theta
+    elif return_number and not return_int: 
+        coloff = col_orig - target_coord[0]
+        rowoff = row_orig - target_coord[1]
+        return coloff, rowoff, col_orig, row_orig, theta
 
 def coi_factor_multfunc(raw):
     # Poole et al. 2008, Eq. 2

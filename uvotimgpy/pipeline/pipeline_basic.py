@@ -900,7 +900,7 @@ class DataCleaningMultiple:
             obs_cleaning.align_image()
             if obs in self.observations:
                 obs_cleaning.create_cleaned_image()
-                obs_cleaning.correct_coincidence_loss(save = True)
+                obs_cleaning.correct_coincidence_loss(save = True) #TODO: not suitable for event mode
 
     def offset_correction_loop(self, observations: Union[pd.DataFrame, List[Dict[str, Any]],None], box_size: Tuple[int, int] = (41, 41), plot: bool = False):
         if observations is None:
@@ -1019,6 +1019,7 @@ class DataCleaningMultiple:
             datatype = self.datatype
         else:
             filter_unique = table_to_df(observations)['FILTER'].unique()
+            print(filter_unique)
             if len(filter_unique) == 1:
                 filt_filename = normalize_filter_name(filter_unique[0], output_format='filename')
             else:

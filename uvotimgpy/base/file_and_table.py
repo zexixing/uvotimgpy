@@ -902,3 +902,133 @@ def read_profile_csv(path):
     comment = "\n".join(comment_lines)
 
     return np.array(radii), np.array(values), np.array(errors)
+
+def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=None):
+    """
+    将MIDTIME列表按epoch和orbit分组（默认自动检测，也可手动指定阈值）
+
+    自动模式：对所有相邻观测的时间间隔排序，寻找比值跳跃（ratio >= 3）作为分界。
+    若找到两级跳跃 → 大的为epoch分界，小的为orbit分界。
+    若只找到一级 → 判断子组内是否还有分界来决定它是epoch还是orbit。
+
+    Args:
+        midtime_list: MIDTIME字符串列表
+        epoch_gap_days: epoch间隔阈值（天），None=自动检测
+        orbit_gap_minutes: 轨道间隔阈值（分钟），None=自动检测
+
+    Returns:
+        tuple: (epoch_list, orbit_list, orbit_index_list)
+            - epoch_list: epoch中间时间的日期字符串（如 '2025-08-18'）
+            - orbit_list: 轨道中间时间字符串（如 '2025-08-18T10:48:31'）
+            - orbit_index_list: 轨道在epoch内的序号（从1开始）
+    """
+    from datetime import datetime
+
+    n = len(midtime_list)
+    if n == 0:
+        return [], [], []
+
+    def parse_time(t):
+        t_parsed = parse_date_string(t)
+        return t_parsed.to_datetime()
+        #for fmt in ('%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S'):
+        #    try:
+        #        return datetime.strptime(t, fmt)
+        #    except ValueError:
+        #        continue
+        #raise ValueError(f"Cannot parse time: {t}")
+
+    def get_gaps(indices):
+        s = sorted(indices, key=lambda i: times[i])
+        return [(times[s[k]] - times[s[k-1]]).total_seconds() for k in range(1, len(s))]
+
+    def find_break(gaps, min_ratio=3.0):
+        """在排序间隔中找最大比值跳跃，返回几何平均阈值"""
+        pos = sorted(g for g in gaps if g > 0)
+        if len(pos) <= 1:
+            return None
+        best_r, best_i = 0, -1
+        for i in range(len(pos) - 1):
+            r = pos[i+1] / pos[i]
+            if r > best_r:
+                best_r, best_i = r, i
+        if best_r < min_ratio:
+            return None
+        return (pos[best_i] * pos[best_i+1]) ** 0.5
+
+    def split_groups(indices, threshold):
+        if threshold is None or len(indices) <= 1:
+            return [list(indices)]
+        s = sorted(indices, key=lambda i: times[i])
+        groups = [[s[0]]]
+        for k in range(1, len(s)):
+            if (times[s[k]] - times[s[k-1]]).total_seconds() > threshold:
+                groups.append([s[k]])
+            else:
+                groups[-1].append(s[k])
+        return groups
+
+    def midpoint(indices):
+        ts = [times[i] for i in indices]
+        lo, hi = min(ts), max(ts)
+        return lo + (hi - lo) / 2
+
+    times = [parse_time(t) for t in midtime_list]
+    sorted_indices = sorted(range(n), key=lambda i: times[i])
+
+    # --- 确定阈值 ---
+    epoch_th = epoch_gap_days * 86400 if epoch_gap_days is not None else None
+    orbit_th = orbit_gap_minutes * 60 if orbit_gap_minutes is not None else None
+
+    if epoch_th is None or orbit_th is None:
+        all_gaps = get_gaps(sorted_indices)
+        pos = sorted(g for g in all_gaps if g > 0)
+
+        if len(pos) > 1:
+            ratios = [(pos[i+1] / pos[i], i) for i in range(len(pos) - 1)]
+            ratios.sort(reverse=True)
+            sig = [(r, i) for r, i in ratios if r >= 3.0]
+
+            if epoch_th is None and orbit_th is None:
+                # 全自动：找两级跳跃
+                if len(sig) >= 2:
+                    i1, i2 = sig[0][1], sig[1][1]
+                    t1 = (pos[i1] * pos[i1+1]) ** 0.5
+                    t2 = (pos[i2] * pos[i2+1]) ** 0.5
+                    epoch_th, orbit_th = max(t1, t2), min(t1, t2)
+                elif len(sig) == 1:
+                    # 一级跳跃：看子组内是否还有分界来判断层级
+                    th = (pos[sig[0][1]] * pos[sig[0][1]+1]) ** 0.5
+                    temp_groups = split_groups(sorted_indices, th)
+                    has_sub = any(
+                        find_break(get_gaps(g)) is not None
+                        for g in temp_groups if len(g) > 1
+                    )
+                    if has_sub:
+                        epoch_th = th  # 子组内还有结构 → 这是epoch分界
+                    else:
+                        orbit_th = th  # 子组内无结构 → 这是orbit分界，单epoch
+            elif epoch_th is None:
+                # orbit已指定，自动找epoch
+                above = sorted(g for g in all_gaps if g > orbit_th)
+                if len(above) > 1:
+                    epoch_th = find_break(above)
+
+    # --- 分组与标注 ---
+    epoch_list = [None] * n
+    orbit_list = [None] * n
+    orbit_index_list = [None] * n
+
+    for group in split_groups(sorted_indices, epoch_th):
+        epoch_label = midpoint(group).strftime('%Y-%m-%d')
+        for idx in group:
+            epoch_list[idx] = epoch_label
+
+        local_orbit_th = orbit_th if orbit_th is not None else find_break(get_gaps(group))
+        for oi, orbit in enumerate(split_groups(group, local_orbit_th), 1):
+            orbit_label = midpoint(orbit).strftime('%Y-%m-%dT%H:%M:%S')
+            for idx in orbit:
+                orbit_list[idx] = orbit_label
+                orbit_index_list[idx] = oi
+
+    return epoch_list, orbit_list, orbit_index_list

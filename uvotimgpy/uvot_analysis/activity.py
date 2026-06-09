@@ -1,4 +1,5 @@
 from typing import Dict, Optional, Union, List, Tuple, Callable, Any
+import copy
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.optimize import least_squares, differential_evolution, approx_fprime
@@ -202,7 +203,7 @@ class RatioCalculator_V_UV:
 
 def countrate_to_emission_flux_for_oh(countrate: Union[float, np.ndarray], 
                                       countrate_err: Union[float, np.ndarray, None] = None,
-                                      obs_time=None):
+                                      obs_time=None, bp_name='uvw1'):
     """
     Convert countrate measurements to flux OH. Default is for Swift UVOT UVW1.
     The flux is the true flux emitted by coma, instead of observed flux. Unit: erg/s/cm2.
@@ -216,7 +217,7 @@ def countrate_to_emission_flux_for_oh(countrate: Union[float, np.ndarray],
         emission_flux_in_theory = oh_spectrum.integrate(flux_unit=su.FLAM)
         factor = emission_flux_in_theory.value/count_rate_in_theory.value 
     """
-    bp = get_effective_area('uvw1', transmission=True, bandpass=True, obs_time=obs_time)
+    bp = get_effective_area(bp_name, transmission=True, bandpass=True, obs_time=obs_time)
     area = np.pi*15*15*u.cm**2
     oh_spectrum = read_OH_spectrum()
     count_rate_in_theory = calculate_count_rate(oh_spectrum, bp, area=area)
@@ -325,7 +326,8 @@ def create_vectorial_model(
     fragment_params: Optional[Dict] = None,
     time_q: Optional[Dict] = None,
     grid_params: Optional[Dict] = None,
-    print_progress: bool = True
+    print_progress: bool = True,
+    q_t: Optional[Callable] = None,
     ) -> VectorialModel:
     """
     创建一个矢量模型。
@@ -360,34 +362,39 @@ def create_vectorial_model(
         base_q = base_q * (1/u.s)
     
     # 默认H2O母分子参数
-    if parent_params is None:
-        parent_params = {
-            'tau_d': 86000 * u.s,
-            'tau_T': 86000 * 0.93 * u.s,
-            'v_outflow': 0.85 * u.km/u.s,
-            'sigma': 3.0e-16 * u.cm**2
-        }
-    
+    parent_params_default = {
+        'tau_d': 86000 * u.s,
+        'tau_T': 86000 * 0.93 * u.s,
+        'v_outflow': 0.85 * u.km/u.s,
+        'sigma': 3.0e-16 * u.cm**2
+    }
+    if parent_params is not None:
+        parent_params = parent_params_default | copy.deepcopy(parent_params)
+    else:
+        parent_params = copy.deepcopy(parent_params_default)
     # 默认OH碎片参数
-    if fragment_params is None:
-        fragment_params = {
-            'tau_T': 129000 * u.s,
-            'v_photo': 1.05 * u.km/u.s
-        }
+    fragment_params_default = {
+        'tau_T': 129000 * u.s,
+        'v_photo': 1.05 * u.km/u.s
+    }
+    if fragment_params is not None:
+        fragment_params = fragment_params_default | copy.deepcopy(fragment_params)
+    else:
+        fragment_params = copy.deepcopy(fragment_params_default)
     
     # 根据日心距离缩放
     r_h_val = r_h.to(u.au).value
-    parent_params = parent_params.copy()
-    fragment_params = fragment_params.copy()
+    parent_params = copy.deepcopy(parent_params)
+    fragment_params = copy.deepcopy(fragment_params)
     
     if 'tau_d' in parent_params:
-        parent_params['tau_d'] *= r_h_val**2
+        parent_params['tau_d'] = parent_params['tau_d'] * r_h_val**2
     if 'tau_T' in parent_params:
-        parent_params['tau_T'] *= r_h_val**2
+        parent_params['tau_T'] = parent_params['tau_T'] * r_h_val**2
     if 'v_outflow' in parent_params:
-        parent_params['v_outflow'] /= np.sqrt(r_h_val)
+        parent_params['v_outflow'] = parent_params['v_outflow'] / np.sqrt(r_h_val)
     if 'tau_T' in fragment_params:
-        fragment_params['tau_T'] *= r_h_val**2
+        fragment_params['tau_T'] = fragment_params['tau_T'] * r_h_val**2
     
     # 转换为Phys对象
     parent_phys = Phys.from_dict(parent_params)
@@ -445,6 +452,7 @@ def create_vectorial_model(
         'parent': parent_phys,
         'fragment': fragment_phys,
         'print_progress': print_progress,
+        'q_t': q_t,
         **grid_defaults
     }
     
@@ -989,7 +997,7 @@ class TotalNumberCalculator:
     def from_profile():
         pass
 
-def oh_countrate_to_column_density(countrate_per_pixel, pixel_scale, delta, r, rv, countrate_per_pixel_err=None, obs_time=None): 
+def oh_countrate_to_column_density(countrate_per_pixel, pixel_scale, delta, r, rv, countrate_per_pixel_err=None, obs_time=None, bp_name='uvw1'): 
     #TODO
     # cnts/s/pixel
     arcsec = UnitConverter.pixel_to_arcsec(1.0, pixel_scale)
@@ -999,11 +1007,11 @@ def oh_countrate_to_column_density(countrate_per_pixel, pixel_scale, delta, r, r
     countrate_per_cm2 = countrate_per_pixel / cm2_per_pixel
     if countrate_per_pixel_err is not None:
         countrate_per_cm2_err = countrate_per_pixel_err / cm2_per_pixel
-        emission_flux, emission_flux_err = countrate_to_emission_flux_for_oh(countrate_per_cm2, countrate_per_cm2_err, obs_time=obs_time)
+        emission_flux, emission_flux_err = countrate_to_emission_flux_for_oh(countrate_per_cm2, countrate_per_cm2_err, obs_time=obs_time, bp_name=bp_name)
         number, number_err = emission_flux_to_total_number(emission_flux, r, delta, rv, emission_flux_err)
         return number, number_err
     else:
-        emission_flux = countrate_to_emission_flux_for_oh(countrate_per_cm2, obs_time=obs_time)
+        emission_flux = countrate_to_emission_flux_for_oh(countrate_per_cm2, obs_time=obs_time, bp_name=bp_name)
         number = emission_flux_to_total_number(emission_flux, r, delta, rv)
     return number
 

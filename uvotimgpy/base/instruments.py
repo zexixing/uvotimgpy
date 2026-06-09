@@ -228,7 +228,7 @@ def get_effective_area(filter_name, transmission=True, bandpass=True, obs_time=N
     arf_wave = (arf_data['WAVE_MIN']+arf_data['WAVE_MAX'])/2
     arf_area = arf_data['SPECRESP']
     if transmission:
-        area = np.pi*15*15
+        area = np.pi*15*15 # cm2
         arf_area = arf_area/area
     if obs_time is not None:
         correction_factor = SensitivityCorrection.get_correction_factor(filter_name, obs_time)
