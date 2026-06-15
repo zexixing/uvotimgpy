@@ -330,38 +330,38 @@ def create_vectorial_model(
     q_t: Optional[Callable] = None,
     ) -> VectorialModel:
     """
-    创建一个矢量模型。
+    Create a vectorial model.
     
     Parameters
     ----------
     r_h : float or astropy.units.Quantity
-        日心距离 (如果是float则单位为AU)
+        Heliocentric distance; if float, the unit is AU.
     base_q : float or astropy.units.Quantity
-        基础产生率 (如果是float则单位为1/s)
+        Base production rate; if float, the unit is 1/s.
     parent_params : dict, optional
-        母分子参数 (默认: H2O参数)
+        Parent molecule parameters; default: H2O parameters.
     fragment_params : dict, optional
-        碎片分子参数 (默认: OH参数)
+        Fragment molecule parameters; default: OH parameters.
     time_q : dict, optional
-        时变产生率: {'q': [values], 't': [times]}
+        Time-dependent production rate: {'q': [values], 't': [times]}.
     grid_params : dict, optional
-        网格参数
+        Grid parameters.
     print_progress : bool
-        是否打印进度
+        Whether to print progress.
         
     Returns
     -------
     VectorialModel
-        创建的矢量模型实例
+        Created VectorialModel instance.
     """
     
-    # 转换输入为适当的单位
+    # Convert inputs to appropriate units
     if not isinstance(r_h, u.Quantity):
         r_h = r_h * u.au
     if not isinstance(base_q, u.Quantity):
         base_q = base_q * (1/u.s)
     
-    # 默认H2O母分子参数
+    # Default H2O parent molecule parameters
     parent_params_default = {
         'tau_d': 86000 * u.s,
         'tau_T': 86000 * 0.93 * u.s,
@@ -372,7 +372,7 @@ def create_vectorial_model(
         parent_params = parent_params_default | copy.deepcopy(parent_params)
     else:
         parent_params = copy.deepcopy(parent_params_default)
-    # 默认OH碎片参数
+    # Default OH fragment parameters
     fragment_params_default = {
         'tau_T': 129000 * u.s,
         'v_photo': 1.05 * u.km/u.s
@@ -382,7 +382,7 @@ def create_vectorial_model(
     else:
         fragment_params = copy.deepcopy(fragment_params_default)
     
-    # 根据日心距离缩放
+    # Scale by heliocentric distance
     r_h_val = r_h.to(u.au).value
     parent_params = copy.deepcopy(parent_params)
     fragment_params = copy.deepcopy(fragment_params)
@@ -396,11 +396,11 @@ def create_vectorial_model(
     if 'tau_T' in fragment_params:
         fragment_params['tau_T'] = fragment_params['tau_T'] * r_h_val**2
     
-    # 转换为Phys对象
+    # Convert to Phys objects
     parent_phys = Phys.from_dict(parent_params)
     fragment_phys = Phys.from_dict(fragment_params)
     
-    # 网格参数
+    # Grid parameters
     grid_defaults = {
         'radial_points': 50,#200,
         'angular_points': 50,#100,
@@ -413,40 +413,40 @@ def create_vectorial_model(
     if grid_params is not None:
         grid_defaults.update(grid_params)
     
-    # 如果提供了time_q，创建q_t函数
+    # If time_q is provided, create the q_t function
     q_t_func = None
     if time_q is not None:
         q_values = time_q['q']
         t_values = time_q['t']
         
-        # 如果需要，转换为适当的单位
+        # Convert to appropriate units if needed
         if not hasattr(q_values, 'unit'):
             q_values = q_values * (1/u.s)
         if not hasattr(t_values, 'unit'):
             t_values = t_values * u.day
         
-        # 创建时间依赖函数
+        # Create the time-dependent function
         q_vals = q_values.to(1/u.s).value
         t_vals = t_values.to(u.s).value
         base_q_val = base_q.to(1/u.s).value
         
         def q_t_func(t):
-            # t是以秒为单位的过去时间
+            # t is lookback time in seconds
             if t < 0 or t > t_vals[0]:
                 return 0.0
             
-            # 查找所属区间
+            # Find the corresponding interval
             for i in range(len(t_vals) - 1):
                 if t <= t_vals[i] and t > t_vals[i + 1]:
                     return q_vals[i] - base_q_val
             
-            # 最后一个区间
+            # Last interval
             if t <= t_vals[-1]:
                 return q_vals[-1] - base_q_val
             
             return 0.0
     
-    # 创建模型
+    # Create the model
     model_kwargs = {
         'base_q': base_q,
         'parent': parent_phys,
@@ -669,9 +669,10 @@ def read_vectorial_model_csv(filepath):
 
 class ColumnDensityProfile:
     """
-    获取柱密度剖面的工具类。
+    Utility class for obtaining column-density profiles.
     
-    提供从VectorialModel或CSV文件获取柱密度剖面的静态方法。
+    Provides static methods for obtaining column-density profiles from a
+    VectorialModel or CSV file.
     """
     
     @staticmethod
@@ -681,48 +682,48 @@ class ColumnDensityProfile:
         limit_rho: bool = False,
         ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        从VectorialModel获取柱密度剖面。
+        Get a column-density profile from a VectorialModel.
         
         Parameters
         ----------
         model : VectorialModel
-            矢量模型实例
+            Vectorial model instance.
         rho : tuple, list, or array, optional
-            如果是元组: (start_km, stop_km, step_km)
-            如果是列表/数组: rho值，单位为km
-            如果为None: 使用模型的网格点
+            If tuple: (start_km, stop_km, step_km).
+            If list/array: rho values in km.
+            If None: use the model grid points.
         limit_rho : bool, optional
-            是否限制rho范围在collision_sphere_radius到max_grid_radius之间
+            Whether to limit rho to the range from collision_sphere_radius to max_grid_radius.
         
         Returns
         -------
         tuple
-            (rho_km, column_densities_cm2) - 都是无单位的numpy数组
+            (rho_km, column_densities_cm2), both unitless numpy arrays.
         """
         
-        # 处理rho输入
+        # Process rho input
         if rho is None:
             rho_meters = model.vmr.column_density_grid.value
             rho_km = rho_meters / 1000
         elif isinstance(rho, tuple) and len(rho) == 3:
             start, stop, step = rho
             rho_km = np.arange(start, stop + step, step)
-            rho_meters = rho_km * 1000  # km转m
+            rho_meters = rho_km * 1000  # km to m
         else:
             rho_km = np.array(rho)
-            rho_meters = rho_km * 1000  # km转m
+            rho_meters = rho_km * 1000  # km to m
         
-        # 直接使用内部插值函数
-        # 这比为每个点调用column_density()要快得多
+        # Use the internal interpolation function directly
+        # This is much faster than calling column_density() for each point
         if rho is None:
             column_densities_m2 = model.vmr.column_density.value
         else:
             column_densities_m2 = model.vmr.column_density_interpolation(rho_meters)
         
-        # 从m^-2转换为cm^-2
-        column_densities_cm2 = column_densities_m2 * 1e-4  # m^-2转cm^-2
+        # Convert from m^-2 to cm^-2
+        column_densities_cm2 = column_densities_m2 * 1e-4  # m^-2 to cm^-2
         
-        # 应用限制
+        # Apply limits
         if limit_rho:
             rho_km, column_densities_cm2 = ColumnDensityProfile._apply_rho_limits(
                 rho_km, column_densities_cm2, 
@@ -739,30 +740,30 @@ class ColumnDensityProfile:
         limit_rho: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        从CSV文件获取柱密度剖面。
+        Get a column-density profile from a CSV file.
         
         Parameters
         ----------
         filepath : str
-            CSV文件路径
+            CSV file path.
         rho : tuple, list, or array, optional
-            如果是元组: (start_km, stop_km, step_km)
-            如果是列表/数组: rho值，单位为km
-            如果为None: 使用文件中的网格点
+            If tuple: (start_km, stop_km, step_km).
+            If list/array: rho values in km.
+            If None: use the grid points from the file.
         limit_rho : bool, optional
-            是否限制rho范围在collision_sphere_radius到max_grid_radius之间
+            Whether to limit rho to the range from collision_sphere_radius to max_grid_radius.
         
         Returns
         -------
         tuple
-            (rho_km, column_densities_cm2) - 都是无单位的numpy数组
+            (rho_km, column_densities_cm2), both unitless numpy arrays.
         """
-        # 读取数据
+        # Read data
         data = read_vectorial_model_csv(filepath)
         
-        # 处理rho输入
+        # Process rho input
         if rho is None:
-            # 使用文件中的网格数据，直接转换单位
+            # Use grid data from the file and convert units directly
             rho_km = data['rho'].to(u.km).value
             column_densities_cm2 = data['column_density'].to(1/u.cm**2).value
         
@@ -770,7 +771,7 @@ class ColumnDensityProfile:
             start, stop, step = rho
             rho_km = np.arange(start, stop + step, step)
             
-            # 需要插值，先转换原始数据单位
+            # Interpolation is needed; first convert the original data units
             file_rho_km = data['rho'].to(u.km).value
             file_cd_cm2 = data['column_density'].to(1/u.cm**2).value
             column_densities_cm2 = ColumnDensityProfile._interpolate_from_data(
@@ -780,16 +781,16 @@ class ColumnDensityProfile:
         else:
             rho_km = np.array(rho)
             
-            # 需要插值，先转换原始数据单位
+            # Interpolation is needed; first convert the original data units
             file_rho_km = data['rho'].to(u.km).value
             file_cd_cm2 = data['column_density'].to(1/u.cm**2).value
             column_densities_cm2 = ColumnDensityProfile._interpolate_from_data(
                 file_rho_km, file_cd_cm2, rho_km
             )
         
-        # 应用限制
+        # Apply limits
         if limit_rho:
-            # 从数据中获取限制值，直接转换单位
+            # Get limit values from the data and convert units directly
             max_grid_radius_km = data['max_grid_radius'].to(u.km).value
             collision_sphere_radius_km = data['collision_sphere_radius'].to(u.km).value
             
@@ -806,28 +807,28 @@ class ColumnDensityProfile:
         rho_km: np.ndarray
     ) -> np.ndarray:
         """
-        插值获取柱密度。
+        Interpolate to obtain column density.
         
         Parameters
         ----------
         file_rho_km : np.ndarray
-            原始网格数据，单位为km，无单位
+            Original grid data in km, unitless.
         file_cd_cm2 : np.ndarray
-            原始柱密度数据，单位为1/cm^2，无单位
+            Original column-density data in 1/cm^2, unitless.
         rho_km : np.ndarray
-            需要插值的rho值，单位为km，无单位
+            rho values to interpolate in km, unitless.
         
         Returns
         -------
         np.ndarray
-            插值后的柱密度，单位为1/cm^2，无单位
+            Interpolated column density in 1/cm^2, unitless.
         """
         from scipy.interpolate import CubicSpline
         
-        # 创建插值函数
+        # Create the interpolation function
         interpolator = CubicSpline(file_rho_km, file_cd_cm2, bc_type="natural")
         
-        # 插值
+        # Interpolate
         return interpolator(rho_km)
     
     @staticmethod
@@ -838,25 +839,25 @@ class ColumnDensityProfile:
         collision_sphere_radius_km: float
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        应用rho范围限制。
+        Apply rho range limits.
         
         Parameters
         ----------
         rho_km : np.ndarray
-            rho值，单位为km，无单位
+            rho values in km, unitless.
         column_densities_cm2 : np.ndarray
-            柱密度值，单位为1/cm^2，无单位
+            Column-density values in 1/cm^2, unitless.
         max_grid_radius_km : float
-            最大网格半径，单位为km，无单位
+            Maximum grid radius in km, unitless.
         collision_sphere_radius_km : float
-            碰撞球半径，单位为km，无单位
+            Collision sphere radius in km, unitless.
         
         Returns
         -------
         tuple
-            限制后的(rho_km, column_densities_cm2)，都无单位
+            Limited (rho_km, column_densities_cm2), both unitless.
         """
-        # 应用限制
+        # Apply limits
         mask = (rho_km >= collision_sphere_radius_km) & (rho_km <= max_grid_radius_km)
         
         return rho_km[mask], column_densities_cm2[mask]
@@ -868,58 +869,61 @@ def build_column_density_image(rho_km, column_densities_cm2, center,
                                oversampling_factor=1,
                                fill_value=np.nan) -> np.ndarray:
     """
-    根据距离-柱密度数据构建2D图像
+    Build a 2D image from distance-column-density data.
     
     Parameters:
     -----------
     rho_km : array_like
-        距离彗核的距离数组 (km)
+        Distance array from the comet nucleus (km).
     column_densities_cm2 : array_like
-        对应的柱密度数组 (cm^-2)
+        Corresponding column-density array (cm^-2).
     center : tuple
-        中心坐标 (row, col)，即图像中彗核的位置
+        Center coordinates (row, col), i.e. the comet nucleus position in the image.
     km_per_pixel : float, optional
-        每像素对应的公里数
+        Kilometers per pixel.
     pixel_scale : float, optional
-        像素尺度 (arcsec/pixel)，当km_per_pixel为None时使用
+        Pixel scale (arcsec/pixel), used when km_per_pixel is None.
     delta : float, optional
-        距离 (au)，当km_per_pixel为None时使用
+        Distance (au), used when km_per_pixel is None.
     oversampling_factor : int, optional
-        必须是奇数
-        过采样因子，用于提高图像质量
-        把本身的1*1个像素扩展为oversampling_factor*oversampling_factor个像素
-        新的中心是(row * factor + (factor-1)/2, col * factor + (factor-1)/2)
-        新的km_per_pixel是km_per_pixel / factor
+        Must be odd.
+        Oversampling factor used to improve image quality.
+        Expands each original 1x1 pixel into oversampling_factor x oversampling_factor pixels.
+        New center is (row * factor + (factor-1)/2, col * factor + (factor-1)/2).
+        New km_per_pixel is km_per_pixel / factor.
     fill_value : float or str, optional
-        插值范围外的填充值，可以是数值、'extrapolate'或np.nan (默认: np.nan)
+        Fill value outside the interpolation range; can be numeric, 'extrapolate', or np.nan (default: np.nan).
     
     Returns:
     --------
     numpy.ndarray
-        2D柱密度图像，shape为(2*center[0]+1, 2*center[1]+1)
+        2D column-density image with shape (2*center[0]+1, 2*center[1]+1).
     """
     
-    # 参数验证
+    # Parameter validation
     rho_km = np.asarray(rho_km)
     column_densities_cm2 = np.asarray(column_densities_cm2)
     
-    # 用户输入验证 - 使用具体的异常类型
+    # User input validation with specific exception types
     if len(rho_km) != len(column_densities_cm2):
-        raise ValueError("rho_km和column_densities_cm2长度必须相同")
+        # raise ValueError("rho_km和column_densities_cm2长度必须相同")
+        raise ValueError("rho_km and column_densities_cm2 must have the same length")
     
     if not all(isinstance(x, (int, np.integer)) and x >= 0 for x in center):
-        raise ValueError("center坐标必须是非负整数")
+        # raise ValueError("center坐标必须是非负整数")
+        raise ValueError("center coordinates must be non-negative integers")
     
     if km_per_pixel is None:
         if pixel_scale is None or delta is None:
-            raise ValueError("必须提供km_per_pixel，或者同时提供pixel_scale和delta")
-        # 计算km_per_pixel
+            # raise ValueError("必须提供km_per_pixel，或者同时提供pixel_scale和delta")
+            raise ValueError("Provide km_per_pixel, or provide both pixel_scale and delta")
+        # Calculate km_per_pixel
         arcsec = UnitConverter.pixel_to_arcsec(1.0, pixel_scale)
         km_per_pixel = UnitConverter.arcsec_to_km(arcsec, delta)
 
-    # 确保rho_km是单调递增的
+    # Ensure rho_km is monotonically increasing
     if not np.all(np.diff(rho_km) > 0):
-        # 如果不是单调递增，先排序
+        # If it is not monotonically increasing, sort first
         sort_indices = np.argsort(rho_km)
         rho_sorted = rho_km[sort_indices]
         column_densities_sorted = column_densities_cm2[sort_indices]
@@ -927,18 +931,19 @@ def build_column_density_image(rho_km, column_densities_cm2, center,
         rho_sorted = rho_km
         column_densities_sorted = column_densities_cm2
     
-    # 创建插值函数
+    # Create the interpolation function
     interp_func = interp1d(rho_sorted, column_densities_sorted, 
                           kind='linear', bounds_error=False, 
                           fill_value=fill_value)
     
-    # 确定图像尺寸
+    # Determine image dimensions
     center_row, center_col = center
 
     # oversampling
     if oversampling_factor > 1:
         if not isinstance(oversampling_factor, int) or oversampling_factor % 2 == 0:
-            raise ValueError("oversampling_factor必须是奇数")
+            # raise ValueError("oversampling_factor必须是奇数")
+            raise ValueError("oversampling_factor must be odd")
         center_row = center_row * oversampling_factor + (oversampling_factor-1)/2
         center_col = center_col * oversampling_factor + (oversampling_factor-1)/2
         km_per_pixel = km_per_pixel / oversampling_factor
@@ -950,10 +955,10 @@ def build_column_density_image(rho_km, column_densities_cm2, center,
     mapper = GeometryMap(empty_image, (center_row, center_col))
     pixel_distances = mapper.get_distance_map()
     
-    # 转换为物理距离（km）
+    # Convert to physical distance (km)
     physical_distances = pixel_distances * km_per_pixel
     
-    # 向量化插值
+    # Vectorized interpolation
     image = interp_func(physical_distances)
     
     return image
@@ -983,8 +988,9 @@ class TotalNumberCalculator:
         """
         if km_per_pixel is None:
             if pixel_scale is None or delta is None:
-                raise ValueError("必须提供km_per_pixel，或者同时提供pixel_scale和delta")
-            # 计算km_per_pixel
+                # raise ValueError("必须提供km_per_pixel，或者同时提供pixel_scale和delta")
+                raise ValueError("Provide km_per_pixel, or provide both pixel_scale and delta")
+            # Calculate km_per_pixel
             arcsec = UnitConverter.pixel_to_arcsec(1.0, pixel_scale)
             km_per_pixel = UnitConverter.arcsec_to_km(arcsec, delta)
 
@@ -1023,15 +1029,16 @@ def scale_from_total_number(total_number_data: float,
 
 class OHProfileFitter:
     """
-    用于拟合 OH profile 的类，同时优化 reddening、q_factor 和常数背景 bkg 三个参数。
+    Class for fitting the OH profile while optimizing reddening, q_factor,
+    and constant background bkg.
 
-    参数说明
+    Parameter Notes
     ----------
-    reddening : 尘埃红化参数
-    q_factor  : 相对于 base_q 的缩放因子，best_q = base_q * q_factor
-    bkg       : OH profile 中的常数背景，单位为 count rate
+    reddening : dust reddening parameter
+    q_factor  : scale factor relative to base_q, best_q = base_q * q_factor
+    bkg       : constant background in the OH profile, in count-rate units
 
-    模型形式
+    Model Form
     ----------
     countrate_oh(rho) = countrate_uw1(rho) - reddening_func(reddening) * countrate_v(rho) - bkg
     """
@@ -1048,10 +1055,14 @@ class OHProfileFitter:
         countrate_v_err: Optional[np.ndarray] = None,
         rho_fit_range: Optional[Tuple[Optional[float], Optional[float]]] = None,
     ):
+        # assert len(rho) == len(countrate_uw1) == len(countrate_v), \
+        #     "距离和 profile 数组长度必须相同"
         assert len(rho) == len(countrate_uw1) == len(countrate_v), \
-            "距离和 profile 数组长度必须相同"
+            "Distance and profile arrays must have the same length"
+        # assert 'rho' in column_density_model and 'column_density' in column_density_model and 'base_q' in column_density_model, \
+        #     "column_density_model 必须包含 'rho', 'column_density' 和 'base_q'"
         assert 'rho' in column_density_model and 'column_density' in column_density_model and 'base_q' in column_density_model, \
-            "column_density_model 必须包含 'rho', 'column_density' 和 'base_q'"
+            "column_density_model must contain 'rho', 'column_density', and 'base_q'"
 
         self.rho = np.asarray(rho, dtype=float)
         self.countrate_uw1 = np.asarray(countrate_uw1, dtype=float)
@@ -1076,12 +1087,13 @@ class OHProfileFitter:
         self.rho_fit_range = rho_fit_range
         self.fit_mask = self._build_fit_mask()
         if not np.any(self.fit_mask):
-            raise ValueError("rho_fit_range 没有选中任何数据点")
+            # raise ValueError("rho_fit_range 没有选中任何数据点")
+            raise ValueError("rho_fit_range did not select any data points")
 
         self._create_interpolator()
 
     def _build_fit_mask(self) -> np.ndarray:
-        """根据 rho_fit_range 构造用于拟合的布尔 mask"""
+        """Build a boolean mask for fitting from rho_fit_range."""
         mask = np.isfinite(self.rho)
     
         if self.rho_fit_range is None:
@@ -1097,7 +1109,7 @@ class OHProfileFitter:
         return mask
 
     def _create_interpolator(self):
-        """创建柱密度模型的插值函数"""
+        """Create the interpolation function for the column-density model."""
         self.colden_interp = interp1d(
             self.rho_model,
             self.colden_model,
@@ -1107,24 +1119,25 @@ class OHProfileFitter:
 
     def calculate_oh_error(self, reddening: float) -> np.ndarray:
         """
-        计算 OH profile 的误差传播。
-        注意：bkg 是待拟合常数，不视作测量误差来源，因此这里不额外加入 bkg 的误差项。
+        Calculate error propagation for the OH profile.
+        Note: bkg is a constant to be fitted, not a measurement-error source, so
+        no extra bkg error term is added here.
         """
         f_red = self.reddening_func(reddening)
         oh_err = np.sqrt(self.countrate_uw1_err**2 + (f_red * self.countrate_v_err)**2)
         return oh_err
 
     def column_density_model_func(self, rho: np.ndarray, q_factor: float) -> np.ndarray:
-        """计算模型柱密度"""
+        """Calculate the model column density."""
         return self.colden_interp(rho) * q_factor
 
     def countrate_oh_data(self, reddening: float, bkg: float) -> np.ndarray:
-        """计算扣除 dust 和常数背景后的 OH count-rate profile"""
+        """Calculate the OH count-rate profile after subtracting dust and constant background."""
         f_red = self.reddening_func(reddening)
         return self.countrate_uw1 - self.countrate_v * f_red - bkg
 
     def residual_function(self, params: np.ndarray) -> float:
-        """计算残差平方和（标量）"""
+        """Calculate the residual sum of squares as a scalar."""
         reddening, q_factor, bkg = params
 
         countrate_oh = self.countrate_oh_data(reddening, bkg)
@@ -1152,7 +1165,7 @@ class OHProfileFitter:
         return np.sum(residuals**2)
 
     def residual_vector(self, params: np.ndarray) -> np.ndarray:
-        """计算残差向量（用于 least_squares）"""
+        """Calculate the residual vector used by least_squares."""
         reddening, q_factor, bkg = params
 
         countrate_oh = self.countrate_oh_data(reddening, bkg)
@@ -1185,7 +1198,7 @@ class OHProfileFitter:
         bounds_free: Tuple[np.ndarray, np.ndarray],
         build_full_params: Callable[[np.ndarray], np.ndarray],
     ) -> Dict[str, Any]:
-        """对自由参数做 least_squares 拟合"""
+        """Fit free parameters with least_squares."""
 
         def residual_vector_free(free_params):
             full_params = build_full_params(free_params)
@@ -1199,7 +1212,8 @@ class OHProfileFitter:
         )
 
         if not result.success:
-            warnings.warn(f"最小二乘拟合未收敛: {result.message}")
+            # warnings.warn(f"最小二乘拟合未收敛: {result.message}")
+            warnings.warn(f"Least-squares fit did not converge: {result.message}")
 
         full_best = build_full_params(result.x)
 
@@ -1215,7 +1229,8 @@ class OHProfileFitter:
                 cov_free = np.linalg.pinv(J.T @ J) * sigma_squared
 
         except Exception as e:
-            warnings.warn(f"自由参数误差估计失败: {e}")
+            # warnings.warn(f"自由参数误差估计失败: {e}")
+            warnings.warn(f"Free-parameter error estimation failed: {e}")
             cov_free = None
 
         return {
@@ -1230,7 +1245,7 @@ class OHProfileFitter:
         bounds_free: list,
         build_full_params: Callable[[np.ndarray], np.ndarray],
     ) -> Dict[str, Any]:
-        """对自由参数做 differential_evolution 拟合"""
+        """Fit free parameters with differential_evolution."""
 
         def objective_free(free_params):
             full_params = build_full_params(np.asarray(free_params, dtype=float))
@@ -1245,7 +1260,8 @@ class OHProfileFitter:
         )
 
         if not result.success:
-            warnings.warn(f"优化未收敛: {result.message}")
+            # warnings.warn(f"优化未收敛: {result.message}")
+            warnings.warn(f"Optimization did not converge: {result.message}")
 
         full_best = build_full_params(result.x)
 
@@ -1265,7 +1281,8 @@ class OHProfileFitter:
                 cov_free = 0.5 * np.linalg.pinv(hess)
 
         except Exception as e:
-            warnings.warn(f"自由参数误差估计失败: {e}")
+            # warnings.warn(f"自由参数误差估计失败: {e}")
+            warnings.warn(f"Free-parameter error estimation failed: {e}")
             cov_free = None
 
         return {
@@ -1282,8 +1299,9 @@ class OHProfileFitter:
         full_params: np.ndarray
     ) -> Tuple[Optional[np.ndarray], Tuple[float, float, float]]:
         """
-        把自由参数协方差矩阵扩展到完整 3x3 矩阵。
-        固定参数对应误差设为 0，协方差对应行为 0。
+        Expand the covariance matrix for free parameters to the full 3x3 matrix.
+        Errors for fixed parameters are set to 0, and corresponding covariance
+        rows/columns are 0.
         """
         pcov = np.zeros((3, 3), dtype=float)
         errors = np.zeros(3, dtype=float)
@@ -1308,7 +1326,7 @@ class OHProfileFitter:
         bkg_fit: float,
         n_params: int
     ) -> Dict[str, Any]:
-        """计算拟合统计量"""
+        """Calculate fit statistics."""
         countrate_oh_best = self.countrate_oh_data(reddening_fit, bkg_fit)
         column_density_best_model = self.column_density_model_func(self.rho, q_factor_fit)
 
@@ -1362,16 +1380,17 @@ class OHProfileFitter:
         method: str = 'least_squares',
     ) -> Dict[str, Any]:
         """
-        执行 OH profile 拟合的静态方法。
+        Static method for performing OH profile fitting.
 
         Parameters
         ----------
         bkg_bounds : Tuple[float, float], default (0.0, 0.0)
-            OH profile 常数背景 bkg 的边界，单位为 count rate。
-            bkg_bounds 可包含负值；若上下界相同，则视为固定背景。
+            Bounds for the constant OH profile background bkg, in count-rate units.
+            bkg_bounds may contain negative values; if the lower and upper bounds
+            are identical, the background is treated as fixed.
         initial_guess : Optional[Tuple[float, float, float]]
             (reddening_init, q_factor_init, bkg_init)
-            注意这里第二个量仍然是 q_factor，不是 best_q。
+            Note that the second quantity is still q_factor, not best_q.
         """
         fitter = OHProfileFitter(
             rho=rho,
@@ -1408,10 +1427,11 @@ class OHProfileFitter:
             initial_guess_full = np.array([reddening_init, q_factor_init, bkg_init], dtype=float)
         else:
             if len(initial_guess) != 3:
-                raise ValueError("initial_guess 必须是长度为 3 的 tuple: (reddening, q_factor, bkg)")
+                # raise ValueError("initial_guess 必须是长度为 3 的 tuple: (reddening, q_factor, bkg)")
+                raise ValueError("initial_guess must be a tuple of length 3: (reddening, q_factor, bkg)")
             initial_guess_full = np.array(initial_guess, dtype=float)
 
-        # 对固定参数强制使用固定值；对自由参数把初值裁剪到边界内
+        # Force fixed parameters to fixed values; clip free-parameter initial values to bounds
         for i in range(3):
             if fixed_flags[i]:
                 initial_guess_full[i] = lower_bounds[i]
@@ -1428,7 +1448,8 @@ class OHProfileFitter:
             return full
 
         if n_free == 0:
-            warnings.warn("所有参数都被固定，无法进行拟合优化")
+            # warnings.warn("所有参数都被固定，无法进行拟合优化")
+            warnings.warn("All parameters are fixed; fit optimization cannot be performed")
             full_best = initial_guess_full.copy()
             success = True
             pcov = np.zeros((3, 3), dtype=float)
@@ -1451,7 +1472,8 @@ class OHProfileFitter:
                     )
                     method_used = 'least_squares'
                 except Exception as e:
-                    warnings.warn(f"least_squares 失败: {e}，尝试使用 minimize 方法")
+                    # warnings.warn(f"least_squares 失败: {e}，尝试使用 minimize 方法")
+                    warnings.warn(f"least_squares failed: {e}; trying the minimize method")
                     fit_result = fitter._fit_minimize_free(
                         bounds_free=list(zip(lb_free, ub_free)),
                         build_full_params=build_full_params
@@ -1464,7 +1486,8 @@ class OHProfileFitter:
                 )
                 method_used = 'minimize'
             else:
-                raise ValueError(f"未知的方法: {method}")
+                # raise ValueError(f"未知的方法: {method}")
+                raise ValueError(f"Unknown method: {method}")
 
             full_best = fit_result['x_full']
             success = fit_result['success']
@@ -1498,11 +1521,11 @@ class OHProfileFitter:
             'q_factor_err': q_factor_err,
             'best_q': base_q * q_factor_fit,
             'best_q_err': base_q * q_factor_err,
-            'bkg': bkg_fit,                     # 单位: count rate
-            'bkg_err': bkg_err,                # 单位: count rate
+            'bkg': bkg_fit,                     # Unit: count rate
+            'bkg_err': bkg_err,                # Unit: count rate
             'chi2': stats['chi2'],
             'reduced_chi2': stats['reduced_chi2'],
-            'covariance': pcov,                # 参数顺序: [reddening, q_factor, bkg]
+            'covariance': pcov,                # Parameter order: [reddening, q_factor, bkg]
             'radii': fitter.rho,
             'countrate_oh_best': stats['countrate_oh_best'],
             'countrate_oh_best_err': stats['countrate_oh_best_err'],
@@ -1518,10 +1541,10 @@ class OHProfileFitter:
             }
         }
 
-# 使用示例
+    # Usage example
 if __name__ == "__main__":
     pass
-    # 直接调用静态方法
+    # Call the static method directly
     #vm = create_vectorial_model(
     #    r_h=2*u.au,
     #    base_q=1e28,

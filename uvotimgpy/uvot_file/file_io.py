@@ -17,48 +17,48 @@ def save_stacked_fits(images_to_save: dict,
                       stack_unit: str = 'counts/s',
                       hst: bool = False):
     """
-    将stacked image保存为fits文件
+    Save a stacked image as a FITS file.
     
     Parameters
     ----------
     save_path : str
-        保存路径
+        Save path.
     obs_list : list
-        观测列表
+        Observation list.
     target_position : Union[Tuple, List]
-        目标位置, (column, row)
+        Target position, (column, row).
     images_to_save : dict
-        要保存的图像字典，key为extension名称，value为对应的2d array
-        例如: {'STACKED_IMAGE': stacked_image, 'STACKED_ERROR': stacked_error, 'STACKED_IMAGE_OVERLAP': stacked_image_overlap}
+        Dictionary of images to save; keys are extension names and values are corresponding 2D arrays.
+        Example: {'STACKED_IMAGE': stacked_image, 'STACKED_ERROR': stacked_error, 'STACKED_IMAGE_OVERLAP': stacked_image_overlap}
     script_name : str, optional
-        脚本名称
+        Script name.
     bkg_list : list, optional
-        背景值列表
+        List of background values.
     bkg_error_list : list, optional
-        背景误差值列表
+        List of background error values.
     keyword_dict : dict, optional
-        存储用来查找相关信息的关键词
-        例如: swift: {'file': 'OBSID', 'exp':'EXPOSURE'}, 
+        Stores keywords used to look up related information.
+        Example: swift: {'file': 'OBSID', 'exp':'EXPOSURE'},
               hst: {'file': 'file_name', 'exp':'EXPTIME'}
     compressed : bool, optional
-        是否压缩文件
+        Whether to compress the file.
     """
-    # 创建主header
+    # Create the primary header
     primary_hdu = fits.PrimaryHDU()
     primary_header = primary_hdu.header
     
-    # 获取时间信息并转换为Time对象
+    # Get time information and convert it to Time objects
     times_obs = Time([obs['DATE_OBS'] for obs in obs_list])
     times_end = Time([obs['DATE_END'] for obs in obs_list])
     
-    # 获取最早的开始时间和最晚的结束时间
+    # Get the earliest start time and latest end time
     first_date_obs = times_obs.min()
     last_date_end = times_end.max()
     
-    # 计算中间时间
+    # Calculate the midpoint time
     midtime = Time(first_date_obs.jd + (last_date_end.jd - first_date_obs.jd) / 2, format='jd')
     
-    # 转换为ISO格式字符串用于保存在header中
+    # Convert to ISO-format strings for saving in the header
     first_date_obs_str = first_date_obs.iso
     last_date_end_str = last_date_end.iso
     midtime_iso = midtime.iso
@@ -66,19 +66,19 @@ def save_stacked_fits(images_to_save: dict,
     last_date_end_str = last_date_end_str.replace(' ', 'T')
     midtime_iso = midtime_iso.replace(' ', 'T')
     
-    # 计算总曝光时间
+    # Calculate the total exposure time
     if hst:
         total_exptime = sum(obs['EXPTIME'] for obs in obs_list)
     else:
         total_exptime = sum(obs['EXPOSURE'] for obs in obs_list)
     
-    # 获取滤光片
-    filt = obs_list[0]['FILTER']  # 假设所有观测使用相同的滤光片
+    # Get the filter
+    filt = obs_list[0]['FILTER']  # Assume all observations use the same filter
     
-    # 获取目标位置
+    # Get the target position
     target_pos = target_position
     
-    # 写入header信息
+    # Write header information
     if hst:
         primary_header['YEAR'] = (obs_list[0]['date'], 'Observation year')
     primary_header['DATE_OBS'] = (first_date_obs_str, 'Start time of first observation')
@@ -92,7 +92,7 @@ def save_stacked_fits(images_to_save: dict,
     primary_header['DS9YPIX'] = (target_pos[1] + 1, 'Target Y position in DS9 coordinates')
     primary_header['FILTER'] = (filt, 'Filter used in observations')
 
-    # 计算平均rh, delta, elongation
+    # Calculate average rh, delta, and elongation
     key_list = obs_list[0].keys()
     ephemeris_keywords_list = ephemeris_keywords()
     ephemeris_keywords_list.extend(['Sky_motion', 'Sky_mot_PA'])
@@ -121,7 +121,7 @@ def save_stacked_fits(images_to_save: dict,
     primary_header['HISTORY'] = f'Created by {script_name}'
     primary_header['HISTORY'] = f'Created by Zexi Xing'
     
-    # 循环处理extension信息
+    # Loop through extension information
     for ext_num, ext_name in enumerate(images_to_save.keys(), 1):
         primary_header[f'EXT{ext_num}NAME'] = (ext_name, f'Name of extension {ext_num}')
     
@@ -132,10 +132,10 @@ def save_stacked_fits(images_to_save: dict,
     else: # Swift
         primary_header.add_comment('EXP LIST: '+ ', '.join(f'{obs["OBSID"]}'[-4:]+f'_{obs["EXT_NO"]}' for obs in obs_list))
     primary_header.add_comment(comment)
-    # 创建HDU列表，从primary开始
+    # Create the HDU list, starting from the primary HDU
     hdul = fits.HDUList([primary_hdu])
     
-    # 循环创建各个extension
+    # Loop through and create each extension
     for ext_name, image_data in images_to_save.items():
         if image_data is not None:
             if image_data.dtype == bool:
@@ -144,7 +144,7 @@ def save_stacked_fits(images_to_save: dict,
                 image_hdu = fits.ImageHDU(data=image_data, name=ext_name)
             hdul.append(image_hdu)
     
-    # 保存文件
+    # Save the file
     hdul.writeto(save_path, overwrite=True)
     if compressed:
         compress_fits(save_path)
@@ -156,26 +156,26 @@ def save_cleaned_fits(images_to_save: dict,
                       other_header_info: dict = None,
                       compressed: bool = True):
     """
-    将cleaned image保存为fits文件
+    Save a cleaned image as a FITS file.
     
     Parameters
     ----------
     save_path : str
-        保存路径
+        Save path.
     obs : dict
-        观测信息字典
+        Observation information dictionary.
     target_position : Union[Tuple, List]
-        目标位置
+        Target position.
     images_to_save : dict
-        要保存的图像字典，key为extension名称，value为对应的2d array
-        例如: {'CLEANED_IMAGE': cleaned_image, 'UNCLEANED_IMAGE': uncleaned_image, 
+        Dictionary of images to save; keys are extension names and values are corresponding 2D arrays.
+        Example: {'CLEANED_IMAGE': cleaned_image, 'UNCLEANED_IMAGE': uncleaned_image,
                'CLEANED_ERROR': cleaned_error, 'WHT': wht}
     script_name : str, optional
-        脚本名称
+        Script name.
     compressed : bool, optional
-        是否压缩文件，默认True
+        Whether to compress the file; default is True.
     comment : str, optional
-        注释信息
+        Comment information.
     """
     primary_hdu = fits.PrimaryHDU()
     primary_header = primary_hdu.header
@@ -202,16 +202,16 @@ def save_cleaned_fits(images_to_save: dict,
     primary_header['HISTORY'] = f'Created by {script_name}'
     primary_header['HISTORY'] = f'Created by Zexi Xing'
 
-    # 循环处理extension信息
+    # Loop through extension information
     for ext_num, ext_name in enumerate(images_to_save.keys(), 1):
         primary_header[f'EXT{ext_num}NAME'] = (ext_name, f'Name of extension {ext_num}')
     
     primary_header.add_comment(comment)
     
-    # 创建HDU列表，从primary开始
+    # Create the HDU list, starting from the primary HDU
     hdul = fits.HDUList([primary_hdu])
     
-    # 循环创建各个extension
+    # Loop through and create each extension
     for ext_name, image_data in images_to_save.items():
         if image_data is not None:
             image_hdu = fits.ImageHDU(data=image_data, name=ext_name)
@@ -220,4 +220,3 @@ def save_cleaned_fits(images_to_save: dict,
     hdul.writeto(save_path, overwrite=True)
     if compressed:
         compress_fits(save_path)
-

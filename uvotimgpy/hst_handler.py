@@ -244,9 +244,9 @@ class HstObservationLogger:
             wcs_key = f"{row['date']}_{row['file_name']}"
             wcs = wcs_dict[wcs_key]
             try:
-                # 下面的1是origin： origin is the coordinate in the upper left corner of the image. 
+                # The 1 below is the origin: origin is the coordinate in the upper left corner of the image.
                 # In FITS and Fortran standards, this is 1. In Numpy and C standards this is 0.
-                # 所以这里得到的坐标是ds9的坐标
+                # Therefore, the coordinates returned here are DS9 coordinates.
                 x, y = wcs.all_world2pix(row['RA'], row['DEC'], 1)
                 x_pixels.append(x)
                 y_pixels.append(y)
@@ -290,11 +290,11 @@ def obtain_real_position(obs_table, i):
     row_range = (row_pixel-100, row_pixel+100)
     col_range = (col_pixel-100, col_pixel+100)
 
-    # 读取图像
+    # Read the image
     with fits.open(filepath) as hdul:
         image = hdul[1].data
         
-    # 获取regions
+    # Get regions
     selector = RegionSelector(image, vmin=0, vmax=2, row_range=row_range, col_range=col_range, shape='square')
     plt.pause(0.1)
     aperture = selector.get_apertures()[0]

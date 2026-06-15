@@ -137,28 +137,31 @@ def draw_direction_compass(ax,
                            text_offset=0.02,
                            fontsize=10):
     """
-    在指定的 matplotlib 轴上绘制自定义方向的指南针（角度逆时针），每个方向可自定义颜色。
+    Draw a custom-direction compass on the specified matplotlib axes, with
+    angles measured counterclockwise and per-direction colors supported.
     
-    参数：
-    - ax: matplotlib 的轴对象
-    - directions: dict，键为方向标签，值为角度（从N方向起，逆时针度数）
-    - colors: 单一颜色字符串，或一个 dict，例如 {'N': 'red', 'E': 'green'} 表示每个方向的颜色
-    - position: 指南针中心在图中位置（以 ax.transAxes 坐标表示，范围 0-1）
-    - arrow_length: 箭头长度（以 Axes 坐标表示）
-    - text_offset: 文本相对箭头终点的延伸距离（以 Axes 坐标表示）
-    - fontsize: 文字大小
+    Parameters:
+    - ax: matplotlib axes object
+    - directions: dict with direction labels as keys and angles as values,
+      measured counterclockwise from north
+    - colors: a single color string, or a dict such as {'N': 'red', 'E': 'green'}
+      specifying the color for each direction
+    - position: compass center position in ax.transAxes coordinates, from 0 to 1
+    - arrow_length: arrow length in Axes coordinates
+    - text_offset: distance from the arrow tip to the text in Axes coordinates
+    - fontsize: font size
 
-    返回：
-    - ax: 修改后的 matplotlib 轴
+    Returns:
+    - ax: modified matplotlib axes
     """
     x0, y0 = position
 
-    # 统一颜色处理
+    # Normalize color handling
     if isinstance(colors, str):
-        # 所有方向统一颜色
+        # Use one color for all directions
         colors = {k: colors for k in directions.keys()}
     else:
-        # 若提供部分颜色，未指定的用白色
+        # If only some colors are provided, use white for unspecified directions
         colors = {k: colors.get(k, 'white') for k in directions.keys()}
 
     for label, angle_deg in directions.items():
@@ -184,44 +187,44 @@ def draw_direction_compass(ax,
     return ax
 
 def draw_scalebar(ax,
-                  length=100,  # 以像素为单位
+                  length=100,  # In pixels
                   label_top='100 000 km',
                   label_bottom='45″',
                   position=(0.9, 0.9),
                   color='white',
                   linewidth=2,
-                  text_offset=10,  # 文字偏移，以像素为单位
+                  text_offset=10,  # Text offset in pixels
                   fontsize=10):
     """
-    绘制比例尺，横线长度以像素为单位，位置以 Axes 坐标表示。
+    Draw a scale bar, with line length in pixels and position in Axes coordinates.
     
-    参数：
-    - ax: matplotlib Axes 对象
-    - length: 横线长度（单位：像素）
-    - label_top: 上方标签文本（可为 None）
-    - label_bottom: 下方标签文本（可为 None）
-    - position: 横线中心位置（以 Axes 坐标表示，0~1）
-    - color: 颜色（用于线和文字）
-    - linewidth: 线宽（单位：像素）
-    - text_offset: 上下标签离横线的距离（单位：像素）
-    - fontsize: 字体大小
+    Parameters:
+    - ax: matplotlib Axes object
+    - length: horizontal line length in pixels
+    - label_top: upper label text; can be None
+    - label_bottom: lower label text; can be None
+    - position: center position of the horizontal line in Axes coordinates, 0 to 1
+    - color: color for the line and text
+    - linewidth: line width in pixels
+    - text_offset: distance from the horizontal line to the upper/lower labels, in pixels
+    - fontsize: font size
 
-    返回：
-    - ax: 修改后的 matplotlib Axes 对象
+    Returns:
+    - ax: modified matplotlib Axes object
     """
-    # 取中心点（Axes → Data）
+    # Get the center point (Axes to Data)
     x0_data, y0_data = ax.transAxes.transform(position)
     x0_data, y0_data = ax.transData.inverted().transform((x0_data, y0_data))
 
-    # 横线起止 (data coords)
+    # Horizontal line endpoints (data coords)
     x_start = x0_data - length / 2
     x_end   = x0_data + length / 2
 
-    # 画横线
+    # Draw the horizontal line
     ax.plot([x_start, x_end], [y0_data, y0_data],
             color=color, linewidth=linewidth)
 
-    # 文本位置：在显示坐标中做偏移
+    # Text positions: apply offsets in display coordinates
     x0_disp, y0_disp = ax.transData.transform((x0_data, y0_data))
     y_top_disp = y0_disp + text_offset
     y_bottom_disp = y0_disp - text_offset
@@ -256,7 +259,7 @@ def multi_show(image_list, max_cols=4, vrange: Union[None, Tuple[float, float], 
     n_cols = min(max_cols, n_images)
     n_rows = math.ceil(n_images / n_cols)
 
-    # 创建和显示
+    # Create and display
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols*3, n_rows*3))
     if n_rows == 1: axes = [axes]
     if n_cols == 1: axes = [[ax] for ax in axes]
@@ -338,7 +341,7 @@ def multi_show(image_list, max_cols=4, vrange: Union[None, Tuple[float, float], 
         if target_position_range is not None:
             axes[row][col].plot(target_col, target_row, 'rx', markersize=5)
 
-    # 隐藏多余子图
+    # Hide unused subplots
     for i in range(n_images, n_rows * n_cols):
         row, col = i // n_cols, i % n_cols
         axes[row][col].set_visible(False)
@@ -348,7 +351,7 @@ def multi_show(image_list, max_cols=4, vrange: Union[None, Tuple[float, float], 
 def linear_stretch(img, p_low=2.0, p_high=98.0, mask=None, return_threshold=False):
     img = np.asarray(img, dtype=np.float32)
 
-    # 直接忽略 NaN 计算百分位
+    # Compute percentiles while directly ignoring NaNs
     if mask is not None:
         lo, hi = np.nanpercentile(img[mask], [p_low, p_high])
     else:
@@ -393,7 +396,7 @@ def figs_to_gif(figs, save_path, duration=500, last_duration=2000):
     else:
         durations = [duration] * (n - 1) + [last_duration]
 
-    # 存 GIF：每帧 1000 毫秒（1s）
+    # Save GIF; each frame is 1000 milliseconds (1s)
     save_path = Path(save_path)
     frames[0].save(
         save_path,
@@ -401,7 +404,7 @@ def figs_to_gif(figs, save_path, duration=500, last_duration=2000):
         append_images=frames[1:],
         duration=durations,
         loop=0,
-        disposal=2 # 避免残影
+        disposal=2 # Avoid ghosting
     )
 
 def plot_obs_timeline(
@@ -417,34 +420,34 @@ def plot_obs_timeline(
     datatype_keyword='DATATYPE',
     symbol_map = None,
     ):
-    # 关键：OBSID/obsid 用字符串读，保留前导 0
+    # Key point: read OBSID/obsid as strings to preserve leading zeros
     df = pd.read_csv(csv_path, dtype={obs_id_keyword: "string", obs_id_keyword.lower(): "string"})
 
-    # 兼容列名大小写：优先用 OBSID，其次 obsid
+    # Handle column-name case differences: prefer OBSID, then obsid
     obs_col = obs_id_keyword if obs_id_keyword in df.columns else obs_id_keyword.lower()
     df[obs_col] = df[obs_col].astype("string")
 
-    # MIDTIME 转 datetime
+    # Convert MIDTIME to datetime
     df[time_keyword] = pd.to_datetime(df[time_keyword], errors="coerce", utc=False)
     df = df.dropna(subset=[time_keyword]).copy()
 
-    # 时间范围：未提供就用表内最早/最晚
+    # Time range: if not provided, use the earliest/latest values in the table
     start = pd.to_datetime(start) if start is not None else df[time_keyword].min()
     end   = pd.to_datetime(end)   if end   is not None else df[time_keyword].max()
     df = df[(df[time_keyword] >= start) & (df[time_keyword] <= end)].copy()
 
-    # 固定 y=0，做成“时间轴”
+    # Fix y=0 to make a timeline
     #df["_y"] = 0
-    # 按 filter 映射到不同高度
+    # Map filters to different heights
     if y_map is None:
         y_map = {'UVW2': 0, 'UVM2':1, 'UVW1':2, 'U':3, 'B':4, 'V':5}
 
     df["_y"] = df[filter_keyword].map(y_map)
 
-    # 如果表里有不在 filter_height_map 中的 filter，防止报错
+    # Drop filters not present in filter_height_map to avoid errors
     df = df.dropna(subset=["_y"])
 
-    # FILTER：紫 -> 橘（可按需微调）
+    # FILTER: purple to orange; adjust as needed
     if color_map is None:
         color_map = {
             "UVW2": "#5B2A86",
@@ -455,7 +458,7 @@ def plot_obs_timeline(
             "V":    "#F28E2B",
         }
 
-    # DATATYPE：image 圆点，event 十字
+    # DATATYPE: image uses circles, event uses crosses
     if datatype_keyword is not None and datatype_keyword in df.columns:
         if symbol_map is None:
             symbol_map = {"image": "circle", "event": "cross"}
@@ -467,8 +470,8 @@ def plot_obs_timeline(
             symbol="DATATYPE",
             color_discrete_map=color_map,
             symbol_map=symbol_map,
-            hover_name=obs_col,           # 悬停直接显示 obsid（保留前导0）
-            hover_data={"_y": False},     # 不显示 y
+            hover_name=obs_col,           # Show obsid directly on hover, preserving leading zeros
+            hover_data={"_y": False},     # Do not show y
         )
     else:
         fig = px.scatter(
@@ -477,13 +480,13 @@ def plot_obs_timeline(
             y="_y",
             color=filter_keyword,
             color_discrete_map=color_map,
-            hover_name=obs_col,           # 悬停直接显示 obsid（保留前导0）
-            hover_data={"_y": False},     # 不显示 y
+            hover_name=obs_col,           # Show obsid directly on hover, preserving leading zeros
+            hover_data={"_y": False},     # Do not show y
         )
 
     fig.update_traces(marker={"size": 9})
     #fig.update_yaxes(visible=False, showticklabels=False, zeroline=False)
-    # y 轴显示为 FILTER 分层
+    # Display the y-axis as FILTER layers
     ymin = min(y_map.values()) - 0.5
     ymax = max(y_map.values()) + 0.5
     ymean = (ymin + ymax) / 2
@@ -491,7 +494,7 @@ def plot_obs_timeline(
     ymin = ymean - ystep*5
     ymax = ymean + ystep*5
     fig.update_yaxes(
-        visible=False,            # 不显示轴，但 range 仍然生效
+        visible=False,            # Hide the axis, but keep the range effective
         range=[ymin, ymax],
         zeroline=False
     )

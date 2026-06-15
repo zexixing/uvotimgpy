@@ -42,7 +42,7 @@ def resolve_profile_arg(arg: Optional[Any], fallback: Optional[Any]):
     return fallback
 
 
-# ===================== 背景和基础测量 =====================
+# ===================== Background and Basic Measurements =====================
 #class BasicParas:
 #    def __init__(self, obs_time: Union[Time, str]):
 #        self.filt_filename_v = 'uvv'
@@ -72,7 +72,7 @@ def resolve_profile_arg(arg: Optional[Any], fallback: Optional[Any]):
         
 
 class PhotometryAnalysis:
-    """基础测量功能"""
+    """Basic measurement functionality."""
     
     def __init__(self,
                  image_path_or_name: Optional[Union[str, Path]],
@@ -191,7 +191,7 @@ class PhotometryAnalysis:
                         yradius: Optional[float] = None,
                         vrange: Optional[Tuple[float, float]] = None,
                         ):
-        # 图示测量区域
+        # Plot the measurement regions
         if self.bkg_region is not None:
             bkg_region = RegionConverter.to_bool_array_general(self.bkg_region, combine_regions=True, shape=self.image.shape)[0]
         aperture = RegionConverter.to_bool_array_general(self.aperture, combine_regions=True, shape=self.image.shape)[0]
@@ -237,7 +237,7 @@ class PhotometryAnalysis:
                            plot_bin_num: int = 100,
                            ):
         """
-        测量背景亮度
+        Measure background brightness.
         multi_apertures_params = {
             'region_creation_func': None,
             'radius_inner': None,
@@ -246,9 +246,9 @@ class PhotometryAnalysis:
         }
         """
         image = self.image.copy()
-        # 实现不同的背景测量方法
+        # Implement different background measurement methods
         if method == 'single_pixel':
-            # 单区域方法
+            # Single-region method
             self.bkg_for_single_pixel, self.bkg_err_for_single_pixel = \
                 BackgroundEstimator.for_single_pixel(image = image, regions = self.bkg_region, 
                                                      bad_pixel_mask = self.bad_pixel_mask, 
@@ -259,7 +259,7 @@ class PhotometryAnalysis:
             if self.verbose:
                 print(f'{self.filt_displayname} image (single pixel): bkg = ({smart_float_format(self.bkg_for_single_pixel)} +/- {smart_float_format(self.bkg_err_for_single_pixel)}) ctns/s/pixel')
         elif method == 'multi_region':
-            # 多区域方法
+            # Multi-region method
             region_creation_func = multi_apertures_params.get('region_creation_func', None)
             radius_inner = multi_apertures_params.get('radius_inner', self.radius_inner)
             radius_outer = multi_apertures_params.get('radius_outer', self.radius_outer)
@@ -405,9 +405,9 @@ class PhotometryAnalysis:
             self.profile_rho, self.profile_value, self.profile_err = results
 
 
-# ===================== Water Production分析 =====================
+# ===================== Water Production Analysis =====================
 class OHAnalysis:
-    """Water production rate分析相关功能"""
+    """Water production rate analysis functionality."""
     def __init__(self, basic_info: BasicInfo, reddening: float = 0,
                  netimg_v: Tuple[np.ndarray, np.ndarray] = (None, None), # countrate img
                  netimg_uw1: Tuple[np.ndarray, np.ndarray] = (None, None), # countrate img
@@ -668,7 +668,7 @@ class OHAnalysis:
     
     #def analyze_multiple_reddenings(self, image: np.ndarray, 
     #                              reddenings: List[float], **kwargs) -> pd.DataFrame:
-    #    """多个reddening的water production分析"""
+    #    """Water production analysis for multiple reddening values."""
     #    all_results = []
     #    for reddening in reddenings:
     #        result = self.analyze_single_reddening(image, reddening, **kwargs)
@@ -679,9 +679,9 @@ class OHAnalysis:
     #    self.water_production_results = df_results
     #    return df_results
 
-# ===================== Reddening依赖分析 =====================
+# ===================== Reddening Dependence Analysis =====================
 class ReddeningAnalysis:
-    """Reddening依赖性分析"""
+    """Reddening dependence analysis."""
     
     def __init__(self, basic_info: BasicInfo,  
                  aperture: Tuple[Union[float, None], float] = (None, 10),
@@ -860,9 +860,9 @@ class ReddeningAnalysis:
         plt.show(block=True)
         plt.close()
 
-# ===================== 其他分析（预留） =====================
+# ===================== Other Analysis (Reserved) =====================
 class ProfileAnalysis:
-    """Profile分析"""
+    """Profile analysis."""
     
     def __init__(self,
                  basic_info: BasicInfo,
@@ -936,47 +936,47 @@ class ProfileAnalysis:
         pass
 
 class MorphologyAnalysis:
-    """形态学分析"""
+    """Morphology analysis."""
     
     def __init__(self):
         self.morphology_results = {}
     
     def analyze_morphology(self, image: np.ndarray, **kwargs) -> Dict[str, Any]:
-        """形态学分析"""
+        """Morphology analysis."""
         pass
     
     def extract_morphology_features(self, image: np.ndarray, **kwargs) -> Dict[str, float]:
-        """提取形态学特征"""
+        """Extract morphology features."""
         pass
 
-# ===================== 主Pipeline类 =====================
+# ===================== Main Pipeline Class =====================
 class CometPipeline:
-    """彗星观测数据处理主Pipeline，整合所有功能"""
+    """Main pipeline for comet observation data processing, integrating all functionality."""
     
     def __init__(self):
-        # 初始化所有模块
+        # Initialize all modules
         pass
     
-    # 可以在这里添加一些便捷的组合方法
+    # Add convenient combined methods here if needed
     def run_standard_analysis(self, **kwargs):
-        """运行标准分析流程"""
+        """Run the standard analysis workflow."""
         pass
 
 
-#这个设计的优点：
+# Advantages of this design:
 #
-#模块化：每个功能类独立，职责清晰
-#可独立使用：每个类都可以单独导入和使用
-#方法都是公开的：去掉了下划线前缀，所有方法都可以被外部调用
-#主Pipeline整合：CometPipeline 类整合所有模块，方便统一管理
-#灵活性：既可以用单个模块，也可以用主Pipeline
-#使用示例：
-# 独立使用某个模块
+# Modular: each functional class is independent with clear responsibilities
+# Independently usable: each class can be imported and used on its own
+# Public methods: underscore prefixes were removed so all methods can be called externally
+# Main pipeline integration: CometPipeline integrates all modules for unified management
+# Flexible: use either individual modules or the main pipeline
+# Usage example:
+# Use a module independently
 #from pipeline import WaterProductionAnalysis
 #water = WaterProductionAnalysis()
 #oh_image = water.get_oh_image(image, reddening=0.3)
 #
-## 使用主Pipeline
+## Use the main pipeline
 #from pipeline import CometPipeline
 #pipeline = CometPipeline()
 #pipeline.prep.load_observation_log("observations.csv")

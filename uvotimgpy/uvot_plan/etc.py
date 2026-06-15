@@ -11,111 +11,113 @@ from typing import Tuple
 
 def create_magnitude_calculator(coefficients, time_intervals=None):
     """
-    创建一个计算magnitude的函数
-    
-    参数:
-        coefficients: tuple 或 list of tuples
-            - 单个公式: (H, G) 如 (12.0, 17.0)
-            - 多个公式: [(H1, G1), (H2, G2), ...] 
-        time_intervals: None 或 list of str
-            - None: 不分段，使用单个公式
-            - list: 时间分段点，支持多种格式:
+    Create a function that calculates magnitude.
+    Parameters:
+        coefficients: tuple or list of tuples
+            - Single formula: (H, G), e.g. (12.0, 17.0)
+            - Multiple formulas: [(H1, G1), (H2, G2), ...]
+        time_intervals: None or list of str
+            - None: no segmentation; use a single formula
+            - list: time breakpoints; supports multiple formats:
                     ['2025-10-10', '2026-01-08', '2026-06-27']
                     ['2025 Oct. 10', '2026 Jan. 8', '2026 June 27']
                     ['2025 Oct 10', '2026 Jan 8', '2026 Jun 27']
-    
-    返回:
-        计算magnitude的函数
+    Returns:
+        Function that calculates magnitude.
     """
-    
-    # 处理输入参数
+    # Process input parameters
     if time_intervals is None:
-        # 不分段的情况
+        # Case without segmentation
         if isinstance(coefficients, tuple) and len(coefficients) == 2:
             coeff_list = [coefficients]
         else:
-            raise ValueError("不分段时，coefficients应该是单个tuple (H, G)")
+            # raise ValueError("不分段时，coefficients应该是单个tuple (H, G)")
+            raise ValueError("When not using segments, coefficients should be a single tuple (H, G)")
         time_boundaries = None
     else:
-        # 分段的情况
+        # Segmented case
         if not isinstance(coefficients, list):
-            raise ValueError("分段时，coefficients应该是list of tuples")
+            # raise ValueError("分段时，coefficients应该是list of tuples")
+            raise ValueError("When using segments, coefficients should be a list of tuples")
         
         coeff_list = coefficients
         
-        # 解析各种格式的时间字符串
+        # Parse time strings in various formats
         time_boundaries = []
         for t in time_intervals:
             try:
                 parsed_time = parse_date_string(t)
                 time_boundaries.append(parsed_time)
             except ValueError as e:
-                raise ValueError(f"解析时间 '{t}' 失败: {e}")
+                # raise ValueError(f"解析时间 '{t}' 失败: {e}")
+                raise ValueError(f"Failed to parse time '{t}': {e}")
         
-        # 检查数量匹配
+        # Check count consistency
         if len(coeff_list) != len(time_boundaries) + 1:
-            raise ValueError(f"需要{len(time_boundaries)+1}个系数组，但提供了{len(coeff_list)}个")
+            # raise ValueError(f"需要{len(time_boundaries)+1}个系数组，但提供了{len(coeff_list)}个")
+            raise ValueError(f"Expected {len(time_boundaries)+1} coefficient groups, but received {len(coeff_list)}")
     
     def calculate_magnitude(rh_list, delta_list, date_list):
         """
-        计算magnitude: m = H + 5*log10(delta) + G*log10(rh)
+        Calculate magnitude: m = H + 5*log10(delta) + G*log10(rh).
         
-        参数:
-            rh_list: array-like, 日心距离 r（AU）
-            delta_list: array-like, 地心距离 d（AU）  
-            date_list: list of str, 日期时间字符串
-                      支持格式: '2022-01-01T00:00:00.000', '2022-01-01', '2022 Jan 1'等
+        Parameters:
+            rh_list: array-like, heliocentric distance r (AU)
+            delta_list: array-like, geocentric distance d (AU)
+            date_list: list of str, date/time strings
+                      supported formats include '2022-01-01T00:00:00.000',
+                      '2022-01-01', '2022 Jan 1', etc.
         
-        返回:
-            numpy array, 计算得到的magnitude值
+        Returns:
+            numpy array, calculated magnitude values.
         """
-        # 转换为numpy数组
+        # Convert to numpy arrays
         rh = np.asarray(rh_list)
         delta = np.asarray(delta_list)
         
-        # 解析日期列表
+        # Parse the date list
         times = []
         for date_str in date_list:
             try:
-                # 首先尝试Time直接解析
+                # First try direct parsing with Time
                 times.append(Time(date_str))
             except:
-                # 如果失败，使用自定义解析
+                # If that fails, use the custom parser
                 times.append(parse_date_string(date_str))
         times = Time(times)
         
-        # 初始化结果数组
+        # Initialize the result array
         magnitude = np.zeros_like(rh, dtype=float)
         
         if time_boundaries is None:
-            # 不分段，使用单一公式
+            # No segmentation; use a single formula
             H, G = coeff_list[0]
             magnitude = H + 5 * np.log10(delta) + G * np.log10(rh)
         else:
-            # 分段计算
+            # Segmented calculation
             for i in range(len(times)):
                 t = times[i]
                 
-                # 确定使用哪个公式
+                # Determine which formula to use
                 if t < time_boundaries[0]:
                     H, G = coeff_list[0]
                 elif t >= time_boundaries[-1]:
                     H, G = coeff_list[-1]
                 else:
-                    # 在中间某个区间
+                    # In one of the intermediate intervals
                     for j in range(len(time_boundaries) - 1):
                         if time_boundaries[j] <= t < time_boundaries[j + 1]:
                             H, G = coeff_list[j + 1]
                             break
                 
-                # 计算magnitude
+                # Calculate magnitude
                 magnitude[i] = H + 5 * np.log10(delta[i]) + G * np.log10(rh[i])
         
         return list(magnitude)
-    
-    # 辅助方法
+
+    # Helper method
     def get_formula_info():
-        """返回公式配置信息"""
+        """Return formula configuration information."""
         info = []
         if time_boundaries is None:
             H, G = coeff_list[0]
@@ -130,7 +132,7 @@ def create_magnitude_calculator(coefficients, time_intervals=None):
                     info.append(f"m = {H:4.1f} + 5*log(d) + {G:4.1f}*log(r)  ({time_boundaries[i-1].iso[:10]} to {time_boundaries[i].iso[:10]})")
         return "\n".join(info)
     
-    # 给返回的函数添加属性
+    # Add attributes to the returned function
     calculate_magnitude.get_formula_info = get_formula_info
     calculate_magnitude.coefficients = coeff_list
     calculate_magnitude.time_boundaries = time_boundaries
@@ -140,25 +142,25 @@ def create_magnitude_calculator(coefficients, time_intervals=None):
 class ExposureCalculator:
     def __init__(self, target_dict, reference_dict, aperture, snr=3):
         """
-        初始化曝光时间计算器
+        Initialize the exposure time calculator.
         
         Parameters:
         -----------
         reference_dict : dict
-            参考源的字典，包含 'm_v' 和 'cr_v' 等键
+            Dictionary for the reference source, containing keys such as 'm_v' and 'cr_v'.
         target_dict : dict
-            目标源的字典，包含 'm_v', 'rh', 'delta', 'rhv' 等键
+            Dictionary for the target source, containing keys such as 'm_v', 'rh', 'delta', and 'rhv'.
         aperture : float or tuple
-            孔径大小（km），可以是单个值或(内径, 外径)元组
+            Aperture size (km), either a single value or an (inner radius, outer radius) tuple.
         snr : float
-            信噪比要求，默认为3
+            Required signal-to-noise ratio; default is 3.
         """
         self.reference_dict = reference_dict
         self.target_dict = target_dict
         self.aperture = aperture
         self.snr = snr
         
-        # 计算像素相关参数
+        # Calculate pixel-related parameters
         km_per_pixel = UnitConverter.arcsec_to_km(1*1.004, target_dict['delta'])
         self.x = 3
         
@@ -170,26 +172,26 @@ class ExposureCalculator:
             radius = aperture/km_per_pixel
             self.pixel_number = radius**2*np.pi
         
-        # 背景计数率
+        # Background count rates
         self.uw1_bkg_countrate = 0.003503 * self.pixel_number
         self.uw1_bkg_countrate_err = 6.475e-04 * np.sqrt(self.pixel_number)
         self.v_bkg_countrate = 0.02226 * self.pixel_number
         self.v_bkg_countrate_err = 0.002021 * np.sqrt(self.pixel_number)
         
-        # 添加beta作为实例变量（从RatioCalculator获取）
+        # Add beta as an instance variable, obtained from RatioCalculator
         self.beta = RatioCalculator_V_UV.dust_countrate_ratio_from_reddening(
             reddening=10, 
             obs_time=Time('2025-01-01T00:00:00.000')
         )
     
     def get_qwater(self, m_v, delta):
-        """计算水的产生率"""
+        """Calculate the water production rate."""
         m_h = m_v - 5*np.log10(delta)
         qwater = np.power(10, 30.675 - 0.2453*m_h)
         return qwater
     
     def qwater_to_oh_number_in_aperture(self, qwater, r_h, delta, aperture):
-        """计算孔径内的OH分子数"""
+        """Calculate the number of OH molecules within the aperture."""
         vm = create_vectorial_model(r_h)
         
         if isinstance(aperture, float) or isinstance(aperture, int):
@@ -201,7 +203,7 @@ class ExposureCalculator:
         return number_aperture
     
     def get_oh_countrate(self, oh_number, rhv, rh, delta):
-        """计算OH的计数率"""
+        """Calculate the OH count rate."""
         g_1au_value = get_g_factor(rhv)
         g_value = g_1au_value / np.power(rh, 2)
         luminosity = oh_number * g_value
@@ -212,45 +214,46 @@ class ExposureCalculator:
         return countrate
     
     def get_v_dust_countrate(self, m_v, m_v_ref, cr_v_ref):
-        """计算V波段尘埃计数率"""
+        """Calculate the V-band dust count rate."""
         f_to_fref = np.power(10, -0.4*(m_v - m_v_ref))
         cr_to_crref = f_to_fref
         cr_in_aperture = cr_v_ref * cr_to_crref
         return cr_in_aperture
     
     def get_cr_uw1(self, oh_countrate, v_dust_countrate, uw1_bkg_countrate):
-        """计算UW1波段总计数率"""
+        """Calculate the total UW1-band count rate."""
         cr_uw1 = oh_countrate + self.beta*v_dust_countrate + uw1_bkg_countrate
         return cr_uw1
     
     def get_cr_v(self, v_dust_countrate, v_bkg_countrate):
-        """计算V波段总计数率"""
+        """Calculate the total V-band count rate."""
         cr_v = v_dust_countrate + v_bkg_countrate
         return cr_v
     
     def get_exposure_time(self, x, cr_uw1, cr_v, cr_oh, cr_uw1_bkg_err, cr_v_bkg_err, snr):
-        """计算所需的曝光时间"""
+        """Calculate the required exposure time."""
         numerator = cr_uw1/x + (self.beta**2)*cr_v
         a = (cr_uw1_bkg_err**2) + (self.beta**2)*(cr_v_bkg_err**2)
         denominator = (cr_oh/snr)**2 - a
         
         if denominator <= 0:
             print('best SNR = '+f'{cr_oh/np.sqrt(a):.2f}')
-            raise ValueError("无法达到所需的信噪比，分母为负值或零")
+            # raise ValueError("无法达到所需的信噪比，分母为负值或零")
+            raise ValueError("Cannot reach the required SNR because the denominator is negative or zero")
         
         exposure = numerator/denominator
 
         return exposure
     
     def calculate_exposure_time(self):
-        """主方法：计算曝光时间"""
+        """Main method for calculating exposure time."""
         target_dict = self.target_dict
         reference_dict = self.reference_dict
         
-        # 计算水的产生率
+        # Calculate the water production rate
         qwater = self.get_qwater(target_dict['m_v'], target_dict['delta'])
         
-        # 计算孔径内的OH数量
+        # Calculate the OH amount within the aperture
         oh_number_in_aperture = self.qwater_to_oh_number_in_aperture(
             qwater, 
             target_dict['rh'], 
@@ -258,7 +261,7 @@ class ExposureCalculator:
             self.aperture
         )
         
-        # 计算OH计数率
+        # Calculate the OH count rate
         oh_countrate = self.get_oh_countrate(
             oh_number_in_aperture, 
             target_dict['rhv'], 
@@ -266,14 +269,14 @@ class ExposureCalculator:
             target_dict['delta']
         )
     
-        # 计算V波段尘埃计数率
+        # Calculate the V-band dust count rate
         v_dust_countrate = self.get_v_dust_countrate(
             target_dict['m_v'], 
             reference_dict['m_v'], 
             reference_dict['cr_v']
         )
         
-        # 计算总计数率
+        # Calculate total count rates
         print(qwater, oh_number_in_aperture,
               oh_countrate, v_dust_countrate, 
               self.uw1_bkg_countrate, self.v_bkg_countrate)
@@ -281,7 +284,7 @@ class ExposureCalculator:
         cr_uw1 = self.get_cr_uw1(oh_countrate, v_dust_countrate, self.uw1_bkg_countrate)
         cr_v = self.get_cr_v(v_dust_countrate, self.v_bkg_countrate)
         
-        # 计算曝光时间
+        # Calculate exposure time
         exposure = self.get_exposure_time(
             self.x, 
             cr_uw1, 
@@ -321,5 +324,3 @@ if __name__ == "__main__":
     t_v = etc.calculate_exposure_time()
     t_uw1 = 3*t_v
     print(t_v, t_uw1, (t_v+t_uw1)/1600)
-
-    

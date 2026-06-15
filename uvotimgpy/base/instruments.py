@@ -60,7 +60,7 @@ def create_bandpass(wave: u.Quantity, thru: Union[u.Quantity, np.ndarray]) -> Sp
     '''
     Create SpectralElement from wavelength and throughput arrays
     '''
-    # 确保thru是无量纲的
+    # Ensure thru is dimensionless
     if isinstance(thru, u.Quantity):
         thru = thru.value
     return SpectralElement(Empirical1D, points=wave, lookup_table=thru, fill_value=0)

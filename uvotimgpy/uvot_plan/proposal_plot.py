@@ -25,10 +25,10 @@ def orbit_dict_to_mag(orbit_dict, mag_calculator=None):
 
 def get_yearend_list(start, end, month=1, day=1):
     """
-    获取日期范围内的所有1月1日
-    支持多种日期格式
+    Get all January 1 dates within the date range.
+    Supports multiple date formats.
     """
-    # 尝试不同的格式
+    # Try different formats
     formats = [
         '%Y-%m-%dT%H:%M:%S.%f',  # 2023-04-01T00:00:00.000
         '%Y-%m-%dT%H:%M:%S',      # 2023-04-01T00:00:00
@@ -36,7 +36,7 @@ def get_yearend_list(start, end, month=1, day=1):
         '%Y-%m-%d',               # 2023-04-01
     ]
     
-    # 解析开始日期
+    # Parse the start date
     for fmt in formats:
         try:
             s = datetime.strptime(start, fmt)
@@ -44,9 +44,10 @@ def get_yearend_list(start, end, month=1, day=1):
         except ValueError:
             continue
     else:
-        raise ValueError(f"无法解析日期: {start}")
+        # raise ValueError(f"无法解析日期: {start}")
+        raise ValueError(f"Unable to parse date: {start}")
     
-    # 解析结束日期
+    # Parse the end date
     for fmt in formats:
         try:
             e = datetime.strptime(end, fmt)
@@ -54,26 +55,28 @@ def get_yearend_list(start, end, month=1, day=1):
         except ValueError:
             continue
     else:
-        raise ValueError(f"无法解析日期: {end}")
+        # raise ValueError(f"无法解析日期: {end}")
+        raise ValueError(f"Unable to parse date: {end}")
     
-    # 生成特定月日的列表
+    # Generate the list of the requested month/day
     result = []
     for y in range(s.year, e.year + 1):
         try:
             target_date = datetime(y, month, day)
-            # 检查是否在范围内
+                # Check whether it is within the range
             if s <= target_date <= e:
                 result.append(f'{y:04d}-{month:02d}-{day:02d}')
         except ValueError:
-            # 处理无效日期（如2月30日）
+            # Handle invalid dates, such as February 30
             pass
     
     return result
 
 def find_elong_bounds(date, elong, threshold=50):
     """
-    找到elong<=threshold的连续段，返回每段外侧边界（刚好>threshold的点）
-    返回[(段前的点, 段后的点), ...]
+    Find continuous segments where elong <= threshold and return the outer
+    boundary points for each segment, i.e. the points just above threshold.
+    Return [(point before segment, point after segment), ...].
     threshold: float, int, or tuple
     """
     segments = []
@@ -86,24 +89,24 @@ def find_elong_bounds(date, elong, threshold=50):
         elif isinstance(threshold, tuple):
             in_threshold = ((elong[i] <= threshold[0]) or (elong[i] >= threshold[1]))
         if in_threshold:
-            if not in_segment:  # 段开始
-                # 记录段前的点（上一个>threshold的点）
+            if not in_segment:  # Segment starts
+                # Record the point before the segment, i.e. the previous point > threshold
                 if i == 0:
-                    start = date[0]  # 第一个点就在段内，用第一个点
+                    start = date[0]  # The first point is already inside the segment; use it
                 else:
-                    start = date[i-1]  # 用前一个点（>threshold）
+                    start = date[i-1]  # Use the previous point (> threshold)
                 in_segment = True
         else:  # elong[i] > threshold
-            if in_segment:  # 段结束
-                # 记录段后的点（当前这个>threshold的点）
+            if in_segment:  # Segment ends
+                # Record the point after the segment, i.e. the current point > threshold
                 segments.append((start, date[i]))
                 in_segment = False
     
-    # 如果最后还在段内
+    # If the final point is still inside a segment
     if in_segment:
-        segments.append((start, date[-1]))  # 用最后一个点
+        segments.append((start, date[-1]))  # Use the last point
     
-    # 过滤掉开始和结束相同的tuple
+    # Filter out tuples with the same start and end
     segments = [(s, e) for s, e in segments if s != e]
     
     return segments
@@ -224,21 +227,21 @@ def plot_lightcurve(orbit_dict, mag_list, current_cycle, cycle_dict, obs_dict, p
         ax_rh.axis["top"].minor_ticklabels.set_color('gray')
         ax_rh.axvline(perihelion_date, color='black', lw=1, ls=':',alpha=0.3) #cycle separation line
     
-    # 将年中位置设为主刻度（用于标签）
-    ax_years.set_xticks(yearmiddle_list)  # 主刻度在年中
+    # Set mid-year positions as major ticks for labels
+    ax_years.set_xticks(yearmiddle_list)  # Major ticks at mid-year
     ax_years.set_xlim(host.get_xlim())
-    ax_years.set_xticklabels(yearname_list)  # 标签显示在年中
-    ax_years.axis["bottom"].major_ticks.set_ticksize(0)  # 隐藏主刻度线
-    ax_years.axis["top"].major_ticks.set_ticksize(0)  # 隐藏主刻度线
+    ax_years.set_xticklabels(yearname_list)  # Labels are shown at mid-year
+    ax_years.axis["bottom"].major_ticks.set_ticksize(0)  # Hide major tick marks
+    ax_years.axis["top"].major_ticks.set_ticksize(0)  # Hide major tick marks
 
-    ax_years2.set_xticks(yearend_list)  # 主刻度在年末
+    ax_years2.set_xticks(yearend_list)  # Major ticks at year-end
     ax_years2.set_xlim(host.get_xlim())
     ax_years2.set_xticklabels([])
-    ax_years2.axis["top"].major_ticks.set_ticksize(0)  # 隐藏主刻度线
+    ax_years2.axis["top"].major_ticks.set_ticksize(0)  # Hide major tick marks
 
-    # 将年末位置设为次刻度（用于显示刻度线）
-    #ax_years.set_xticks(yearend_list, minor=True)  # 次刻度在年末
-    #ax_years.tick_params(axis='x', which='minor', length=10, width=2, color='black')  # 显示次刻度线
+    # Set year-end positions as minor ticks for tick marks
+    #ax_years.set_xticks(yearend_list, minor=True)  # Minor ticks at year-end
+    #ax_years.tick_params(axis='x', which='minor', length=10, width=2, color='black')  # Show minor tick marks
 
     keys = list(cycle_dict.keys())
     for key in keys[:-1]:

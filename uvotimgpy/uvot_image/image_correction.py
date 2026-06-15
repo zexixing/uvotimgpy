@@ -18,7 +18,7 @@ def correct_offset_in_image(img_path: Union[str, Path],
                             return_number: bool = False,
                             return_int: bool = True) -> np.ndarray:
     """
-    修正offset
+    Correct the offset.
     box_size: width, height
     """
     with fits.open(img_path, mode='readonly') as hdul:
@@ -102,17 +102,17 @@ def coi_factor_plinfunc(rate):
 
 def get_coi_loss_map(img_data, scale=1.004, func = 'poole2008'):
     """
-    修正coincidence loss
+    Correct coincidence loss.
     img_data, unit: count/s
     scale: 1.004 or 0.502
     func: 'poole2008' or 'caldb'
     """
-    # 创建圆形卷积核
+    # Create a circular convolution kernel
     aper = int(np.ceil(5./scale))
     y, x = np.ogrid[-aper:aper+1, -aper:aper+1]
     kernel = (x**2 + y**2 <= aper**2).astype(float)
     
-    # 标记nan位置
+    # Mark NaN positions
     nan_mask = np.isnan(img_data)
 
     if nan_mask.any():
@@ -143,7 +143,7 @@ def correct_coi_loss_in_image(img_path: Union[str, Path],
                               save: bool = False,
                               verbose: bool = False):
     """
-    修正coincidence loss
+    Correct coincidence loss.
     """
     with fits.open(img_path, mode='readonly') as hdul:
         img = hdul[img_extension].data.copy()

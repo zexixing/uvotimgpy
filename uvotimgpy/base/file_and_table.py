@@ -58,16 +58,17 @@ def load_table(table_path, type='astropy_table', verbose=True):
         raise FileNotFoundError(f"File not found: {file_path}")
     
     if type == 'df' and file_path.suffix.lower() == '.csv':
-        # CSV文件
+        # CSV file
         dtype_dict = {'OBSID': str} if 'OBSID' in pd.read_csv(file_path, nrows=0).columns else {}
         df = pd.read_csv(file_path, dtype=dtype_dict)
         return df
     elif type == 'astropy_table' and file_path.suffix.lower() in ['.ecsv', '.csv']:
-        # ECSV文件 (astropy格式)
+        # ECSV file (astropy format)
         table = Table.read(file_path)
         return table 
     else:
-        raise ValueError(f"不支持的文件格式: {file_path.suffix}")
+        # raise ValueError(f"不支持的文件格式: {file_path.suffix}")
+        raise ValueError(f"Unsupported file format: {file_path.suffix}")
 
 def is_dict_list(obj) -> bool:
     return (
@@ -79,17 +80,17 @@ def is_list_dict(obj) -> bool:
     return (
         isinstance(obj, dict)
         and all(isinstance(v, list) for v in obj.values())
-        and len(set(len(v) for v in obj.values())) <= 1  # 可选：所有列表长度一致
+        and len(set(len(v) for v in obj.values())) <= 1  # Optional: all lists have the same length
     )
 
 def remove_table_units(table):
     """
-    通过转换为 pandas DataFrame 来移除astropy Table的单位
+    Remove units from an astropy Table by converting it to a pandas DataFrame.
     """
-    # 转换为 pandas DataFrame（自动移除单位）
+    # Convert to a pandas DataFrame, which automatically removes units
     df = table.to_pandas()
     
-    # 转回 astropy Table
+    # Convert back to an astropy Table
     return Table.from_pandas(df)
 
 class TableConverter:
@@ -214,12 +215,13 @@ class TableConverter:
 
 def expand_quantity_in_dict(data: Dict[str, List[Any]]) -> Dict[str, List[Any]]:
     """
-    遍历 dict 中所有列（list），若某列是 Quantity，则将其展开为元素为 Quantity 的列表。
-    例：[1, 2, 3]*u.km -> [1*u.km, 2*u.km, 3*u.km]
+    Iterate through all columns (lists) in a dict; if a column is a Quantity,
+    expand it into a list whose elements are Quantity objects.
+    Example: [1, 2, 3]*u.km -> [1*u.km, 2*u.km, 3*u.km]
     Parameters:
-        data: dict of lists，列名对应值列表
+        data: dict of lists; column names map to value lists
     Returns:
-        dict: 新的 dict，所有 Quantity 类型已被展开
+        dict: new dict where all Quantity columns have been expanded
     """
     result = {}
     for key, values in data.items():
@@ -232,12 +234,13 @@ def expand_quantity_in_dict(data: Dict[str, List[Any]]) -> Dict[str, List[Any]]:
 
 def compress_quantity_in_dict(data: Dict[str, List[Any]]) -> Dict[str, List[Any]]:
     """
-    将 dict 中所有列（list）中元素均为 Quantity 的，压缩为单个 Quantity 列。
-    例：[1*u.km, 2*u.km, 3*u.km] → [1, 2, 3]*u.km
+    Compress every dict column (list) whose elements are all Quantity objects
+    into a single Quantity column.
+    Example: [1*u.km, 2*u.km, 3*u.km] -> [1, 2, 3]*u.km
     Parameters:
-        data: dict of lists，列名对应值列表
+        data: dict of lists; column names map to value lists
     Returns:
-        dict: 新的 dict，Quantity 列被压缩为统一 Quantity
+        dict: new dict where Quantity columns have been compressed into unified Quantity objects
     """
     result = {}
     for key, values in data.items():
@@ -245,7 +248,7 @@ def compress_quantity_in_dict(data: Dict[str, List[Any]]) -> Dict[str, List[Any]
             try:
                 result[key] = u.Quantity(values)
             except Exception:
-                # 有可能单位不一致，如 [1*u.km, 2*u.m]，则不压缩
+                # Units may be inconsistent, e.g. [1*u.km, 2*u.m], so do not compress
                 result[key] = values
         else:
             result[key] = values
@@ -257,7 +260,7 @@ class TableColumnManager:
         self.table = self._parse_table()
 
     def _parse_table(self):
-        """解析 self._original 成 astropy Table"""
+        """Parse self._original into an astropy Table."""
         if isinstance(self._original, str) and os.path.isfile(self._original):
             return load_table(self._original)
         elif isinstance(self._original, pd.DataFrame):
@@ -272,7 +275,7 @@ class TableColumnManager:
             raise ValueError("Unsupported table format.")
 
     def _save(self):
-        """如果输入是路径，则保存到原路径"""
+        """If the input is a path, save back to the original path."""
         ext = str(self._original).split('.')[-1].lower()
         if ext in ['csv', 'ecsv']:
             save_astropy_table(self.table, self._original, verbose=False)
@@ -336,32 +339,32 @@ class TableColumnManager:
     
 def get_caller_filename():
     """
-    获取调用者的文件名，支持普通Python脚本和Jupyter Notebook
+    Get the caller filename, supporting ordinary Python scripts and Jupyter notebooks.
     
     Returns
     -------
     str
-        调用者的文件名
-        - 对于普通Python脚本: 返回脚本文件名 (如 'script.py')
-        - 对于Jupyter Notebook: 返回notebook文件名 (如 'analysis.ipynb')
-        - 如果无法获取: 返回默认名称(Unknown)
+        Caller filename.
+        - For ordinary Python scripts: return the script filename, e.g. 'script.py'
+        - For Jupyter notebooks: return the notebook filename, e.g. 'analysis.ipynb'
+        - If unavailable: return the default name, Unknown
     """
     
     frame = inspect.currentframe()
     try:
-        # 获取调用者的frame (上一级调用栈)
+        # Get the caller frame, i.e. the previous call stack frame
         caller_frame = frame.f_back
         caller_filename = caller_frame.f_code.co_filename
         
-        # 处理jupyter notebook的情况
+        # Handle the Jupyter notebook case
         if caller_filename.startswith('<ipython-input-') or caller_filename == '<stdin>':
             try:
-                # 方法1: 尝试从IPython获取notebook名称
+                # Method 1: try to get the notebook name from IPython
                 notebook_path = ipynbname.path()
                 return os.path.basename(notebook_path)
             except ImportError:
                 try:
-                    # 方法2: 尝试从环境变量获取
+                    # Method 2: try to get it from environment variables
                     if 'JPY_SESSION_NAME' in os.environ:
                         return os.environ['JPY_SESSION_NAME'] + '.ipynb'
                     else:
@@ -371,7 +374,7 @@ def get_caller_filename():
             except:
                 return "Unknown"
         else:
-            # 普通Python脚本
+            # Ordinary Python script
             return os.path.basename(caller_filename)
     finally:
         del frame
@@ -404,24 +407,24 @@ def ephemeris_keywords():
 
 def create_time_array(start, end, step):
     """
-    从字符串和 Quantity 创建时间数组
+    Create a time array from strings and a Quantity.
     
-    参数:
-        start: str, 开始时间字符串 (如 '2022-01-01' 或 '2022-01-01 00:00:00')
-        end: str, 结束时间字符串
-        step: astropy Quantity, 时间步长 (如 30*u.day, 2*u.hour)
+    Parameters:
+        start: str, start time string, e.g. '2022-01-01' or '2022-01-01 00:00:00'
+        end: str, end time string
+        step: astropy Quantity, time step, e.g. 30*u.day or 2*u.hour
     
-    返回:
-        astropy.time.Time 数组
+    Returns:
+        astropy.time.Time array.
     """
-    # 将字符串转换为 Time 对象
+    # Convert strings to Time objects
     start_time = Time(start)
     end_time = Time(end)
     
-    # 将 step 转换为 TimeDelta
+    # Convert step to TimeDelta
     step_delta = TimeDelta(step)
     
-    # 生成时间数组
+    # Generate the time array
     times = []
     current = start_time
     while current <= end_time:
@@ -432,22 +435,22 @@ def create_time_array(start, end, step):
 
 def get_ephemeris_batch(times, target_id, location=500, orbital_keywords=None, batch_size=50):
     """
-    分批获取历表数据的辅助函数
+    Helper function for fetching ephemeris data in batches.
     Parameters
     ----------
     times : array-like 'astropy.time.core.Time' object
-        时间点列表
+        List of time points.
     orbital_keywords : list
-        需要获取的轨道参数关键字列表
+        List of orbital parameter keywords to retrieve.
     batch_size : int
-        每批处理的时间点数量
+        Number of time points to process per batch.
     Returns
     -------
     Ephem 
-        合并后的历表数据，格式与直接调用eph[orbital_keywords]相同
+        Merged ephemeris data, with the same format as a direct eph[orbital_keywords] call.
     """
-    results = []  # 存储所有批次的结果
-    # 分批处理
+    results = []  # Store results from all batches
+    # Process in batches
     for i in range(0, len(times), batch_size):
         try:
             batch_times = times[i:min(i + batch_size, len(times))]
@@ -455,17 +458,19 @@ def get_ephemeris_batch(times, target_id, location=500, orbital_keywords=None, b
             results.append(eph)
         except Exception as e:
             if "Ambiguous target name" in str(e):
-                print(f"请提供准确的目标ID。错误: {str(e)}")
+                # print(f"请提供准确的目标ID。错误: {str(e)}")
+                print(f"Please provide an exact target ID. Error: {str(e)}")
             else:
-                print(f"错误: {str(e)}")
+                # print(f"错误: {str(e)}")
+                print(f"Error: {str(e)}")
             raise
-    # 如果只有一批数据，直接返回
+    # If there is only one batch, return it directly
     if len(results) == 1:
         if orbital_keywords is None:
             return results[0]
         else:
             return results[0][orbital_keywords]
-    # 使用sbpy的vstack合并结果
+    # Use sbpy vstack to merge results
     final_eph = results[0]
     for eph in results[1:]:
         final_eph.vstack(eph)
@@ -478,21 +483,21 @@ def get_ephemeris_batch(times, target_id, location=500, orbital_keywords=None, b
 
 def target_name_converter(input_value: str, output_type: str = 'all', csv_path: Optional[Union[str, Path]] = None) -> Optional[Union[str, Dict[str, str]]]:
     """
-    将彗星的data_folder_name、target_simplified_name或target_full_name相互转换
+    Convert between a comet's data_folder_name, target_simplified_name, and target_full_name.
     
-    参数:
-        input_value: 输入的彗星名称（可以是三种格式中的任意一种）
-        output_type: 输出类型
-            - 'all': 返回包含所有三个值的字典（默认）
-            - 'data_folder_name': 只返回data_folder_name
-            - 'target_simplified_name': 只返回target_simplified_name
-            - 'target_full_name': 只返回target_full_name
-        csv_file: CSV文件路径，默认为'comets_data.csv'
+    Parameters:
+        input_value: input comet name, in any of the three supported formats
+        output_type: output type
+            - 'all': return a dictionary containing all three values (default)
+            - 'data_folder_name': return only data_folder_name
+            - 'target_simplified_name': return only target_simplified_name
+            - 'target_full_name': return only target_full_name
+        csv_file: CSV file path; default is 'comets_data.csv'
     
-    返回:
-        根据output_type返回相应的值或字典，如果未找到则返回None
+    Returns:
+        Value or dictionary corresponding to output_type; return None if no match is found.
     
-    示例:
+    Examples:
         >>> comet_name_converter('1P')
         {'data_folder_name': '1P', 'target_simplified_name': '1P/Halley', 'target_full_name': "1P/Halley (Halley's Comet)"}
         
@@ -505,11 +510,12 @@ def target_name_converter(input_value: str, output_type: str = 'all', csv_path: 
     if csv_path is None:
         csv_path = paths.get_subpath(paths.data, 'Swift', 'target_name.csv')
     if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV文件 '{csv_path}' 不存在")
-    # 读取CSV文件
+        # raise FileNotFoundError(f"CSV文件 '{csv_path}' 不存在")
+        raise FileNotFoundError(f"CSV file '{csv_path}' does not exist")
+    # Read the CSV file
     df = pd.read_csv(csv_path, sep=',')
     
-    # 在三列中查找
+    # Search the three columns
     mask = (
         (df['data_folder_name'].str.lower() == input_value.lower()) |
         (df['target_simplified_name'].str.lower() == input_value.lower()) |
@@ -528,23 +534,24 @@ def target_name_converter(input_value: str, output_type: str = 'all', csv_path: 
     elif output_type in ['data_folder_name', 'target_simplified_name', 'target_full_name']:
         return row[output_type]
     else:
-        raise ValueError(f"无效的output_type: {output_type}")
+        # raise ValueError(f"无效的output_type: {output_type}")
+        raise ValueError(f"Invalid output_type: {output_type}")
 
 def _parse_orbital_line(line):
     """
-    将轨道元素字符串解析成列表，自动识别并拆分RA/DEC组合
+    Parse an orbital-element string into a list, automatically recognizing and splitting RA/DEC pairs.
     
-    日期格式: 
-    - 2026-Apr-01 00:00 (日期+时间作为一个元素)
-    - 2460035.500000000 (儒略日)
+    Date formats:
+    - 2026-Apr-01 00:00 (date + time as one element)
+    - 2460035.500000000 (Julian date)
     
-    RA/DEC模式: 3个数字 + 3个数字（可能带正负号）
-    例如: 16 45 53.94 -40 23 03.9
+    RA/DEC pattern: 3 numbers + 3 numbers, possibly with a sign.
+    Example: 16 45 53.94 -40 23 03.9
     """
-    # 移除 /L 这样的标记
+    # Remove markers such as /L
     line = re.sub(r'/[A-Za-z]+', '', line)
     
-    # 首先处理日期时间（如果是 YYYY-Mon-DD HH:MM 或 HH:MM:SS 格式，合并为一个元素）
+    # First handle date/time; merge YYYY-Mon-DD HH:MM or HH:MM:SS into one element
     date_time_pattern = r'(\d{4}-\w{3}-\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?)'
     match = re.search(date_time_pattern, line)
     if match:
@@ -559,46 +566,46 @@ def _parse_orbital_line(line):
     i = 0
     
     while i < len(parts):
-        # 检查是否可能是RA/DEC组合的开始（需要至少6个元素）
+        # Check whether this may be the start of an RA/DEC pair; at least 6 elements are needed
         if i + 5 < len(parts):
             try:
-                # 检查是否符合RA/DEC模式
+                # Check whether it matches the RA/DEC pattern
                 h = float(parts[i])
                 m = float(parts[i+1])
                 s = float(parts[i+2])
                 
-                # DEC的度数部分（可能带符号）
+                # Degree part of DEC, possibly signed
                 dec_deg_str = parts[i+3]
                 dec_m = float(parts[i+4])
                 dec_s = float(parts[i+5])
                 
-                # 更严格的RA检查：
-                # 1. 小时应该是整数或接近整数（天文坐标通常如此）
-                # 2. 对于RA，第一个数字通常在0-23范围且经常是整数
-                # 3. DEC的第一个数字应该带符号或在-90到90范围内
+                # Stricter RA checks:
+                # 1. Hours should be integer or near-integer, as astronomical coordinates usually are
+                # 2. For RA, the first number is usually in 0-23 and often an integer
+                # 3. The first DEC number should be signed or within -90 to 90
                 
-                # 检查 RA 的小时是否像真实的小时值（通常是整数或最多1位小数）
+                # Check whether the RA hour looks like a real hour value, usually integer or at most 1 decimal place
                 h_is_hour_like = (h == int(h)) or (h * 10 == int(h * 10))
                 
-                # 检查 DEC 度数是否像真实的度数（带符号或合理范围）
+                # Check whether the DEC degrees look like real degrees, with sign or reasonable range
                 dec_deg_float = float(dec_deg_str)
                 dec_is_deg_like = (
                     dec_deg_str.startswith('+') or 
                     dec_deg_str.startswith('-') or 
-                    (-90 <= dec_deg_float <= 90 and '.' not in parts[i+3])  # 度数通常是整数
+                    (-90 <= dec_deg_float <= 90 and '.' not in parts[i+3])  # Degrees are usually integers
                 )
                 
-                # 额外检查：分和秒的小数位数（天文坐标通常不会有太多小数位）
+                # Extra check: decimal places in minutes and seconds; astronomical coordinates usually do not have many
                 m_decimal_places = len(str(m).split('.')[-1]) if '.' in str(m) else 0
                 s_decimal_places = len(str(s).split('.')[-1]) if '.' in str(s) else 0
                 
-                # RA/DEC 的分秒通常不会有超过2-3位小数
+                # RA/DEC minutes and seconds usually do not have more than 2-3 decimal places
                 reasonable_precision = (m_decimal_places <= 3 and s_decimal_places <= 3)
                 
                 if (0 <= h < 24 and 0 <= m < 60 and 0 <= s < 60 and
                     0 <= dec_m < 60 and 0 <= dec_s < 60 and
                     h_is_hour_like and dec_is_deg_like and reasonable_precision):
-                    # 这是一个RA/DEC组合
+                    # This is an RA/DEC pair
                     ra = f"{parts[i]} {parts[i+1]} {parts[i+2]}"
                     dec = f"{parts[i+3]} {parts[i+4]} {parts[i+5]}"
                     result.append(ra)
@@ -608,26 +615,26 @@ def _parse_orbital_line(line):
             except (ValueError, IndexError):
                 pass
         
-        # 不是RA/DEC组合，直接添加当前元素
+        # Not an RA/DEC pair, so add the current element directly
         result.append(parts[i])
         i += 1
     
     return result
 
 def _format_orbital_dict(data_dict):
-    """更灵活的版本，使用配置定义处理方式"""
+    """More flexible version that uses configuration to define processing."""
     
-    # 定义 RA/DEC 对
+    # Define RA/DEC pairs
     ra_dec_pairs = [
         ('RA', 'DEC'),
         ('RA_app', 'DEC_app'),
-        # 可以添加更多对
+        # Add more pairs if needed
     ]
     
     formatted = {}
     processed_keys = set()
     
-    # 处理 RA/DEC 对
+    # Process RA/DEC pairs
     for ra_key, dec_key in ra_dec_pairs:
         if ra_key in data_dict and dec_key in data_dict:
             formatted[ra_key] = []
@@ -644,13 +651,13 @@ def _format_orbital_dict(data_dict):
             
             processed_keys.update([ra_key, dec_key])
     
-    # 处理其余的键
+    # Process the remaining keys
     for key, values in data_dict.items():
         if key in processed_keys:
             continue
             
         if 'Date' in key or 'date' in key:
-            # 处理日期
+            # Process dates
             formatted[key] = []
             for date_str in values:
                 try:
@@ -663,7 +670,7 @@ def _format_orbital_dict(data_dict):
                 except:
                     formatted[key].append(date_str)
         else:
-            # 处理数值
+            # Process numeric values
             formatted[key] = []
             for value in values:
                 if value in ['n.a.', 'n.a']:
@@ -734,39 +741,39 @@ def get_eph_dict(eph):
 
 def parse_date_string(date_str):
     """
-    解析各种格式的日期字符串
+    Parse date strings in various formats.
     
-    支持格式:
-    - '2025-10-10' (ISO格式)
-    - '2025 Oct. 10' 或 '2025 Oct 10'
+    Supported formats:
+    - '2025-10-10' (ISO format)
+    - '2025 Oct. 10' or '2025 Oct 10'
     - '2025 October 10'
     - '2025-Oct-10'
     """
     if not date_str:
         return None
     
-    # 清理字符串
+    # Clean the string
     date_str = date_str.strip()
     
-    # 尝试直接用 Time 解析（ISO格式）
+    # Try direct parsing with Time first, for ISO format
     try:
         return Time(date_str)
     except:
         pass
 
-    # 处理 YYYY-MM-DD.fraction （小数天）
+    # Handle YYYY-MM-DD.fraction, i.e. fractional days
     m = re.match(r'^(\d{4}-\d{2}-\d{2})\.(\d+)$', date_str)
     if m:
         base_date = m.group(1)
         frac_day = float("0." + m.group(2))
         return Time(base_date) + frac_day * u.day
 
-    # 处理 "2025 Oct. 10" 这种格式
-    # 移除点号
+    # Handle formats such as "2025 Oct. 10"
+    # Remove dots
     #date_str = date_str.replace('.', '')
     date_str = re.sub(r'(?<=[A-Za-z])\.', '', date_str)
     
-    # 尝试各种格式
+    # Try various formats
     formats_to_try = [
         "%Y %b %d",      # 2025 Oct 10
         "%Y %B %d",      # 2025 October 10
@@ -781,73 +788,76 @@ def parse_date_string(date_str):
         except:
             continue
     
-    # 如果都失败了，抛出错误
-    raise ValueError(f"无法解析日期: {date_str}")
+    # If all attempts fail, raise an error
+    # raise ValueError(f"无法解析日期: {date_str}")
+    raise ValueError(f"Unable to parse date: {date_str}")
 
 def smart_float_format(x):
     abs_x = abs(x)
-    # 特别大或特别小：用科学计数法
+    # Very large or very small values: use scientific notation
     if abs_x != 0 and (abs_x < 1e-3 or abs_x > 1e5):
         return f"{x:.3e}"
-    # 大于 1000 的普通数：保留三位小数
+    # Ordinary numbers greater than 1000: keep three decimal places
     elif abs_x >= 10:
         return f"{x:.3f}"
-    # 其他情况：保留 4 位有效数字
+    # Otherwise, keep 4 significant digits
     else:
-        return f"{x:.4g}"  # g 格式自动切换科学计数法和浮点数
+        return f"{x:.4g}"  # g format automatically switches between scientific and fixed-point notation
 
 def dates_to_plot_dates(date_input):
     """
-    将各种日期输入转换为 matplotlib plot_date 数值
+    Convert various date inputs to matplotlib plot_date values.
     
-    参数:
-        date_input: 可以是:
-            - str: 单个日期字符串
-            - Time: 单个 astropy Time 对象
-            - list/array: 包含 str 或 Time 对象的列表
-            - 混合列表: 同时包含 str 和 Time 对象
+    Parameters:
+        date_input: can be:
+            - str: a single date string
+            - Time: a single astropy Time object
+            - list/array: a list containing str or Time objects
+            - mixed list: contains both str and Time objects
     
-    返回:
-        - 单个输入: float (plot_date 数值)
-        - 列表输入: numpy array (plot_date 数值数组)
+    Returns:
+        - single input: float (plot_date value)
+        - list input: numpy array (plot_date values)
     """
     
     def convert_single_date(date):
-        """转换单个日期为 plot_date"""
+        """Convert a single date to plot_date."""
         if isinstance(date, Time):
-            # 已经是 Time 对象
+            # Already a Time object
             dt = date.to_datetime()
         elif isinstance(date, str):
-            # 字符串，需要解析
+            # String, needs parsing
             try:
-                # 尝试直接用 Time 解析
+                # Try direct parsing with Time
                 t = Time(date)
             except:
-                # 使用 parse_date_string 处理其他格式
+                # Use parse_date_string for other formats
                 t = parse_date_string(date)
             dt = t.to_datetime()
         elif isinstance(date, datetime):
-            # 已经是 datetime 对象
+            # Already a datetime object
             dt = date
         else:
-            raise ValueError(f"不支持的日期类型: {type(date)}")
+            # raise ValueError(f"不支持的日期类型: {type(date)}")
+            raise ValueError(f"Unsupported date type: {type(date)}")
         
         return float(mdates.date2num(dt))
     
-    # 检查输入类型
+    # Check input type
     if isinstance(date_input, (str, Time, datetime)):
-        # 单个输入
+        # Single input
         return convert_single_date(date_input)
     
     elif hasattr(date_input, '__iter__'):
-        # 可迭代对象（列表、数组等）
+        # Iterable object, such as a list or array
         plot_dates = []
         for date in date_input:
             plot_dates.append(convert_single_date(date))
         return plot_dates
     
     else:
-        raise ValueError(f"不支持的输入类型: {type(date_input)}")
+        # raise ValueError(f"不支持的输入类型: {type(date_input)}")
+        raise ValueError(f"Unsupported input type: {type(date_input)}")
 
 
 def write_profile_csv(path, radii, values, errors, comment=None):
@@ -881,7 +891,7 @@ def read_profile_csv(path):
 
     with open(path, "r") as f:
 
-        # 读取comment
+        # Read comments
         pos = f.tell()
         line = f.readline()
 
@@ -905,22 +915,25 @@ def read_profile_csv(path):
 
 def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=None):
     """
-    将MIDTIME列表按epoch和orbit分组（默认自动检测，也可手动指定阈值）
+    Group a MIDTIME list by epoch and orbit, with automatic detection by default or manual thresholds.
 
-    自动模式：对所有相邻观测的时间间隔排序，寻找比值跳跃（ratio >= 3）作为分界。
-    若找到两级跳跃 → 大的为epoch分界，小的为orbit分界。
-    若只找到一级 → 判断子组内是否还有分界来决定它是epoch还是orbit。
+    Automatic mode: sort all adjacent-observation time gaps and find ratio jumps
+    (ratio >= 3) as boundaries.
+    If two jump levels are found, the larger one is the epoch boundary and the
+    smaller one is the orbit boundary.
+    If only one level is found, inspect subgroup structure to decide whether it
+    is an epoch or orbit boundary.
 
     Args:
-        midtime_list: MIDTIME字符串列表
-        epoch_gap_days: epoch间隔阈值（天），None=自动检测
-        orbit_gap_minutes: 轨道间隔阈值（分钟），None=自动检测
+        midtime_list: list of MIDTIME strings
+        epoch_gap_days: epoch gap threshold in days; None means automatic detection
+        orbit_gap_minutes: orbit gap threshold in minutes; None means automatic detection
 
     Returns:
         tuple: (epoch_list, orbit_list, orbit_index_list)
-            - epoch_list: epoch中间时间的日期字符串（如 '2025-08-18'）
-            - orbit_list: 轨道中间时间字符串（如 '2025-08-18T10:48:31'）
-            - orbit_index_list: 轨道在epoch内的序号（从1开始）
+            - epoch_list: date strings for epoch midpoint times, e.g. '2025-08-18'
+            - orbit_list: strings for orbit midpoint times, e.g. '2025-08-18T10:48:31'
+            - orbit_index_list: orbit index within the epoch, starting from 1
     """
     from datetime import datetime
 
@@ -943,7 +956,7 @@ def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=No
         return [(times[s[k]] - times[s[k-1]]).total_seconds() for k in range(1, len(s))]
 
     def find_break(gaps, min_ratio=3.0):
-        """在排序间隔中找最大比值跳跃，返回几何平均阈值"""
+        """Find the largest ratio jump in sorted gaps and return the geometric-mean threshold."""
         pos = sorted(g for g in gaps if g > 0)
         if len(pos) <= 1:
             return None
@@ -976,7 +989,7 @@ def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=No
     times = [parse_time(t) for t in midtime_list]
     sorted_indices = sorted(range(n), key=lambda i: times[i])
 
-    # --- 确定阈值 ---
+    # --- Determine thresholds ---
     epoch_th = epoch_gap_days * 86400 if epoch_gap_days is not None else None
     orbit_th = orbit_gap_minutes * 60 if orbit_gap_minutes is not None else None
 
@@ -990,14 +1003,14 @@ def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=No
             sig = [(r, i) for r, i in ratios if r >= 3.0]
 
             if epoch_th is None and orbit_th is None:
-                # 全自动：找两级跳跃
+                # Fully automatic: find two levels of jumps
                 if len(sig) >= 2:
                     i1, i2 = sig[0][1], sig[1][1]
                     t1 = (pos[i1] * pos[i1+1]) ** 0.5
                     t2 = (pos[i2] * pos[i2+1]) ** 0.5
                     epoch_th, orbit_th = max(t1, t2), min(t1, t2)
                 elif len(sig) == 1:
-                    # 一级跳跃：看子组内是否还有分界来判断层级
+                    # One jump level: check whether subgroups contain additional boundaries to determine the level
                     th = (pos[sig[0][1]] * pos[sig[0][1]+1]) ** 0.5
                     temp_groups = split_groups(sorted_indices, th)
                     has_sub = any(
@@ -1005,16 +1018,16 @@ def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=No
                         for g in temp_groups if len(g) > 1
                     )
                     if has_sub:
-                        epoch_th = th  # 子组内还有结构 → 这是epoch分界
+                        epoch_th = th  # Subgroups have internal structure -> this is an epoch boundary
                     else:
-                        orbit_th = th  # 子组内无结构 → 这是orbit分界，单epoch
+                        orbit_th = th  # Subgroups have no internal structure -> this is an orbit boundary, single epoch
             elif epoch_th is None:
-                # orbit已指定，自动找epoch
+                # Orbit threshold is specified; find epoch threshold automatically
                 above = sorted(g for g in all_gaps if g > orbit_th)
                 if len(above) > 1:
                     epoch_th = find_break(above)
 
-    # --- 分组与标注 ---
+    # --- Group and label ---
     epoch_list = [None] * n
     orbit_list = [None] * n
     orbit_index_list = [None] * n

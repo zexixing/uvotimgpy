@@ -36,22 +36,22 @@ from uvotimgpy.uvot_analysis.scattering_bkg import get_scattering_sk, get_scatte
 from uvotimgpy.base.region import select_region
 
 
-# ===================== 工具函数 =====================
+# ===================== Utility Functions =====================
 def is_path_like(string):
-    """判断字符串是否看起来像路径"""
+    """Determine whether a string looks like a path."""
     try:
-        # 尝试创建Path对象
+        # Try to create a Path object
         #path = Path(string)
         
-        # 检查是否包含路径分隔符或看起来像路径
+        # Check whether it contains path separators or otherwise looks like a path
         if '/' in string or '\\' in string:
             return True
         
-        # 检查是否有文件扩展名
+        # Check whether it has a file extension
         #if path.suffix:
         #    return True
             
-        # 检查是否是已知的路径模式
+        # Check whether it is a known path pattern
         #if string in ['.', '..', '~']:
         #    return True
             
@@ -60,7 +60,7 @@ def is_path_like(string):
         return False
 
 def load_path(path_or_name: Union[str, Path, None], parent_path: Union[str, Path, None] = None) -> Path:
-    """统一的路径加载函数"""
+    """Unified path-loading function."""
     if isinstance(path_or_name, str) and not is_path_like(path_or_name):
         if parent_path is None:
             raise ValueError("Parent path is required when path is ")
@@ -97,10 +97,10 @@ def renew_name_and_path(
     joiner=None,
 ) -> None:
     """
-    obj: 任意对象（你的 class instance）
+    obj: any object, usually a class instance
     key: 'stacked' / 'cleaned' / ...
-    context: format 用的变量字典；默认从 obj 里取 epoch_name/filt_filename
-    joiner: (folder, name) -> path，默认用 paths.get_subpath
+    context: variable dictionary used for format; defaults to epoch_name/filt_filename from obj
+    joiner: (folder, name) -> path; defaults to paths.get_subpath
     """
     if joiner is None:
         joiner = lambda folder, name: paths.get_subpath(folder, name)
@@ -152,10 +152,10 @@ def get_obs_path(data_path, obsid: str, filt: str, return_type: str = 'sk', data
     else:
         raise ValueError("Invalid return_type")
 
-# ===================== 准备环节 =====================
+# ===================== Preparation =====================
 @dataclass
 class BasicInfo:
-    """基本信息"""
+    """Basic information."""
     instrument: str
     data_folder_name: str
     target_simplified_name: str
@@ -192,7 +192,7 @@ class BasicInfo:
     sun: SourceSpectrum = SolarSpectrum.from_model()
 
     def __post_init__(self):
-        """在初始化后自动计算 obs_time"""
+        """Automatically calculate obs_time after initialization."""
         if self.obs_time is None:
             self.obs_time = Time(self.observation_info['mid_time'])
         self.bandpass_v: SpectralElement = get_effective_area(self.filt_filename_v, transmission=True, bandpass=True, obs_time=self.obs_time)
@@ -212,7 +212,7 @@ class BasicInfo:
         self.km_per_arcsec = UnitConverter.arcsec_to_km(1.0, self.observation_info['delta'])
     
 class DataPreparation:
-    """数据准备相关功能"""
+    """Data preparation functionality."""
     
     def __init__(self, target_name: str, project_path_or_name: Union[str, Path], target_id: Union[str, int], 
                  obsid_initial: Optional[str] = None, obsid_final: Optional[str] = None, epoch_name: Optional[str] = None,
@@ -222,7 +222,7 @@ class DataPreparation:
                  cleaned_folder: Optional[Union[str, Path]] = 'cleaned', cleaned_name_style: Optional[str] = None,
                  stacked_folder: Optional[Union[str, Path]] = 'stacked', stacked_name_style: Optional[str] = None,
                  ):
-        """设置基本信息"""
+        """Set basic information."""
         name_dict = target_name_converter(target_name)
         self.instrument = 'Swift'
         self.data_folder_name = name_dict['data_folder_name']
@@ -256,7 +256,7 @@ class DataPreparation:
         self.delete_list_v = []
         self.delete_list_uw1 = []
         self.observation_info = {}
-        # 存储其他可能的参数
+        # Store other possible parameters
         # target_name, 
         self.orbital_keywords = ['RA', 'DEC', 'RA*cos(Dec)_rate', 'DEC_rate', 'delta', 'r', 'r_rate', \
                                  'elong', 'alpha', 'sunTargetPA', 'velocityPA', 'Sky_motion', 'Sky_mot_PA']
@@ -270,8 +270,8 @@ class DataPreparation:
         self.stacked_name_style = '{epoch_name}_{filt_filename}.fits' if stacked_name_style is None else stacked_name_style
 
     def create_observation_log(self, output_path_or_name: Union[str, Path], orbital_keywords = None) -> pd.DataFrame:
-        """创建observation log"""
-        # 实现创建逻辑
+        """Create the observation log."""
+        # Implement creation logic
         logger = ObservationLogger(self.data_folder_name,data_root_path=paths.get_subpath(paths.data, self.instrument), target_alternate=self.target_id)
         if orbital_keywords is not None:
             self.orbital_keywords = orbital_keywords
@@ -280,7 +280,7 @@ class DataPreparation:
         logger.process_data(output_path=self.observation_log_path, orbital_keywords=orbital_keywords_to_get_log)
     
     def load_observation_log(self, log_path_or_name: Union[str, Path, None] = None) -> pd.DataFrame: # TODO: sort by OBSID
-        """读入observation log"""
+        """Load the observation log."""
         if log_path_or_name is not None:
             self.observation_log_path = load_path(log_path_or_name, parent_path=self.project_docs_path)
         self.observation_loader = ObservationLogLoader(self.observation_log_path)
@@ -333,10 +333,10 @@ class DataPreparation:
                              radius=20, vrange=None, max_cols=4, binby2=False, image_unit_show='count',
                              compare_with_dss: bool = False, scale: float = 1.004, dss_scale: Optional[float] = None):
         """
-        展示所有筛选出的observation图像
+        Display all selected observation images.
         dss_scale: arcsec/pixel in dss image; default makes 100 pixels in radius
         """
-        # 实现展示逻辑
+        # Implement display logic
         image_list = []
         xrange_list = []
         yrange_list = []
@@ -406,14 +406,14 @@ class DataPreparation:
         plt.close()
     
     def open_in_ds9(self, observations: Optional[pd.DataFrame] = None, **kwargs):
-        """用ds9打开图像"""
+        """Open images with DS9."""
         if observations is None:
             observations = self.filtered_observations
-        # 实现ds9打开逻辑n
+        # Implement DS9 opening logic
         pass
 
     def get_observation_info(self, observations: Optional[Union[pd.DataFrame, List[Dict[str, Any]]]] = None) -> Dict[str, Any]:
-        """获取observation list的统计信息"""
+        """Get statistics for the observation list."""
         self.observation_info = {}
         if observations is None and self.observations_v_df is not None:
             self.observation_info['v_exposure_time'] = self.observations_v_df['EXPOSURE'].sum()
@@ -425,7 +425,7 @@ class DataPreparation:
             observations = self.observations_df
         else:
             observations = table_to_df(observations)
-        # 计算各种统计信息
+        # Calculate various statistics
         start_time = Time(observations['DATE_OBS'].min())
         end_time = Time(observations['DATE_END'].max())
         mid_time = start_time + (end_time - start_time) / 2
@@ -438,7 +438,7 @@ class DataPreparation:
             self.observation_info[f'{keyword}'] = observations[keyword].mean()
     
     def get_basic_info(self) -> BasicInfo:
-        """获取基本信息"""
+        """Get basic information."""
         self.get_observation_info()
         return BasicInfo(instrument=self.instrument, 
                          data_folder_name=self.data_folder_name, 
@@ -464,9 +464,9 @@ class DataPreparation:
                          observation_log_path=self.observation_log_path, 
                          observation_info=self.observation_info)
 
-# ===================== 数据Clean =====================
+# ===================== Data Cleaning =====================
 class DataCleaningIndividual:
-    """数据清理相关功能"""
+    """Data cleaning functionality."""
     
     def __init__(self, obs: Dict[str, Any], basic_info: BasicInfo, 
                  target_coord: Optional[Tuple[float, float]] = None,
@@ -527,7 +527,7 @@ class DataCleaningIndividual:
 
 
     def remove_motion_smearing(self, longest_elapsed_time: float = 30, stack_method = 'sum', binby2 = True):
-        """去除motion造成的smearing"""
+        """Remove smearing caused by motion."""
         t_elapsed = self.obs['TELAPSE']
         group_number = math.ceil(t_elapsed/longest_elapsed_time)
         if self.verbose:
@@ -542,16 +542,16 @@ class DataCleaningIndividual:
             print(f'Smearing correction applied, saved to {self.evt_to_img_path}')
     
     def align_image(self):
-        """图像对齐到target"""
-        # 对 event: （如果变了target_coord，否则直接粘过来）打开fits，移动所有的extension；更新header[0]里的中心坐标位置
-        # 对 image: 对sk和exp各自移动，放到一个fits里；header直接贴过来，在header[0]里更新中心坐标位置
+        """Align the image to the target."""
+        # For event data: open FITS if target_coord changed, otherwise copy directly; move all extensions and update the center coordinate in header[0]
+        # For image data: move sk and exp separately, put them in one FITS file, copy the header directly, and update the center coordinate in header[0]
         if self.datatype == 'event':
             shutil.move(self.evt_to_img_path, self.alignment_path)
             self.alignment = 2
             if self.verbose:
                 print(f'Event-mode image moved to {self.alignment_path}')
         elif self.datatype == 'image':
-            # 对 image: 对sk和exp各自移动，放到一个fits里；header直接贴过来，在header[0]里更新中心坐标位置
+            # For image data: move sk and exp separately, put them in one FITS file, copy the header directly, and update the center coordinate in header[0]
             with fits.open(self.sk_file_path, mode='readonly') as hdul:
                 sk_hdu = hdul[self.ext_no].copy()
             with fits.open(self.exp_file_path, mode='readonly') as hdul:
@@ -592,7 +592,7 @@ class DataCleaningIndividual:
             print('Invalid observation mode') 
 
     def create_cleaned_image(self):
-        """创建cleaned image"""
+        """Create a cleaned image."""
         if self.alignment == 2:
             shutil.copyfile(self.alignment_path, self.cleaned_path)
             try:
@@ -602,9 +602,9 @@ class DataCleaningIndividual:
                     primary_hdu.header['STARMASK'] = (False, 'Star mask not applied')
                     primary_hdu.header['STARFILL'] = (False, 'Star fill not applied')
                     primary_hdu.header['OFFCORR'] = (False, 'Offset correction not applied')
-                    # 遍历所有 extension，找到 EXTNAME 为 'IMAGE' 的那个
+                    # Loop through all extensions and find the one whose EXTNAME is 'IMAGE'
                     #image_found = False
-                    #for hdu in hdul[1:]:  # 从第一个 extension 开始
+                    #for hdu in hdul[1:]:  # Start from the first extension
                     #    if hdu.name and hdu.name.upper() == 'IMAGE':
                     #        hdu.name = 'IMAGE'
                     #        image_found = True
@@ -624,7 +624,7 @@ class DataCleaningIndividual:
     def correct_offset(self, box_size: Tuple[int, int] = (41, 41), plot: bool = False,
                        save: bool = False,  img_path: Union[str, Path] = None):
         """
-        修正offset
+        Correct the offset.
         box_size: width, height
         """
         if img_path is None:
@@ -634,7 +634,7 @@ class DataCleaningIndividual:
         self.offset_correction = 2
 
     def correct_coincidence_loss(self, plot: bool = False, save: bool = False):
-        """修正coincidence loss"""
+        """Correct coincidence loss."""
         correct_coi_loss_in_image(img_path = self.cleaned_path, img_extension = 'IMAGE', scale = self.scale, func = 'poole2008', 
                                   plot = plot, save = save, verbose = self.verbose)
         self.coincidence_loss_correction = 2
@@ -733,8 +733,8 @@ class DataCleaningIndividual:
 
     def display_cleaned_images(self, vrange = None, radius = 20, max_cols = 4):
         """
-        展示clean好的图像
-        # 原始图像，mask, clean好的图像，exposure map，error map, coicidence loss map, 
+        Display cleaned images.
+        # Original image, mask, cleaned image, exposure map, error map, coincidence loss map,
         """
         # read data
         image_dict = {}
@@ -1104,7 +1104,7 @@ class DataCleaningMultiple:
 
     def correct_offset(self, box_size: Tuple[int, int] = (41, 41), plot: bool = False, save = False) -> np.ndarray:
         """
-        修正offset
+        Correct the offset.
         box_size: width, height
         """
         with fits.open(self.stacked_path, mode='readonly') as hdul:

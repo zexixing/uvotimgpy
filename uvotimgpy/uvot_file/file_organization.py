@@ -248,25 +248,25 @@ class ObservationLogger:
 
     #def _get_ephemeris_batch(self, times, orbital_keywords, batch_size):
     #    """
-    #    分批获取历表数据的辅助函数
+    #    Helper function for fetching ephemeris data in batches
     #
     #    Parameters
     #    ----------
     #    times : array-like
-    #        时间点列表
+    #        List of time points
     #    orbital_keywords : list
-    #        需要获取的轨道参数关键字列表
+    #        List of orbital parameter keywords to retrieve
     #    batch_size : int
-    #        每批处理的时间点数量
+    #        Number of time points to process per batch
     #
     #    Returns
     #    -------
     #    Ephem 
-    #        合并后的历表数据，格式与直接调用eph[orbital_keywords]相同
+    #        Merged ephemeris data, with the same format as a direct eph[orbital_keywords] call
     #    """
-    #    results = []  # 存储所有批次的结果
+    #    results = []  # Store results from all batches
     #
-    #    # 分批处理
+    #    # Process in batches
     #    for i in range(0, len(times), batch_size):
     #        try:
     #            batch_times = times[i:min(i + batch_size, len(times))]
@@ -275,16 +275,16 @@ class ObservationLogger:
     #            results.append(eph)
     #        except Exception as e:
     #            if "Ambiguous target name" in str(e):
-    #                print(f"请提供准确的目标ID。错误: {str(e)}")
+    #                print(f"Please provide an accurate target ID. Error: {str(e)}")
     #            else:
-    #                print(f"错误: {str(e)}")
+    #                print(f"Error: {str(e)}")
     #            raise
     #
-    #    # 如果只有一批数据，直接返回
+    #    # If there is only one batch, return it directly
     #    if len(results) == 1:
     #        return results[0][orbital_keywords]
     #
-    #    # 使用sbpy的vstack合并结果
+    #    # Use sbpy vstack to merge results
     #    final_eph = results[0]
     #    for eph in results[1:]:
     #        final_eph.vstack(eph)
@@ -326,12 +326,12 @@ class ObservationLogger:
             If target name is ambiguous, or batch calculation fails, or other unexpected errors happen.
         """
         try:
-            # 如果时间点数量大于阈值，使用批处理
+            # If the number of time points exceeds the threshold, use batch processing
             #batch_size = 50
             #if len(times) > batch_size:
             #    return self._get_ephemeris_batch(times, orbital_keywords, batch_size)
             #else:
-            #    # 原始的单批次处理
+            #    # Original single-batch processing
             #    target = self.target_alternate or self.target_name
             #    eph = Ephem.from_horizons(target, location=self.location, epochs=times)
             #    return eph[orbital_keywords]
@@ -339,16 +339,18 @@ class ObservationLogger:
 
         except Exception as e:
             if "Ambiguous target name" in str(e):
-                print(f"请提供准确的目标ID。错误: {str(e)}")
+                # print(f"请提供准确的目标ID。错误: {str(e)}")
+                print(f"Please provide an exact target ID. Error: {str(e)}")
             #elif "414 Request-URI Too Large" in str(e):
-            #    # 如果URL过长，自动切换到批处理模式
+            #    # If the URL is too long, automatically switch to batch mode
             #    try:
             #        return self._get_ephemeris_batch(times, orbital_keywords)
             #    except Exception as batch_e:
-            #        print(f"批处理模式也失败: {str(batch_e)}")
+            #        print(f"Batch mode also failed: {str(batch_e)}")
             #        raise
             else:
-                print(f"错误: {str(e)}")
+                # print(f"错误: {str(e)}")
+                print(f"Error: {str(e)}")
             raise
 
     def _prepare_table_structure(self):
@@ -469,9 +471,9 @@ class ObservationLogger:
                 wcs_key = f"{row['OBSID']}_{row['FILTER']}_{row['EXT_NO']}"
                 wcs = wcs_dict[wcs_key]
                 try:
-                    # 下面的1是origin： origin is the coordinate in the upper left corner of the image. 
+                    # The 1 below is the origin: origin is the coordinate in the upper left corner of the image.
                     # In FITS and Fortran standards, this is 1. In Numpy and C standards this is 0.
-                    # 所以这里得到的坐标是ds9的坐标
+                    # Therefore, the coordinates returned here are DS9 coordinates.
                     x, y = wcs.all_world2pix(row['RA'], row['DEC'], 1)
                     x_pixels.append(x)
                     y_pixels.append(y)
@@ -532,20 +534,20 @@ class ObservationLogger:
             show_or_save_astropy_table(final_table, output_path=output_path)
 
 def load_obs_dict(file_path): # deprecated 
-    # 读取数据
+    # Read data
     obs_log = np.genfromtxt(file_path,
                            delimiter=',',
                            dtype=None,
                            encoding='utf-8',
                            names=True)
     
-    # 获取表头(列名)
+    # Get the header, i.e. column names
     column_names = obs_log.dtype.names
     
-    # 创建观测字典列表
+    # Create the observation dictionary list
     obs_list = []
     
-    # 对每一行数据创建字典
+    # Create a dictionary for each row of data
     for obs in obs_log:
         obs_dict = {}
         for col in column_names:
@@ -556,44 +558,44 @@ def load_obs_dict(file_path): # deprecated
 
 class ObservationLogLoader:
     """
-    观测日志加载和筛选类，基于pandas DataFrame
+    Observation log loading and filtering class based on a pandas DataFrame.
     """
     
     def __init__(self, file_path: Union[str, Path]):
         """
-        初始化观测日志
+        Initialize the observation log.
         
         Args:
-            file_path: CSV文件路径
+            file_path: CSV file path.
         """
-        # 指定OBSID列为字符串类型，保留前导0
+        # Set the OBSID column to string type to preserve leading zeros
         dtype_dict = {'OBSID': str}
         self.df = pd.read_csv(file_path, dtype=dtype_dict)
         self.file_path = file_path
     
     def get_all_data(self) -> pd.DataFrame:
-        """获取所有数据"""
+        """Get all data."""
         return self.df
     
     def filter(self, **kwargs) -> pd.DataFrame:
         """
-        根据任意条件筛选数据
+        Filter data by arbitrary conditions.
         
         Args:
-            **kwargs: 筛选条件，支持以下格式：
-                - df: 要筛选的DataFrame，如果未提供则使用self.df
-                - column_name=value: 精确匹配
-                - column_name=[value1, value2]: 匹配任意一个值
-                - column_name__gte=value: 大于等于（>=）
-                - column_name__gt=value: 大于（>）
-                - column_name__lte=value: 小于等于（<=）
-                - column_name__lt=value: 小于（<）
-                - column_name__ne=value: 不等于（!=）
+            **kwargs: Filtering conditions; supports the following formats:
+                - df: DataFrame to filter; if omitted, use self.df
+                - column_name=value: exact match
+                - column_name=[value1, value2]: match any value
+                - column_name__gte=value: greater than or equal to (>=)
+                - column_name__gt=value: greater than (>)
+                - column_name__lte=value: less than or equal to (<=)
+                - column_name__lt=value: less than (<)
+                - column_name__ne=value: not equal to (!=)
         
         Returns:
-            pd.DataFrame: 筛选后的数据
+            pd.DataFrame: Filtered data.
         """
-        # 提取df参数
+        # Extract the df parameter
         df = kwargs.pop('df', None)
         
         if df is None:
@@ -602,7 +604,7 @@ class ObservationLogLoader:
             result = df.copy()
         
         for key, value in kwargs.items():
-            # 处理比较操作符
+            # Handle comparison operators
             if '__' in str(key):
                 column, operator = str(key).rsplit('__', 1)
                 if column not in result.columns:
@@ -619,7 +621,7 @@ class ObservationLogLoader:
                 elif operator == 'ne':
                     result = result[result[column] != value]
             else:
-                # 处理普通筛选
+                # Handle ordinary filtering
                 if key not in result.columns:
                     continue
                     
@@ -632,47 +634,47 @@ class ObservationLogLoader:
     
     def where(self, *conditions, df: pd.DataFrame = None) -> pd.DataFrame:
         """
-        使用字符串表达式筛选数据（更直观的写法）
+        Filter data using string expressions, a more intuitive syntax.
         
         Args:
-            *conditions: 一个或多个筛选条件字符串，多个条件会用 'and' 连接
-            df: 要筛选的DataFrame，如果为None则使用self.df
+            *conditions: One or more filtering condition strings; multiple conditions are joined with 'and'.
+            df: DataFrame to filter; if None, use self.df.
         
         Examples:
-            # 单个条件
+            # Single condition
             obs_log.where("EXPOSURE >= 190")
             
-            # 多个条件（自动用and连接）
+            # Multiple conditions, automatically joined with and
             obs_log.where("EXPOSURE >= 190", "EXPOSURE < 200", "FILTER == 'V'")
             
-            # 基于已筛选的DataFrame继续筛选
+            # Continue filtering from an already-filtered DataFrame
             first_filter = obs_log.where("FILTER == 'V'")
             second_filter = obs_log.where("EXPOSURE >= 190", df=first_filter)
             result = obs_log.where("not (OBSID == '11000' and EXT == 1)", df=first_filter)
         
         Returns:
-            pd.DataFrame: 筛选后的数据
+            pd.DataFrame: Filtered data.
         """
         if df is None:
             target_df = self.df
         else:
             target_df = df
             
-        # 如果有多个条件，用 'and' 连接
+        # If there are multiple conditions, join them with 'and'
         if len(conditions) == 1:
             condition_str = conditions[0]
         else:
             condition_str = ' and '.join(f'({cond})' for cond in conditions)
         
-        # 使用pandas的query方法，支持字符串表达式
+        # Use pandas query, which supports string expressions
         return target_df.query(condition_str)
     
     def get_column_info(self) -> Dict[str, Dict[str, Any]]:
         """
-        获取所有列的数据类型信息和示例值
+        Get data type information and example values for all columns.
         
         Returns:
-            Dict: 包含列名、数据类型和示例值的字典
+            Dict: Dictionary containing column names, data types, and example values.
         """
         info = {}
         for column in self.df.columns:
@@ -686,7 +688,7 @@ class ObservationLogLoader:
     
     def print_column_info(self):
         """
-        打印所有列的数据类型信息（便于查看）
+        Print data type information for all columns for easier inspection.
         """
         info = self.get_column_info()
         print("Column information:")
@@ -701,38 +703,38 @@ class ObservationLogLoader:
     
     def has_data(self, data: Union[pd.DataFrame, List]) -> bool:
         """
-        判断输入的DataFrame或list是否为空
+        Determine whether the input DataFrame or list is empty.
         
         Args:
-            data: 要检查的数据，可以是pandas DataFrame或list
+            data: Data to check; can be a pandas DataFrame or list.
         
         Returns:
-            bool: 如果数据为空返回False，否则返回True
+            bool: False if the data is empty; otherwise True.
         """
         if isinstance(data, pd.DataFrame):
             return len(data) > 0
         elif isinstance(data, list):
             return len(data) > 0
         else:
-            # 如果传入的既不是DataFrame也不是list，返回False
+            # If the input is neither a DataFrame nor a list, return False
             return False
         
     def count_observations(self, data: Union[pd.DataFrame, List]) -> int:
         """
-        计算DataFrame或list中的观测记录数量
+        Count the number of observation records in a DataFrame or list.
         
         Args:
-            data: 要计算的数据，可以是pandas DataFrame或list
+            data: Data to count; can be a pandas DataFrame or list.
         
         Returns:
-            int: 观测记录的数量（0表示为空，1表示单条记录，>1表示多条记录）
+            int: Number of observation records; 0 means empty, 1 means a single record, >1 means multiple records.
         """
         if isinstance(data, pd.DataFrame):
             return len(data)
         elif isinstance(data, list):
             return len(data)
         else:
-            # 如果传入的既不是DataFrame也不是list，返回0
+            # If the input is neither a DataFrame nor a list, return 0
             return 0
 
 

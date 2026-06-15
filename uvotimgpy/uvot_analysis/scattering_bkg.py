@@ -100,7 +100,7 @@ def make_two_hdu_raw_like(
 
     if sanity_check:
         with fits.open(out_fits, memmap=False) as h:
-            # 用 allclose 而不是全等，避免 float 写入/读取的细微差
+            # Use allclose instead of exact equality to avoid tiny float write/read differences
             if not np.allclose(h[1].data, img, equal_nan=True):
                 raise RuntimeError(
                     "Sanity check failed: ext=1 in written FITS != provided replacement array.\n"
@@ -111,7 +111,7 @@ def make_two_hdu_raw_like(
 
 def get_pointing_from_template(template_fits: str) -> tuple[float, float, float]:
     with fits.open(template_fits, memmap=False) as h:
-        # 常见在主HDU或图像HDU；两边都试一下
+        # Commonly found in the primary HDU or image HDU; try both
         for hdr in (h[1].header, h[0].header):
             if "RA_OBJ" in hdr and "DEC_OBJ" in hdr and "PA_PNT" in hdr:
                 return float(hdr["RA_OBJ"]), float(hdr["DEC_OBJ"]), float(hdr["PA_PNT"])
@@ -122,16 +122,16 @@ def run_swiftxform_noninteractive_stream(
     infile_twohdu: PathLike,
     outfile: PathLike,
     *,
-    obsdir: PathLike,                 # 用作 cwd，解析相对路径（不写入原始目录）
-    attfile: PathLike,                # 必须给，避免交互
-    template_fits: PathLike,          # 用于从 header 读取 RA_PNT/DEC_PNT/PA_PNT，避免交互输入 RA/DEC
-    tempdir: PathLike,                # HEASoft 中间文件目录（HEADAS_TMPDIR）
+    obsdir: PathLike,                 # Used as cwd to resolve relative paths; does not write to the original directory
+    attfile: PathLike,                # Required to avoid interactive prompts
+    template_fits: PathLike,          # Used to read RA_PNT/DEC_PNT/PA_PNT from the header and avoid interactive RA/DEC input
+    tempdir: PathLike,                # HEASoft intermediate-file directory (HEADAS_TMPDIR)
     method: str = "DEFAULT",
     to: str = "SKY",
     teldeffile: str = "CALDB",
     chatter: int = 5,
     clobber: bool = True,
-    silent: bool = True,              # True: 不输出任何中间日志
+    silent: bool = True,              # True: do not output intermediate logs
     ) -> Path:
     infile_twohdu = _p(infile_twohdu)
     outfile = _p(outfile)
@@ -155,16 +155,16 @@ def run_swiftxform_noninteractive_stream(
         f"roll={roll_pnt}",
         f"chatter={int(chatter)}",
         f"clobber={'yes' if clobber else 'no'}",
-        "mode=h",  # 关键：避免交互提示
+        "mode=h",  # Key point: avoid interactive prompts
     ]
 
     env = os.environ.copy()
     env["HEADAS_TMPDIR"] = str(tempdir)
-    # 避免交互提示，方便jupyter notebook运行
-    # 关键：让 HEASoft 在无TTY环境也不去 /dev/tty
+    # Avoid interactive prompts for easier Jupyter notebook execution
+    # Key point: prevent HEASoft from going to /dev/tty in a no-TTY environment
     env["HEADASNOQUERY"] = "1"
     env["HEADASPROMPT"] = "/dev/null"
-    # 建议：隔离本地 PFILES，避免 learned 参数/权限问题
+    # Recommendation: isolate local PFILES to avoid learned-parameter/permission issues
     pfiles = tempdir / "pfiles"
     pfiles.mkdir(parents=True, exist_ok=True)
     syspfiles = Path(env["HEADAS"]) / "syspfiles"
@@ -220,18 +220,18 @@ def read_fits_image_data(fits_path: PathLike, ext: Union[int, str] = 1) -> np.nd
 
 def scattering_to_sky_array(
     *,
-    raw_fits: PathLike,      # 建议用 *_rw.img 作为模板
+    raw_fits: PathLike,      # Recommended to use *_rw.img as the template
     scattering_data: np.ndarray,
-    workdir: PathLike,                # 必须在原始数据树之外
-    obsdir: PathLike,                 # 原始观测目录根（包含 auxil/）
-    label: Optional[str],      # 输出文件名前缀，例如 "05000951002"
+    workdir: PathLike,                # Must be outside the original data tree
+    obsdir: PathLike,                 # Root of the original observation directory, containing auxil/
+    label: Optional[str],      # Output filename prefix, e.g. "05000951002"
     ext: int = 1,
-    delete_raw_like: bool = False,    # 是否删除 <label>_raw_like.fits
-    move_sk_to_archive: bool = False, # 是否把 <label>_sk_like.fits 移动到 archive_dir
+    delete_raw_like: bool = False,    # Whether to delete <label>_raw_like.fits
+    move_sk_to_archive: bool = False, # Whether to move <label>_sk_like.fits to archive_dir
     archive_dir: Optional[PathLike] = None,
     attfile: Optional[PathLike] = None,
-    heasoft_tmpdir: Optional[PathLike] = None,  # HEADAS_TMPDIR 固定目录；不填默认 '/Users/zexixing/Documents/heasoft_tmp'
-    silent: bool = True,             # True: 不打印 swiftxform 输出；False: 打印（调试用）
+    heasoft_tmpdir: Optional[PathLike] = None,  # Fixed HEADAS_TMPDIR; if omitted, defaults to '/Users/zexixing/Documents/heasoft_tmp'
+    silent: bool = True,             # True: do not print swiftxform output; False: print it for debugging
     ) -> Tuple[np.ndarray, Dict[str, Path]]:
     """
     Return (sky_array, paths_dict)
@@ -476,9 +476,9 @@ def fit_poisson_a_b(img, flat, maxiter=200):
     img = np.asarray(img, dtype=np.float64)
     flat = np.asarray(flat, dtype=np.float64)
 
-    # 初值：先用无常数项的 MLE
+    # Initial value: first use the MLE without a constant term
     a0 = np.nansum(img) / np.nansum(flat)
-    # 用残差的中位数给 b0（取非负）
+    # Use the median residual for b0, clipped to be non-negative
     b0 = np.nanmedian(img - a0 * flat)
     b0 = float(max(0.0, b0))
 
@@ -491,7 +491,7 @@ def fit_poisson_a_b(img, flat, maxiter=200):
             return np.inf
         return np.sum(mu - img * np.log(mu + eps))
 
-    # 约束：a>=0, b>=0
+    # Constraints: a >= 0, b >= 0
     res = minimize(
         nll,
         x0=np.array([a0, b0], dtype=np.float64),
@@ -593,7 +593,7 @@ def fit_poisson_a_plane(img, flat, mask=None, maxiter=200, eps=1e-12):
     res = minimize(
         nll,
         x0=x0,
-        method="L-BFGS-B",     # 即使不设 bounds 也可用；你也可以换 "BFGS"
+        method="L-BFGS-B",     # Works even without bounds; "BFGS" can also be used
         options={"maxiter": maxiter},
     )
     if not res.success:
@@ -617,9 +617,9 @@ def get_scattering_factor(img_path, bkg_path,
                           plot_save=False, plot_show=False):
 
     with fits.open(img_path, mode='readonly', memmap=True) as hdul:
-        img = hdul[img_ext].data  # 不 copy
+        img = hdul[img_ext].data  # Do not copy
 
-        mask = np.zeros(img.shape, dtype=bool)  # 直接用 img.shape（别用 _img）
+        mask = np.zeros(img.shape, dtype=bool)  # Use img.shape directly, not _img
         if 'STARMASK' in hdul:
             mask |= hdul['STARMASK'].data.astype(bool)
 
@@ -634,10 +634,10 @@ def get_scattering_factor(img_path, bkg_path,
             bkg_value = np.nanmedian(exp)
             exp_mask = (exp != bkg_value)
     with fits.open(bkg_path, mode='readonly', memmap=True) as hdul:
-        bkg = hdul[bkg_ext].data  # 不 copy
+        bkg = hdul[bkg_ext].data  # Do not copy
         bkg[exp_mask] = np.nan
         bkg = shrink_valid_image(bkg, shrink_pixels=shrink_pixels) if (shrink_pixels and shrink_pixels > 0) else bkg
-    # regions -> mask（这块可能最慢；如果循环调用，强烈建议外部预先算好bool mask传进来）
+    # regions -> mask; this may be the slowest part, so precompute bool masks externally for repeated calls
     if target_region is not None:
         mask |= RegionConverter.to_bool_array(target_region, image_shape=img.shape)
     if exclude_region is not None:
@@ -648,12 +648,12 @@ def get_scattering_factor(img_path, bkg_path,
     if focus_region is not None:
         mask_fitting |= get_exclude_region(img.shape, focus_region=focus_region, exclude_region=None)
 
-    # 有效像素：未mask、img/bkg有限、且bkg!=0
+    # Valid pixels: unmasked, finite img/bkg, and bkg != 0
     valid_map_fitting = (~mask_fitting) & np.isfinite(img) & np.isfinite(bkg) & (bkg > 0)
     k_bg = img[valid_map_fitting].astype(np.float64, copy=False)
     F_bg = bkg[valid_map_fitting].astype(np.float64, copy=False)
 
-    # 只对有效像素做 1D 比值（避免全图除法）
+    # Compute the 1D ratio only for valid pixels to avoid full-image division
     ratio = (k_bg / F_bg).astype(np.float64, copy=False)
 
     factor_median = np.nanmedian(ratio)
@@ -697,7 +697,7 @@ def get_scattering_factor(img_path, bkg_path,
         axes[0].set_title('Original image')
         axes[0].set_xticklabels([])
         axes[0].set_yticklabels([])
-        # 做个可视化用的masked版本（只在plot时创建）
+        # Create a masked version for visualization only when plotting
         #img_vis = np.array(img/bkg, copy=True)
         img_vis = np.array((img- factor_b)/bkg, copy=True)
         img_vis[~valid_map_fitting] = np.nan
@@ -750,7 +750,7 @@ def save_scattering_bkg(
     bkg_path = Path(bkg_path)
     img_path = Path(img_path)
 
-    # 读单位（你原来用 ext=0，我保持一致）
+    # Read the unit; keep using ext=0 as before
     hdr_img0 = fits.getheader(img_path, ext=0)
     unit = hdr_img0.get('BUNIT', 'UNKNOWN')
 
@@ -760,20 +760,20 @@ def save_scattering_bkg(
 
     mask_i8 = np.asarray(~valid_map_save, dtype=np.int8)
 
-    # 直接在原 bkg_path 上 update
+    # Update the original bkg_path directly
     with fits.open(bkg_path, mode='update', memmap=True) as hdul:
 
         #data = hdul[bkg_ext].data
 
-        # 确保浮点，避免整数截断
+        # Ensure floating point to avoid integer truncation
         #if not np.issubdtype(data.dtype, np.floating):
         #    hdul[bkg_ext].data = data.astype(np.float32)
         #    data = hdul[bkg_ext].data
 
-        # 缩放背景（原地写回）
+        # Scale the background in place
         #data *= factor
 
-        # 单位与元数据
+        # Units and metadata
         hdul[bkg_ext].header['BUNIT'] = unit
         hdul[0].header['BUNIT']   = unit
         hdul[0].header['SCALED']  = (True, 'Background is scaled by factor')
@@ -790,7 +790,7 @@ def save_scattering_bkg(
         #hdul[0].header['FACTP_BY']  = (float(result['factor_plane_by']), 'by_hat of the sky model (plane)')
         #hdul[0].header['ERR_REL'] = (err_rel, 'Relative error of the background (std/factor)')
 
-        # 写/更新 MASK（压缩）
+        # Write/update the compressed MASK extension
         if 'MASK' in hdul:
             hdul['MASK'].data = mask_i8
             ext_number = hdul.index_of('MASK')

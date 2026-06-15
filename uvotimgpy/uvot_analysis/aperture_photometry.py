@@ -32,7 +32,7 @@ class BackgroundImageCreator:
         pass
 
 class BackgroundEstimator:
-    """背景估计类，提供两种静态方法计算背景"""
+    """Background estimation class with static methods for calculating background."""
     
     @staticmethod
     def from_regions(image: np.ndarray,
@@ -41,37 +41,37 @@ class BackgroundEstimator:
                      image_err: Optional[np.ndarray] = None,
                      method: str = 'median',
                      median_err_params: Optional[dict] = {'method':'mean', 'mask':True}) -> Union[float, Tuple[float, float]]:
-        """使用区域统计方法估计背景
+        """Estimate background using region statistics.
 
         Parameters
         ----------
         image : np.ndarray
-            输入图像
+            Input image.
         regions : Union[PixelRegion, List[PixelRegion], np.ndarray]
-            用于估计背景的区域，可以是单个区域、区域列表或布尔掩模
+            Regions used to estimate the background; can be a single region, a list of regions, or a boolean mask.
         bad_pixel_mask : np.ndarray, optional
         image_err : np.ndarray, optional
-            误差图像，默认为None
+            Error image; default is None.
 
         Returns
         -------
         Union[float, Tuple[float, float]]
-            如果提供image_err，返回(背景值, 误差)；否则只返回背景值
+            If image_err is provided, return (background value, error); otherwise return only the background value.
         """
         #if image_err is None:
         #    return RegionStatistics.median(image, regions, combine_regions=True)
         #else:
-        #    # 获取区域内的像素和对应误差
+        #    # Get pixels in the region and their corresponding errors
         #    regions = RegionConverter.to_bool_array_general(regions, combine_regions=True, shape=image.shape)
         #    region = regions[0]
         #    valid_data = image[region & ~np.isnan(image)]
         #    valid_errors = image_err[region & ~np.isnan(image)]
         #    
-        #    # 使用ErrorPropagation计算中位数及其误差
+        #    # Use ErrorPropagation to compute the median and its error
         #    value, error = ErrorPropagation.median((valid_data, valid_errors), axis=None, method='std')
         #    return value, error
         
-        # 获取区域内的像素和对应误差
+        # Get pixels in the region and their corresponding errors
         region = RegionConverter.to_bool_array_general(regions, combine_regions=True, shape=image.shape)[0]
         if bad_pixel_mask is not None:
             bad_pixel_mask = RegionConverter.to_bool_array_general(bad_pixel_mask, combine_regions=True, shape=image.shape)[0]
@@ -196,29 +196,29 @@ class BackgroundEstimator:
                      bad_pixel_mask: Optional[np.ndarray] = None,
                      median_err_params: Optional[dict] = {'method':'mean', 'mask':True}
                      ) -> Union[float, Tuple[float, float]]:
-        """使用径向profile拟合方法估计背景
+        """Estimate background using a radial-profile fitting method.
 
         Parameters
         ----------
         image : np.ndarray
-            输入图像
+            Input image.
         center : tuple
-            中心点坐标 (col, row)
+            Center coordinates (col, row).
         fit_range : tuple
-            用于拟合的距离范围 (start, end)
+            Distance range used for fitting (start, end).
         step : float, optional
-            径向profile的步长，默认1.0
+            Step size for the radial profile; default is 1.0.
         fit_func : str, optional
-            拟合函数类型，可选 'linear' 或 'power_law'，默认 'linear'
+            Fit function type; options are 'linear' or 'power_law', default 'linear'.
         rho_target : float, optional
-            目标距离处的背景值，如果为None则使用fit_range的终点
+            Background value at the target distance; if None, use the end of fit_range.
         image_err : np.ndarray, optional
-            误差图像，默认为None
+            Error image; default is None.
 
         Returns
         -------
         Union[float, Tuple[float, float]]
-            如果提供image_err，返回(背景值, 误差)；否则只返回背景值
+            If image_err is provided, return (background value, error); otherwise return only the background value.
         """
         if image_err is None:
             rho, intensity = calc_radial_profile(image, center, step=step, bad_pixel_mask=bad_pixel_mask,
@@ -229,16 +229,16 @@ class BackgroundEstimator:
                                                          start=fit_range[0], end=fit_range[1],
                                                          image_err=image_err, method='median', 
                                                          median_err_params=median_err_params)
-            sigma = errors  # 用于加权拟合
+            sigma = errors  # Used for weighted fitting
             
-        # 定义拟合函数
+        # Define the fitting function
         if fit_func == 'power_law':
             def fit_function(x, a, b, c):
                 return a * x**(-b) + c
         else:
             raise ValueError("Unsupported fit function")
             
-        # 执行拟合
+        # Perform the fit
         try: 
             if fit_func == 'power_law':
                 popt, pcov = curve_fit(fit_function, rho, intensity,
@@ -248,22 +248,22 @@ class BackgroundEstimator:
                 a, b, c = popt
                 
                 if rho_target is not None:
-                    # 使用目标距离处的拟合值作为背景
+                    # Use the fitted value at the target distance as the background
                     background = fit_function(rho_target, a, b, c)
                     
                     if image_err is not None:
-                        # 使用一维插值计算目标距离处的误差
+                        # Use 1D interpolation to compute the error at the target distance
                         error_interp = interp1d(rho, errors, fill_value='extrapolate')
                         background_error = error_interp(rho_target)
                         return background, background_error
                     else:
                         return background
                 else:
-                    # 使用渐近值作为背景
+                    # Use the asymptotic value as the background
                     background = c
                     
                     if image_err is not None:
-                        # 使用参数c的标准差作为背景误差
+                        # Use the standard deviation of parameter c as the background error
                         background_error = np.sqrt(pcov[2,2])
                         return background, background_error
                     else:
@@ -301,27 +301,27 @@ def perform_photometry(image: np.ndarray,
                       image_err: Optional[np.ndarray] = None,
                       background_err: Optional[float] = None
                       ) -> Union[Union[float, List[float]], Tuple[Union[float, List[float]], Union[float, List[float]]]]:
-    """执行测光计算
+    """Perform photometric calculation.
 
     Parameters
     ----------
     image : np.ndarray
-        输入图像
+        Input image.
     background : float
-        背景亮度值, background per pixel
+        Background brightness value, background per pixel.
     regions : Union[PixelRegion, List[PixelRegion], np.ndarray]
-        测光区域，可以是区域对象、区域列表或布尔掩模
+        Photometric regions; can be region objects, a list of regions, or a boolean mask.
     mask : Union[PixelRegion, List[PixelRegion], np.ndarray], optional
-        需要排除的区域，可以是区域对象、区域列表或布尔掩模
+        Regions to exclude; can be region objects, a list of regions, or a boolean mask.
     image_err : np.ndarray, optional
-        图像误差阵列
+        Image error array.
     background_err : float, optional
-        背景误差值
+        Background error value.
 
     Returns
     -------
     Union[Union[float, List[float]], Tuple[Union[float, List[float]], Union[float, List[float]]]]
-        如果提供了误差输入，返回(总流量数组, 误差数组)；否则只返回总流量数组
+        If error inputs are provided, return (total flux array, error array); otherwise return only the total flux array.
     """
     background_map = np.full_like(image, background)
 
@@ -346,16 +346,16 @@ def perform_photometry(image: np.ndarray,
 def convert_to_absolute_mag(apparent_mag, r_h, delta, alpha=0, n=2, apparent_mag_err=None,
                             phase_correction_err_percent = None):
     """
-    转换为绝对星等R(1,1,0)
+    Convert to absolute magnitude R(1,1,0).
     
-    参数:
-    apparent_mag: float, 视星等(AB或Vega)
-    r_h: float, 日距(AU)
-    delta: float, 地距(AU)
-    alpha: float, 相角(度)
+    Parameters:
+    apparent_mag: float, apparent magnitude (AB or Vega)
+    r_h: float, heliocentric distance (AU)
+    delta: float, geocentric distance (AU)
+    alpha: float, phase angle (degrees)
     
-    返回:
-    float: 绝对星等R(1,1,0)
+    Returns:
+    float: absolute magnitude R(1,1,0)
     """
     if isinstance(apparent_mag, u.Quantity):
         apparent_mag = apparent_mag.value
@@ -368,13 +368,13 @@ def convert_to_absolute_mag(apparent_mag, r_h, delta, alpha=0, n=2, apparent_mag
     if apparent_mag_err is not None and isinstance(apparent_mag_err, u.Quantity):
         apparent_mag_err = apparent_mag_err.value
     
-    # 计算5log(r_h * delta)
+    # Calculate 5log(r_h * delta)
     distance_term = 5 * np.log10(delta) + 2.5 * n * np.log10(r_h)
     
-    # 相角改正
-    # 这里使用线性相角改正作为示例
-    # 实际使用中可能需要更复杂的相角改正函数
-    phase = phase_HalleyMarcus(alpha * u.deg)    # 简化的相角改正
+    # Phase-angle correction
+    # This uses a linear phase-angle correction as an example
+    # More complex phase-angle correction functions may be needed in practice
+    phase = phase_HalleyMarcus(alpha * u.deg)    # Simplified phase-angle correction
     phase_correction = 2.5 * np.log10(phase)
     
     # R(1,1,0) = m - 5log(r_h * delta) - φ(α)
@@ -408,7 +408,7 @@ class AfrhoCalculator:
     def basic_function_err(sfluxd: u.Quantity, sun_sfluxd: u.Quantity, rh: u.Quantity, delta: u.Quantity, aper: u.Quantity,
                            sfluxd_err: Union[u.Quantity, None], sun_sfluxd_err: Union[u.Quantity, None]):
         """
-        计算Afrho的误差
+        Calculate the Afrho error.
         """
         rh = rh.to(u.au).value
         delta = delta.to(u.cm).value
@@ -430,7 +430,7 @@ class AfrhoCalculator:
                                 from_phase: u.Quantity = None, to_phase: u.Quantity = 0 * u.deg,
                                 pivot_sfluxd_err: Optional[u.Quantity] = None, sun_sfluxd_err: Optional[u.Quantity] = None):
         """
-        sfluxd转换为Afrho
+        Convert sfluxd to Afrho.
         """
         bandpass = format_bandpass(bandpass)
         pivot_wave = bandpass.pivot()
@@ -461,7 +461,7 @@ class AfrhoCalculator:
                       flux_err: Optional[u.Quantity] = None,
                       sun_flux_err: Optional[u.Quantity] = None):
         """
-        flux转换为Afrho
+        Convert flux to Afrho.
         if flux's unit is erg/s/cm2 (flux), area needs to be None,
         if flux's unit is erg/s (power), area needs to be provided
             area is 1~cm2 for bandpass from effective area (bandpass has no area unit)

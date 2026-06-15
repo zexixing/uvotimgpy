@@ -82,17 +82,17 @@ def read_calspec(file_name, file_path=None):
 
 def calculate_flux(source_spectrum: SourceSpectrum, bandpass: Union[str, SpectralElement], area: u.Quantity = None, unit=su.FLAM):
     """
-    计算通过滤光片的总flux (erg/s(/cm2))
+    Calculate total flux through a filter (erg/s(/cm2)).
     
-    参数:
-    source_spectrum: 源光谱对象 (SourceSpectrum)
-    bandpass: 通带对象 (SpectralElement)
+    Parameters:
+    source_spectrum: source spectrum object (SourceSpectrum)
+    bandpass: bandpass object (SpectralElement)
     erg/s (power): area is not None; 
         area is 1~cm2 for bandpass from effective area (bandpass has no area unit)
     erg/s/cm2 (flux): area is None
     
-    返回:
-    integrated_flux: 积分后的总flux
+    Returns:
+    integrated_flux: integrated total flux
     """
     bandpass = format_bandpass(bandpass)
 
@@ -104,14 +104,14 @@ def calculate_flux(source_spectrum: SourceSpectrum, bandpass: Union[str, Spectra
 
 def calculate_count_rate(source_spectrum: SourceSpectrum, bandpass: Union[str, SpectralElement], area: u.Quantity):
     """
-    计算每秒光子数(count rate)
+    Calculate photons per second, i.e. count rate.
     
-    参数:
-    source_spectrum: 源光谱对象 (SourceSpectrum)
-    bandpass: 通带对象 (SpectralElement)
+    Parameters:
+    source_spectrum: source spectrum object (SourceSpectrum)
+    bandpass: bandpass object (SpectralElement)
     
-    返回:
-    count_rate: 每秒光子数
+    Returns:
+    count_rate: photons per second
     """
     return calculate_flux(source_spectrum, bandpass, area, unit=su.PHOTLAM)
         
@@ -119,10 +119,13 @@ class TypicalWaveSfluxd:
     @staticmethod
     def pivot_wave(bandpass: Union[str, SpectralElement]):
         """
-        pivot wave只由bandpass决定，方便lambda与nu的转换
-        PHOTFLAM就是为了将count rate转换为pivot wave处的sfluxd
+        The pivot wave is determined only by the bandpass, which makes lambda/nu
+        conversion convenient.
+        PHOTFLAM is used to convert count rate to sfluxd at the pivot wave.
 
-        需要一个函数，用来将pivot_wave处的sfluxd转换为其他波长处的sfluxd，这样可以对比不同的sfluxd计算得到的afrho（或星等）
+        A function is needed to convert sfluxd at pivot_wave to sfluxd at other
+        wavelengths, so afrho or magnitudes computed from different sfluxd
+        definitions can be compared.
         """
         bandpass = format_bandpass(bandpass)
         return bandpass.pivot()
@@ -166,17 +169,18 @@ class TypicalWaveSfluxd:
         ''' 
         Tokunaga & Vacca (2005PASP..117..421T)
         sfluxd = ∫λF_λ(λ)S(λ)dλ / ∫λS(λ)dλ
-        这样的sfluxd的平谱得到的photons number（积分面积）与实际的sfluxd通过整个波段的photons number（积分面积）是相等的
+        For this sfluxd, the photon number (integrated area) from a flat spectrum
+        equals the photon number from the actual sfluxd across the full band.
         '''
         bandpass = format_bandpass(bandpass)
         #wave = bandpass.waveset
         #modified_band = bandpass(wave) * wave
         #new_bandpass = SpectralElement(Empirical1D, points=wave, lookup_table=modified_band)
 
-        # 分子：∫ λF_λ(λ)S(λ)dλ
+        # Numerator: ∫ λF_λ(λ)S(λ)dλ
         #numerator = (source_spectrum * new_bandpass).integrate()
 
-        # 分母：∫ λS(λ)dλ
+        # Denominator: ∫ λS(λ)dλ
         #denominator = new_bandpass.integrate()
 
         obs = Observation(source_spectrum, bandpass, force='taper')
@@ -185,14 +189,16 @@ class TypicalWaveSfluxd:
     def isoflux_sfluxd(source_spectrum: SourceSpectrum, bandpass: Union[str, SpectralElement]):
         '''
         sfluxd = ∫ F_λ(λ)S(λ)dλ / ∫ S(λ)dλ
-        这样的sfluxd的平谱得到的总通量（积分面积）与实际的sfluxd通过整个波段的总通量（积分面积）是相等的
-        根据这个特性，用这个sfluxd计算得到的afrho（或星等）与用总通量计算得到的afrho（或星等）是相等的
+        For this sfluxd, the total flux (integrated area) from a flat spectrum
+        equals the total flux from the actual sfluxd across the full band.
+        By this property, afrho or magnitudes computed from this sfluxd equal
+        those computed from total flux.
         '''
         bandpass = format_bandpass(bandpass)
 
-        # 分子：∫ F_λ(λ)S(λ)dλ
+        # Numerator: ∫ F_λ(λ)S(λ)dλ
         numerator = calculate_flux(source_spectrum, bandpass)
-        # 分母：∫ S(λ)dλ
+        # Denominator: ∫ S(λ)dλ
         denominator = bandpass.equivwidth() # bandpass.equivwidth() = bandpass.integrate()
         return numerator / denominator
 
@@ -200,16 +206,16 @@ class FluxConverter:
     @staticmethod
     def convert_sfluxd_units(flux: u.Quantity, wavelength: u.Quantity, to_unit):
         """
-        在不同的flux单位之间转换
+        Convert between different flux units.
         
         Parameters
         ----------
         flux : Quantity
-            输入的flux值，必须包含单位
+            Input flux value, with units required.
         wavelength : Quantity
-            波长，必须包含单位
+            Wavelength, with units required.
         to_unit : Unit
-            目标单位 (如 su.FLAM, su.FNU, su.PHOTLAM)
+            Target unit, e.g. su.FLAM, su.FNU, su.PHOTLAM.
             PHOTLAM: photon/s/cm2/A
             PHOTNU: photon/s/cm2/Hz
             FLAM: erg/s/cm2/A
@@ -220,28 +226,28 @@ class FluxConverter:
     @staticmethod
     def countrate_to_sfluxd_pivot(count_rate, photflam, target_unit=su.FLAM, wavelength=None, bandpass=None, source_spectrum=None, area=None):
         """
-        将计数率转换为sfluxd (erg/s/cm²/Å)
+        Convert count rate to sfluxd (erg/s/cm²/Å).
         
         Parameters
         ----------
         count_rate : float
-            每秒计数率
+            Count rate per second.
         photflam : float
             inverse sensitivity (erg/s/cm²/Å per count/s)
         target_unit : Unit
-            目标sfluxd单位
+            Target sfluxd unit.
         wavelength : Quantity, optional
-            波长，当目标单位不是FLAM时需要提供
+            Wavelength, required when the target unit is not FLAM.
         bandpass : str or SpectralElement, optional
-            滤光片
+            Filter.
         source_spectrum : SourceSpectrum, optional
-            源光谱
+            Source spectrum.
         """
         if source_spectrum is not None:
-            # f689m: 修正前：3.7868471e-19； 修正后：3.750848994323741e-19；相差：1.5%
-            # f487n: 修正前：5.9840053e-18； 修正后：5.551361941365817e-18；相差：7.2%
-            # f845m: 修正前：4.596043e-19； 修正后：4.523694736174325e-19；相差：1.6%
-            # f350lp: 修正前：5.2244e-20； 修正后：6.328435318410915e-20；相差：22%
+            # f689m: before correction: 3.7868471e-19; after correction: 3.750848994323741e-19; difference: 1.5%
+            # f487n: before correction: 5.9840053e-18; after correction: 5.551361941365817e-18; difference: 7.2%
+            # f845m: before correction: 4.596043e-19; after correction: 4.523694736174325e-19; difference: 1.6%
+            # f350lp: before correction: 5.2244e-20; after correction: 6.328435318410915e-20; difference: 22%
             bandpass = format_bandpass(bandpass)
             pivot_wave = bandpass.pivot()
             sfluxd_at_pivot_in_theory = source_spectrum(pivot_wave, flux_unit=su.FLAM)
@@ -261,7 +267,7 @@ class FluxConverter:
     @staticmethod
     def countrate_to_flux(count_rate, bandpass, source_spectrum, area, result_unit=u.erg/u.s/u.cm**2):
         """
-        将计数率转换为flux
+        Convert count rate to flux.
         area: u.Quantity
             area is 1~cm2 for bandpass from effective area (bandpass has no area unit)
         erg/s/cm2: flux
@@ -278,7 +284,7 @@ class FluxConverter:
     @staticmethod
     def sfluxd1_to_sfluxd2(sfluxd1: u.Quantity, wavelength1: u.Quantity, wavelength2: u.Quantity, source_spectrum: SourceSpectrum):
         """
-        将wavelength1处的sfluxd转换为wavelength2处的sfluxd
+        Convert sfluxd at wavelength1 to sfluxd at wavelength2.
         """
         sfluxd1_in_theory = source_spectrum(wavelength1, flux_unit=sfluxd1.unit)
         sfluxd2_in_theory = source_spectrum(wavelength2, flux_unit=sfluxd1.unit)
@@ -288,7 +294,7 @@ class FluxConverter:
     @staticmethod
     def flux1_to_flux2(flux1: u.Quantity, bandpass1: u.Quantity, bandpass2: u.Quantity, source_spectrum: SourceSpectrum):
         """
-        将通过bandpass1得到的flux转换为通过bandpass2得到的flux
+        Convert flux measured through bandpass1 to flux through bandpass2.
         """
         flux1_in_theory = calculate_flux(source_spectrum, bandpass1)
         flux2_in_theory = calculate_flux(source_spectrum, bandpass2)
@@ -299,15 +305,15 @@ class FluxConverter:
     def sfluxd_to_stmag(sfluxd: u.Quantity, wavelength: u.Quantity,
                        sfluxd_err:Optional[u.Quantity] = None):
         """
-        将sfluxd转换为ST星等
+        Convert sfluxd to ST magnitude.
         sfluxd_stmag = -2.5*np.log10(sfluxd) - 21.10
 
         Parameters
         ----------
         sfluxd : Quantity
-            输入的flux，必须包含单位
+            Input flux, with units required.
         wavelength : Quantity
-            波长，必须包含单位
+            Wavelength, with units required.
         """
         sfluxd_stmag = convert_flux(wavelength, sfluxd, u.STmag)
         if sfluxd_err is None:
@@ -320,15 +326,15 @@ class FluxConverter:
     def sfluxd_to_abmag(sfluxd: u.Quantity, wavelength: u.Quantity,
                        sfluxd_err:Optional[u.Quantity] = None):
         """
-        将sfluxd转换为AB星等
+        Convert sfluxd to AB magnitude.
         sfluxd_abmag = -2.5*np.log10(sfluxd) - 48.60
 
         Parameters
         ----------
         sfluxd : Quantity
-            输入的spectral flux density，必须包含单位
+            Input spectral flux density, with units required.
         wavelength : Quantity
-            波长，必须包含单位
+            Wavelength, with units required.
         """
         sfluxd_abmag = convert_flux(wavelength, sfluxd, u.ABmag)
         if sfluxd_err is None:
@@ -341,14 +347,14 @@ class FluxConverter:
     def sfluxd_to_vegamag(sfluxd: u.Quantity, wavelength: u.Quantity,
                          sfluxd_err:Optional[u.Quantity] = None):
         """
-        将sfluxd转换为VEGA星等
+        Convert sfluxd to VEGA magnitude.
         
         Parameters
         ----------
         sfluxd : Quantity
-            输入的sfluxd，必须包含单位
+            Input sfluxd, with units required.
         wavelength : Quantity
-            波长
+            Wavelength.
 
         sfluxd_vega = vega(bp.pivot(), flux_unit=su.FLAM)
         vegamag = -2.5*np.log10(sfluxd/sfluxd_vega)
@@ -386,18 +392,18 @@ class FluxConverter:
     def stmag_to_abmag(stmag: Union[float, u.Quantity], wavelength: u.Quantity,
                        stmag_err:Optional[Union[float, u.Quantity]] = None):
         """
-        ST星等转换为AB星等
+        Convert ST magnitude to AB magnitude.
         
         Parameters
         ----------
         stmag : float
-            ST星等
+            ST magnitude.
         wavelength : Quantity
-            波长
+            Wavelength.
         """
         #if isinstance(stmag, float):
         #    stmag = stmag * u.STmag
-        ## 先转换为FLAM
+        ## First convert to FLAM
         #sfluxd = convert_flux(wavelength, stmag, su.FLAM)
         #if stmag_err is not None:
         #    if isinstance(stmag_err, u.Quantity):
@@ -405,7 +411,7 @@ class FluxConverter:
         #    sfluxd_err = (np.log(10)/2.5)*np.power(10, -(stmag.value+21.10)/2.5)*stmag_err * su.FLAM
         #else:
         #    sfluxd_err = None
-        ## 再转换为AB星等
+        ## Then convert to AB magnitude
         #return FluxConverter.sfluxd_to_abmag(sfluxd, wavelength, sfluxd_err)
         if isinstance(stmag, u.Quantity):
             stmag = stmag.value
@@ -422,18 +428,18 @@ class FluxConverter:
     def stmag_to_vegamag(stmag: Union[float, u.Quantity], wavelength: u.Quantity,
                          stmag_err:Optional[Union[float, u.Quantity]] = None):
         """
-        ST星等转换为VEGA星等
+        Convert ST magnitude to VEGA magnitude.
         
         Parameters
         ----------
         stmag : float
-            ST星等
+            ST magnitude.
         wavelength : Quantity
-            波长
+            Wavelength.
         """
         if isinstance(stmag, float):
             stmag = stmag * u.STmag
-        # 先转换为FLAM
+        # First convert to FLAM
         sfluxd = convert_flux(wavelength, stmag, su.FLAM)
         if stmag_err is not None:
             if isinstance(stmag_err, u.Quantity):
@@ -441,25 +447,25 @@ class FluxConverter:
             sfluxd_err = (np.log(10)/2.5)*np.power(10, -(stmag.value+21.10)/2.5)*stmag_err * su.FLAM
         else:
             sfluxd_err = None
-        # 再转换为VEGA星等
+        # Then convert to VEGA magnitude
         return FluxConverter.sfluxd_to_vegamag(sfluxd, wavelength, sfluxd_err)
 
     @staticmethod
     def abmag_to_stmag(abmag: Union[float, u.Quantity], wavelength: u.Quantity,
                        abmag_err:Optional[Union[float, u.Quantity]] = None):
         """
-        AB星等转换为ST星等
+        Convert AB magnitude to ST magnitude.
         
         Parameters
         ----------
         abmag : float
-            AB星等
+            AB magnitude.
         wavelength : Quantity
-            波长
+            Wavelength.
         """
         #if isinstance(abmag, float):
         #    abmag = abmag * u.ABmag
-        ## 先转换为FLAM
+        ## First convert to FLAM
         #sfluxd = convert_flux(wavelength, abmag, su.FLAM)
         #
         #if abmag_err is not None:
@@ -469,7 +475,7 @@ class FluxConverter:
         #else:
         #    sfluxd_err = None
         #
-        ## 再转换为ST星等
+        ## Then convert to ST magnitude
         #return FluxConverter.sfluxd_to_stmag(sfluxd, wavelength, sfluxd_err)
         if isinstance(abmag, u.Quantity):
             abmag = abmag.value
@@ -487,18 +493,18 @@ class FluxConverter:
     def abmag_to_vegamag(abmag: Union[float, u.Quantity], wavelength: u.Quantity,
                          abmag_err:Optional[Union[float, u.Quantity]] = None):
         """
-        AB星等转换为VEGA星等
+        Convert AB magnitude to VEGA magnitude.
         
         Parameters
         ----------
         abmag : float
-            AB星等
+            AB magnitude.
         wavelength : Quantity
         """
         if isinstance(abmag, float):
             abmag = abmag * u.ABmag
         
-        # 先转换为FLAM
+        # First convert to FLAM
         sfluxd = convert_flux(wavelength, abmag, su.FLAM)
 
         if abmag_err is not None:
@@ -508,28 +514,28 @@ class FluxConverter:
         else:
             sfluxd_err = None
 
-        # 再转换为VEGA星等
+        # Then convert to VEGA magnitude
         return FluxConverter.sfluxd_to_vegamag(sfluxd, wavelength, sfluxd_err)
 
     @staticmethod
     def vegamag_to_stmag(vegamag: Union[float, u.Quantity], wavelength: u.Quantity,
                          vegamag_err:Optional[Union[float, u.Quantity]] = None):
         """
-        VEGA星等转换为ST星等
+        Convert VEGA magnitude to ST magnitude.
         
         Parameters
         ----------
         vegamag : float
-            VEGA星等
+            VEGA magnitude.
         wavelength : Quantity
-            波长
+            Wavelength.
         """
         if isinstance(vegamag, float):
             vegamag = vegamag * u.VEGAMAG
         
         vega = SourceSpectrum.from_vega()
         
-        # 先转换为FLAM
+        # First convert to FLAM
         sfluxd = convert_flux(wavelength, vegamag, su.FLAM, vegaspec=vega)
 
         if vegamag_err is not None:
@@ -539,28 +545,28 @@ class FluxConverter:
             sfluxd_err = 0.4*sfluxd_vega*np.log(10)*np.power(10, -0.4*vegamag.value)*vegamag_err
         else:
             sfluxd_err = None
-        # 再转换为ST星等
+        # Then convert to ST magnitude
         return FluxConverter.sfluxd_to_stmag(sfluxd, wavelength, sfluxd_err)
 
     @staticmethod
     def vegamag_to_abmag(vegamag: Union[float, u.Quantity], wavelength: u.Quantity,
                          vegamag_err:Optional[Union[float, u.Quantity]] = None):
         """
-        VEGA星等转换为AB星等
+        Convert VEGA magnitude to AB magnitude.
         
         Parameters
         ----------
         vegamag : float
-            VEGA星等
+            VEGA magnitude.
         wavelength : Quantity
-            波长
+            Wavelength.
         """
         if isinstance(vegamag, float):
             vegamag = vegamag * u.VEGAMAG
         
         vega = SourceSpectrum.from_vega()
         
-        # 先转换为FLAM
+        # First convert to FLAM
         sfluxd = convert_flux(wavelength, vegamag, su.FLAM, vegaspec=vega)
 
         if vegamag_err is not None:
@@ -570,7 +576,7 @@ class FluxConverter:
             sfluxd_err = 0.4*sfluxd_vega*np.log(10)*np.power(10, -0.4*vegamag.value)*vegamag_err
         else:
             sfluxd_err = None
-        # 再转换为AB星等
+        # Then convert to AB magnitude
         return FluxConverter.sfluxd_to_abmag(sfluxd, wavelength, sfluxd_err)
 
 
@@ -604,19 +610,19 @@ class ReddeningSpectrum:
     @staticmethod
     def create_wave_grid(wave_range=[5000, 6000]*u.AA, step=1*u.AA):
         """
-        创建波长网格
+        Create a wavelength grid.
         
         Parameters
         ----------
         wave_range : array-like Quantity
-            保持输入单位
+            Preserve the input unit.
         num_points : int
-            波长网格点数
+            Number of wavelength grid points.
             
         Returns
         -------
         wave_grid : astropy.Quantity
-            波长网格，返回Quantity
+            Wavelength grid returned as a Quantity.
         """
         wave_min, wave_max = wave_range
         wave_max = wave_max.to(wave_min.unit)
@@ -627,19 +633,19 @@ class ReddeningSpectrum:
     def linear_reddening(reddening_percent, wave=None, wave0=None, wave_grid_range=[1000, 10000]*u.AA, step=1*u.AA, wave_grid=None, 
                          reddening_defination='r', bp1=None, bp2=None, return_a_b=False):
         """
-        线性红化模型
+        Linear reddening model.
         
         Parameters
         ----------
         reddening_percent : float
-            红化百分比 (%/100nm)
+            Reddening percentage (%/100nm).
         wave : array-like Quantity, e.g., [5200, 5800] * u.AA
         wave0 : Quantity, optional
             center of wave
         wave_grid_range : array-like Quantity, optional
-            用于计算的波长网格范围
+            Wavelength grid range used for calculation.
         wave_grid : Quantity, optional
-            直接提供的波长网格
+            Directly provided wavelength grid.
         reddening_defination : str, optional
             'r' for reddening defined from two points on the reflectance spectrum that is created from flux density (erg/s/cm2/A),
             'flux' for reddening defined from flux ratio (erg/s/cm2 or erg/s),
@@ -649,7 +655,7 @@ class ReddeningSpectrum:
         Returns
         -------
         SpectralElement
-            红化传输函数
+            Reddening transmission function.
         """
         if wave_grid is None:
             wave_grid = ReddeningSpectrum.create_wave_grid(wave_grid_range, step)
@@ -707,25 +713,25 @@ class ReddeningSpectrum:
     def piecewise_reddening(reddening_percents, breakpoints=None, wave_grid_range=[1000, 10000]*u.AA, step=1*u.AA, wave_grid=None,
                             reddening_defination='r', bp_list=None):
         """
-        分段线性红化
+        Piecewise linear reddening.
 
         Parameters
         ----------
         reddening_percents : array-like
-            每段的红化百分比
+            Reddening percentage for each segment.
         breakpoints : array-like Quantity
-            分段点波长，e.g., [5200, 5500, 5800] * u.AA
-            长度应该比reddening_percents多1，用于定义分段区间
+            Breakpoint wavelengths, e.g. [5200, 5500, 5800] * u.AA.
+            Length should be one greater than reddening_percents to define the segment intervals.
         wave_grid_range : array-like Quantity, optional
-            用于计算的波长网格范围
+            Wavelength grid range used for calculation.
         wave_grid : Quantity, optional
-            直接提供的波长网格
+            Directly provided wavelength grid.
         bp_list: bandpass list
 
         Returns
         -------
         SpectralElement
-            红化传输函数
+            Reddening transmission function.
         """
         if wave_grid is None:
             if wave_grid_range is None:
@@ -750,7 +756,7 @@ class ReddeningSpectrum:
         red_factors = np.ones(len(wave_grid))
 
 
-        # 处理第一个分段
+        # Process the first segment
         if reddening_defination != 'r':
             warnings.warn("reddening_defination is based on countrate or flux, the breakpoints should be effective wavelengths of the filters")
         mask = (wave_grid <= breakpoints[1])
@@ -767,7 +773,7 @@ class ReddeningSpectrum:
             red_factors[mask] = segment(wave_grid[mask]).value
             end = segment(breakpoints[1]).value
 
-        # 处理中间各个分段
+        # Process the intermediate segments
         for i in range(len(breakpoints)-1)[1:-1]:
             mask = ((wave_grid >= breakpoints[i]) & (wave_grid <= breakpoints[i+1]))
             if np.any(mask):
@@ -783,10 +789,10 @@ class ReddeningSpectrum:
                 current_factor = end / start
                 red_factors[mask] = current_factor * segment(wave_grid[mask]).value
 
-                # 更新下一段的起始条件
+                # Update the starting condition for the next segment
                 end = current_factor * segment(breakpoints[i+1]).value
 
-        # 处理最后一个分段点的部分
+        # Process the portion after the final breakpoint
         mask = (wave_grid >= breakpoints[-2])
         if np.any(mask):
             last_segment = ReddeningSpectrum.linear_reddening(
@@ -821,9 +827,9 @@ class ReddeningSpectrum:
     def custom_reddening(wave_grid, reddening_percents):
         """
         wave_grid: array-like Quantity
-            波长网格
+            Wavelength grid.
         reddening_percents: array
-            红化百分比
+            Reddening percentages.
         """
         # TODO: The current codes are wrong, to be updated
         if len(wave_grid.value) != len(reddening_percents):
@@ -1122,52 +1128,52 @@ class ReddeningCalculator:
 
 def gaussian_line(wavelength, center, intensity, fwhm):
     """
-    生成高斯谱线
+    Generate a Gaussian spectral line.
     
-    参数:
-    wavelength: 波长数组
-    center: 谱线中心位置
-    intensity: 峰值强度
-    fwhm: 半高全宽
+    Parameters:
+    wavelength: wavelength array
+    center: spectral-line center position
+    intensity: peak intensity
+    fwhm: full width at half maximum
     """
     sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
     return intensity * np.exp(-(wavelength - center)**2 / (2 * sigma**2))
 
 def reconstruct_spectrum(peak_positions, intensities, wavelength_range, fwhm=1.8, use_area=True):
     """
-    从峰值数据重建光谱
+    Reconstruct a spectrum from peak data.
     
-    参数:
-    peak_positions: 峰值波长位置列表 (Å)
-    intensities: 峰值强度列表（可以是峰高或总面积，取决于use_area参数）
-    wavelength_range: (min_wavelength, max_wavelength) 元组
-    fwhm: 仪器分辨率 (Å)
-    use_area: 如果为True，intensities表示高斯曲线的总面积；
-              如果为False，intensities表示高斯曲线的峰高
+    Parameters:
+    peak_positions: list of peak wavelength positions (Å)
+    intensities: list of peak intensities, either peak height or total area depending on use_area
+    wavelength_range: (min_wavelength, max_wavelength) tuple
+    fwhm: instrumental resolution (Å)
+    use_area: if True, intensities represents the total area of the Gaussian curve;
+              if False, intensities represents the Gaussian peak height
     
-    返回:
-    wavelength: 波长数组
-    spectrum: 重建的光谱数组
+    Returns:
+    wavelength: wavelength array
+    spectrum: reconstructed spectrum array
     """
-    # 创建波长网格，步长小于FWHM的1/10以确保平滑
+    # Create the wavelength grid with a step smaller than FWHM/10 to ensure smoothness
     wavelength = np.linspace(wavelength_range[0], wavelength_range[1], 
                            int((wavelength_range[1] - wavelength_range[0]) / (fwhm/10)))
     
-    # 初始化光谱
+    # Initialize the spectrum
     spectrum = np.zeros_like(wavelength)
     
-    # 计算sigma
+    # Calculate sigma
     sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
     
-    # 对每个峰值添加高斯线
+    # Add a Gaussian line for each peak
     for pos, intensity in zip(peak_positions, intensities):
         if use_area:
-            # 计算需要的峰高以获得指定总面积
-            # 高斯曲线的总面积 = 峰高 * sigma * sqrt(2π)
+            # Calculate the peak height needed for the specified total area
+            # Total area of a Gaussian curve = peak height * sigma * sqrt(2π)
             peak_height = intensity / (sigma * np.sqrt(2 * np.pi))
             spectrum += gaussian_line(wavelength, pos, peak_height, fwhm)
         else:
-            # 直接使用输入的峰高
+            # Use the input peak height directly
             spectrum += gaussian_line(wavelength, pos, intensity, fwhm)
     
     return wavelength, spectrum

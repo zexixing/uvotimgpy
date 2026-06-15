@@ -20,17 +20,17 @@ class RegionConverter:
     def region_to_bool_array(region: PixelRegion, 
                              image_shape: Tuple[int, int]) -> np.ndarray:
         """
-        Region转换为布尔数组
+        Convert a Region to a boolean array.
 
         Parameters
         ----------
         region : PixelRegion
-            regions包的Region对象
+            Region object from the regions package.
 
         Returns
         -------
         numpy.ndarray
-            布尔数组形式的掩膜
+            Mask as a boolean array.
         """
         mask_inner = region.to_mask(mode='center').to_image(image_shape)
         return mask_inner.astype(bool)
@@ -39,19 +39,19 @@ class RegionConverter:
     def aperture_to_bool_array(aperture_mask: ApertureMask, 
                                image_shape: Tuple[int, int]) -> np.ndarray:
         """
-        ApertureMask转换为布尔数组
+        Convert an ApertureMask to a boolean array.
 
         Parameters
         ----------
         aperture_mask : ApertureMask
-            photutils的ApertureMask对象
+            ApertureMask object from photutils.
         image_shape : tuple
-            目标图像形状
+            Target image shape.
 
         Returns
         -------
         numpy.ndarray
-            布尔数组形式的掩膜
+            Mask as a boolean array.
         """
         full_mask = np.zeros(image_shape, dtype=bool)
         bbox = aperture_mask.bbox
@@ -63,20 +63,20 @@ class RegionConverter:
     @staticmethod
     def bool_array_to_aperture(bool_array: np.ndarray) -> ApertureMask:
         """
-        布尔数组转换为ApertureMask
+        Convert a boolean array to an ApertureMask.
 
         Parameters
         ----------
         bool_array : numpy.ndarray
-            布尔数组掩膜
+            Boolean array mask.
 
         Returns
         -------
         ApertureMask
-            photutils的ApertureMask对象
+            ApertureMask object from photutils.
         """
         rows, cols = np.where(bool_array)
-        if len(rows) == 0:  # 空掩膜
+        if len(rows) == 0:  # Empty mask
             return ApertureMask(np.array([[False]]), bbox=BoundingBox(0, 1, 0, 1))
         
         ymin, ymax = rows.min(), rows.max() + 1
@@ -91,19 +91,19 @@ class RegionConverter:
     def region_to_aperture(region: PixelRegion,
                            image_shape: Tuple[int, int]) -> ApertureMask:
         """
-        Region转换为ApertureMask
+        Convert a Region to an ApertureMask.
 
         Parameters
         ----------
         region : PixelRegion
-            regions包的Region对象
+            Region object from the regions package.
         image_shape : tuple
-            图像形状
+            Image shape.
 
         Returns
         -------
         ApertureMask
-            photutils的ApertureMask对象
+            ApertureMask object from photutils.
         """
         bool_array = RegionConverter.region_to_bool_array(region, image_shape)
         return RegionConverter.bool_array_to_aperture(bool_array)
@@ -121,7 +121,7 @@ class RegionConverter:
     @staticmethod
     def to_bool_array_general(regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
                               combine_regions: bool = False, shape: Optional[Tuple[int, int]] = None) -> List[np.ndarray]:
-        """处理输入的regions，转换为布尔数组列表"""
+        """Process input regions and convert them to a list of boolean arrays."""
         if isinstance(regions, np.ndarray):
             if regions.dtype != bool:
                 raise ValueError("Input array must be boolean type")
@@ -144,64 +144,69 @@ class RegionConverter:
             raise ValueError("Unsupported region type")
 
 class RegionCombiner:
-    """处理掩膜列表的合并操作"""
+    """Handle merge operations for lists of masks."""
     
     @staticmethod
     def _check_masks_type(masks: List[Union[np.ndarray, PixelRegion]]) -> str:
         """
-        检查掩膜列表中的数据类型是否一致
+        Check whether data types in the mask list are consistent.
         
         Parameters
         ----------
         masks : List[Union[np.ndarray, PixelRegion]]
-            掩膜列表
+            Mask list.
             
         Returns
         -------
         str
-            'array' 或 'region'
+            'array' or 'region'.
         """
         if not masks:
-            raise TypeError("掩膜列表不能为空")
+            # raise TypeError("掩膜列表不能为空")
+            raise TypeError("Mask list cannot be empty")
             
         all_arrays = all(isinstance(m, np.ndarray) for m in masks)
         all_regions = all(isinstance(m, PixelRegion) for m in masks)
             
         if all_arrays:
             if not all(m.dtype == bool for m in masks):
-                raise TypeError("NumPy数组掩膜必须是布尔类型")
+                # raise TypeError("NumPy数组掩膜必须是布尔类型")
+                raise TypeError("NumPy array masks must have boolean dtype")
             return "array"
 
         if all_regions:
             return "region"
 
-        # 既不是全 array，也不是全 region，说明混用了两类或出现不支持类型
+        # If masks are neither all arrays nor all regions, types are mixed or unsupported
         bad_types = {type(m).__name__ for m in masks if not isinstance(m, (np.ndarray, PixelRegion))}
         if bad_types:
-            raise TypeError(f"不支持的掩膜类型: {sorted(bad_types)}")
-        raise TypeError("掩膜列表中的元素类型必须一致（必须全为 NumPy 数组或全为 PixelRegion）")
+            # raise TypeError(f"不支持的掩膜类型: {sorted(bad_types)}")
+            raise TypeError(f"Unsupported mask types: {sorted(bad_types)}")
+        # raise TypeError("掩膜列表中的元素类型必须一致（必须全为 NumPy 数组或全为 PixelRegion）")
+        raise TypeError("Elements in the mask list must have consistent types (all NumPy arrays or all PixelRegion objects)")
     
     @staticmethod
     def _check_array_shapes(masks: List[np.ndarray]) -> None:
-        """检查数组掩膜的形状是否一致"""
+        """Check whether array mask shapes are consistent."""
         if not all(mask.shape == masks[0].shape for mask in masks):
-            raise ValueError("所有数组掩膜的形状必须相同")
+            # raise ValueError("所有数组掩膜的形状必须相同")
+            raise ValueError("All array masks must have the same shape")
     
     @classmethod
     def union(cls, 
              masks: List[Union[np.ndarray, PixelRegion]]) -> Union[np.ndarray, PixelRegion]:
         """
-        计算掩膜列表的并集
+        Calculate the union of a list of masks.
         
         Parameters
         ----------
         masks : List[Union[np.ndarray, PixelRegion]]
-            要合并的掩膜列表
+            List of masks to merge.
             
         Returns
         -------
         Union[np.ndarray, PixelRegion]
-            合并后的掩膜
+            Merged mask.
         """
         mask_type = cls._check_masks_type(masks)
         
@@ -215,17 +220,17 @@ class RegionCombiner:
     def intersection(cls, 
                     masks: List[Union[np.ndarray, PixelRegion]]) -> Union[np.ndarray, PixelRegion]:
         """
-        计算掩膜列表的交集
+        Calculate the intersection of a list of masks.
         
         Parameters
         ----------
         masks : List[Union[np.ndarray, PixelRegion]]
-            要合并的掩膜列表
+            List of masks to merge.
             
         Returns
         -------
         Union[np.ndarray, PixelRegion]
-            合并后的掩膜
+            Merged mask.
         """
         mask_type = cls._check_masks_type(masks)
         
@@ -254,19 +259,19 @@ def get_exclude_region(img_shape: Union[Tuple[int, int], None] = None,
 def mask_image(image: np.ndarray,
                bad_pixel_mask: Union[np.ndarray, ApertureMask, PixelRegion, None]) -> np.ndarray:
     """
-    处理输入图像和掩模
+    Process the input image and mask.
     
     Parameters
     ----------
     image : np.ndarray
-        输入图像
+        Input image.
     bad_pixel_mask : np.ndarray or ApertureMask or PixelRegion, optional
-        坏像素掩模，True表示被mask的像素
+        Bad-pixel mask; True indicates masked pixels.
         
     Returns
     -------
     np.ndarray
-        处理后的图像，被mask的像素设为nan
+        Processed image, with masked pixels set to NaN.
     """
     if bad_pixel_mask is not None:
         mask = RegionConverter.to_bool_array(bad_pixel_mask, image.shape)
@@ -282,15 +287,15 @@ def mask_image(image: np.ndarray,
 #        Parameters
 #        ----------
 #        image_data : numpy.ndarray
-#            输入图像数据
+#            Input image data
 #        vmin, vmax : float, optional
-#            显示范围
+#            Display range
 #        row_range : tuple, optional
-#            显示的行范围，格式为(start, end)
+#            Displayed row range, formatted as (start, end)
 #        col_range : tuple, optional
-#            显示的列范围，格式为(start, end)
+#            Displayed column range, formatted as (start, end)
 #        shape : str, optional
-#            选择区域的形状，'circle' 或 'square'
+#            Shape of the selected region, 'circle' or 'square'
 #        """
 #        self.image = image_data
 #        
@@ -355,7 +360,7 @@ def mask_image(image: np.ndarray,
 #        self.fig.canvas.mpl_connect('button_press_event', self._onclick)
 #
 #    def _update_title(self):
-#        """更新标题，包括说明和状态信息"""
+#        """Update the title, including instructions and status information."""
 #        full_title = f'{self.instruction_text}\n{self.status_text}'
 #        self.ax.set_title(full_title)
 #        
@@ -406,7 +411,7 @@ def mask_image(image: np.ndarray,
 #                patch = Circle((col, row), self.current_size, 
 #                             fill=False, color='red', alpha=0.5)
 #            else:
-#                # 创建方形区域
+#                # Create a square region
 #                region = RectanglePixelRegion(
 #                    center=center,
 #                    width=self.current_size * 2,
@@ -433,7 +438,7 @@ def mask_image(image: np.ndarray,
 #            self.shape = 'square' if self.shape == 'circle' else 'circle'
 #            self.status_text = f'Current size: {self.current_size:.1f} | Shape: {self.shape}'
 #            self._update_title()
-#            self._show_preview()  # 添加形状切换的视觉提示
+#            self._show_preview()  # Add visual feedback for shape switching
 #                
 #        elif event.key == 'enter':  # Finish
 #            plt.close()
@@ -631,7 +636,7 @@ def mask_image(image: np.ndarray,
 #        )
 #    
 #        # --- Height slider (positive, px) ---
-#        # 上限给 image 的最大边长，足够用
+#        # Use the image's maximum side length as the upper limit, which is sufficient
 #        max_side = float(max(self.image.shape))
 #        ax_h = self.fig.add_axes([0.12, 0.06, 0.65, 0.03])
 #        self.slider_height = Slider(
@@ -1385,7 +1390,7 @@ def select_region(img_path, default_size=5, step=0.5, vmax=10):
 
 def save_regions(regions: List[PixelRegion], file_path: Union[str, Path], correct: Optional[float] = 1) -> None:
     """
-    1: 将从图上选择的PixelRegion列表保存为DS9可读取的.reg文件
+    1: Save a list of PixelRegions selected from the figure as a DS9-readable .reg file.
     """
     with open(file_path, 'w') as f:
         f.write("# Region file format: DS9 version 4.1\n")
@@ -1410,10 +1415,10 @@ def save_regions(regions: List[PixelRegion], file_path: Union[str, Path], correc
 
 def update_regions(regions: List[PixelRegion], file_path: Union[str, Path], correct: Optional[float] = 1) -> None:
     """
-    将输入的 PixelRegion 列表追加到已有的 DS9 .reg 文件末尾
-    不会覆盖原文件，仅在末尾补充新 region。
+    Append the input PixelRegion list to the end of an existing DS9 .reg file.
+    The original file is not overwritten; new regions are only appended at the end.
     """
-    with open(file_path, 'a') as f:  # 使用追加模式
+    with open(file_path, 'a') as f:  # Use append mode
         for region in regions:
             if isinstance(region, CirclePixelRegion):
                 # Python (col, row) -> DS9 (x, y)
@@ -1429,7 +1434,7 @@ def update_regions(regions: List[PixelRegion], file_path: Union[str, Path], corr
                 
 def load_regions(file_path: str, shape: Tuple[int, int] = None, correct: Optional[float] = -1) -> Union[List[PixelRegion], np.ndarray]:
     """
-    -1: 读取DS9的.reg文件，返回PixelRegion列表或布尔数组到array处理
+    -1: Read a DS9 .reg file and return a PixelRegion list or a boolean array for array processing.
     """
     regions = []
     
@@ -1437,7 +1442,8 @@ def load_regions(file_path: str, shape: Tuple[int, int] = None, correct: Optiona
         lines = f.readlines()
     
     if not any('physical' in line.lower() for line in lines):
-        raise ValueError("只支持physical坐标系统的region文件")
+        # raise ValueError("只支持physical坐标系统的region文件")
+        raise ValueError("Only region files in the physical coordinate system are supported")
     
     for line in lines:
         line = line.strip()
@@ -1470,15 +1476,15 @@ def load_regions(file_path: str, shape: Tuple[int, int] = None, correct: Optiona
         return regions
 
 def adjust_regions(regions_list, old_coord, new_coord):
-    # 计算偏移量
+    # Calculate offsets
     offset_col = new_coord[0] - old_coord[0]
     offset_row = new_coord[1] - old_coord[1]
-    # 创建新的regions列表
+    # Create the new regions list
     new_regions = []
     for reg in regions_list:
-        # 深拷贝region以避免修改原始数据
+        # Copy the region to avoid modifying the original data
         new_reg = reg.copy()
-        # 调整位置
+        # Adjust the position
         new_col = new_reg.center.x + offset_col
         new_row = new_reg.center.y + offset_row
         new_reg.center = PixCoord(x=new_col, y=new_row)
@@ -1535,10 +1541,10 @@ def expand_shrink_region(mask, radius=2, method='expand', speed='normal'):
     return mask
 
 def get_total_bounds(region_list):
-    # 获取每个圆形region的边界框
+    # Get the bounding box for each circular region
     bounds = [region.bounding_box for region in region_list]
     
-    # 从边界框中提取最小最大值
+    # Extract minima and maxima from the bounding boxes
     col_mins = [box.ixmin for box in bounds]
     col_maxs = [box.ixmax for box in bounds]
     row_mins = [box.iymin for box in bounds]
@@ -1552,7 +1558,7 @@ def get_total_bounds(region_list):
     return total_row_min, total_row_max, total_col_min, total_col_max
 
 class RegionStatistics:
-    """区域统计量计算类"""
+    """Class for calculating region statistics."""
     
     @staticmethod
     def calculate_stats(data: np.ndarray,
@@ -1562,24 +1568,24 @@ class RegionStatistics:
                        mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
                        ) -> Union[Any, List[Any]]:
         """
-        计算区域统计量的静态方法
+        Static method for calculating region statistics.
         
         Parameters
         ----------
         data : np.ndarray
-            要统计的数据数组
+            Data array to calculate statistics from.
         regions : Union[PixelRegion, List[PixelRegion], np.ndarray]
-            要统计的区域，可以是单个PixelRegion，PixelRegion列表，或布尔数组
+            Regions to calculate statistics over; can be a single PixelRegion, a list of PixelRegions, or a boolean array.
         stat_func : Callable[[np.ndarray], Any]
-            用于计算统计量的函数，接收有效数据数组作为输入
+            Function used to calculate statistics; receives the valid data array as input.
         combine_regions : bool, optional
-            当输入多个区域时，是否将它们合并统计，默认False（分别统计）
+            Whether to combine multiple input regions before calculating statistics; default is False, meaning separate statistics.
         mask : Union[PixelRegion, List[PixelRegion], np.ndarray], optional
-            需要排除的区域，可以是区域对象、区域列表或布尔掩模
+            Regions to exclude; can be region objects, a list of regions, or a boolean mask.
         """
         bool_masks = RegionConverter.to_bool_array_general(regions, combine_regions=combine_regions, shape=data.shape)
         
-        # 处理mask
+        # Handle mask
         exclude_mask = None
         if mask is not None:
             exclude_masks = RegionConverter.to_bool_array_general(mask, combine_regions=True, shape=data.shape)
@@ -1594,7 +1600,7 @@ class RegionStatistics:
                        mask: np.ndarray, 
                        func: Callable[[np.ndarray], Any],
                        exclude_mask: Optional[np.ndarray] = None) -> Any:
-        """计算单个区域的统计量"""
+        """Calculate statistics for a single region."""
         if exclude_mask is not None:
             valid_mask = mask & ~exclude_mask & ~np.isnan(data)
         else:
@@ -1602,14 +1608,14 @@ class RegionStatistics:
         valid_data = data[valid_mask]
         return func(valid_data)
 
-    # 快捷方法
+    # Convenience methods
     @staticmethod
     def count_pixels(data: np.ndarray, 
                     regions: Union[PixelRegion, List[PixelRegion], np.ndarray],
                     combine_regions: bool = False,
                     mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
                     ) -> Union[int, List[int]]:
-        """计算区域内的像素数量"""
+        """Count pixels within the region."""
         return RegionStatistics.calculate_stats(data, regions, len, combine_regions, mask)
 
     @staticmethod
@@ -1618,7 +1624,7 @@ class RegionStatistics:
            combine_regions: bool = False,
            mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
            ) -> Union[float, List[float]]:
-        """计算区域内像素值的和"""
+        """Calculate the sum of pixel values within the region."""
         return RegionStatistics.calculate_stats(data, regions, np.sum, combine_regions, mask)
 
     @staticmethod
@@ -1627,7 +1633,7 @@ class RegionStatistics:
                    combine_regions: bool = False,
                    mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
                    ) -> Union[float, List[float]]:
-        """计算区域内像素值平方的和"""
+        """Calculate the sum of squared pixel values within the region."""
         return RegionStatistics.calculate_stats(data*data, regions, np.sum, combine_regions, mask)
 
     @staticmethod
@@ -1636,7 +1642,7 @@ class RegionStatistics:
             combine_regions: bool = False,
             mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
             ) -> Union[float, List[float]]:
-        """计算区域内像素值的平均值"""
+        """Calculate the mean pixel value within the region."""
         return RegionStatistics.calculate_stats(data, regions, np.mean, combine_regions, mask)
 
     @staticmethod
@@ -1645,7 +1651,7 @@ class RegionStatistics:
               combine_regions: bool = False,
               mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
               ) -> Union[float, List[float]]:
-        """计算区域内像素值的中位数"""
+        """Calculate the median pixel value within the region."""
         return RegionStatistics.calculate_stats(data, regions, np.median, combine_regions, mask)
 
     @staticmethod
@@ -1654,7 +1660,7 @@ class RegionStatistics:
            combine_regions: bool = False,
            mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
            ) -> Union[float, List[float]]:
-        """计算区域内像素值的标准差"""
+        """Calculate the standard deviation of pixel values within the region."""
         return RegionStatistics.calculate_stats(data, regions, np.std, combine_regions, mask)
 
     @staticmethod
@@ -1663,7 +1669,7 @@ class RegionStatistics:
            combine_regions: bool = False,
            mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
            ) -> Union[float, List[float]]:
-        """计算区域内像素值的最小值"""
+        """Calculate the minimum pixel value within the region."""
         return RegionStatistics.calculate_stats(data, regions, np.min, combine_regions, mask)
 
     @staticmethod
@@ -1672,7 +1678,7 @@ class RegionStatistics:
            combine_regions: bool = False,
            mask: Optional[Union[PixelRegion, List[PixelRegion], np.ndarray]] = None
            ) -> Union[float, List[float]]:
-        """计算区域内像素值的最大值"""
+        """Calculate the maximum pixel value within the region."""
         return RegionStatistics.calculate_stats(data, regions, np.max, combine_regions, mask)
     
 def create_circle_region(center, radius):
@@ -1702,52 +1708,52 @@ def create_rectangle_region(center, width, height, angle=0*u.deg):
     return rect_region
 
 def create_sector_region_from_map(distance_map, angle_map, direction, span, radius=None):
-    # 距离条件：在半径内
+    # Distance condition: within the radius
     if radius is not None:  
         in_radius = distance_map <= radius
     else:
         in_radius = np.ones(distance_map.shape, dtype=bool)
-    # 计算扇形的起始和结束角度
+    # Calculate the start and end angles of the sector
     half_span = span / 2
     start_angle = (direction - half_span) % 360
     end_angle = (direction + half_span) % 360
     
-    # 角度条件：在扇形角度范围内
+    # Angle condition: within the sector angle range
     if start_angle <= end_angle:
-        # 扇形不跨越0度
+        # Sector does not cross 0 degrees
         in_angle = (angle_map >= start_angle) & (angle_map <= end_angle)
     else:
-        # 扇形跨越0度（例如：350度到10度）
+        # Sector crosses 0 degrees, e.g. 350 to 10 degrees
         in_angle = (angle_map >= start_angle) | (angle_map <= end_angle)
     
-    # 同时满足距离和角度条件
+    # Satisfy both distance and angle conditions
     mask = in_radius & in_angle
     return mask
 
 
 def create_sector_region(center, direction, span, image_shape, radius=None, return_map=False):
     """
-    创建精确的扇形区域 bool array
+    Create an exact sector region as a boolean array.
     
     Parameters:
     -----------
     center : tuple
-        中心点坐标 (col, row)
+        Center coordinates (col, row).
     radius : float
-        扇形半径
+        Sector radius.
     direction : float
-        扇形中心方向（度），从正上方开始逆时针旋转的角度
-        0度=上, 90度=左, 180度=下, 270度=右
+        Sector center direction in degrees, measured counterclockwise from straight up.
+        0 degrees = up, 90 degrees = left, 180 degrees = down, 270 degrees = right.
     span : float
-        扇形张角（度），0-360度
-        是full span，而不是half span
+        Sector opening angle in degrees, from 0 to 360.
+        This is the full span, not the half span.
     image_shape : tuple
-        图像形状 (height, width)
+        Image shape (height, width).
     
     Returns:
     --------
     mask : numpy.ndarray
-        bool类型的mask数组，True表示在扇形内
+        Boolean mask array; True indicates pixels inside the sector.
     """
     if span >= 360 and radius is not None:
         return RegionConverter.to_bool_array(create_circle_region(center, radius), image_shape)
@@ -1756,46 +1762,46 @@ def create_sector_region(center, direction, span, image_shape, radius=None, retu
     
     height, width = image_shape
     
-    # 创建像素坐标网格
+    # Create the pixel coordinate grid
     cols = np.arange(width)
     rows = np.arange(height)
     col_grid, row_grid = np.meshgrid(cols, rows)
     
-    # 计算每个像素到中心的距离
+    # Calculate the distance from each pixel to the center
     dcol = col_grid - center[0]
     drow = row_grid - center[1]
     distance = np.sqrt(dcol**2 + drow**2)
     
-    ## 距离条件：在半径内
+    ## Distance condition: within the radius
     #if radius is not None:  
     #    in_radius = distance <= radius
     #else:
     #    in_radius = np.ones(image_shape, dtype=bool)
     
-    # 计算每个像素相对于中心的角度
-    # arctan2返回的是标准数学坐标系的角度（从x轴正方向逆时针）
+    # Calculate each pixel's angle relative to the center
+    # arctan2 returns the angle in the standard mathematical coordinate system, counterclockwise from the positive x-axis
     angle_rad = np.arctan2(drow, dcol)
     angle_deg = np.degrees(angle_rad)
     
-    # 转换到用户定义的坐标系（从y轴正方向逆时针）
-    # 标准系统：0度=右, 90度=上, 180度=左, 270度=下
-    # 用户系统：0度=上, 90度=左, 180度=下, 270度=右
+    # Convert to the user-defined coordinate system, counterclockwise from the positive y-axis
+    # Standard system: 0 degrees = right, 90 degrees = up, 180 degrees = left, 270 degrees = down
+    # User system: 0 degrees = up, 90 degrees = left, 180 degrees = down, 270 degrees = right
     user_angle = (angle_deg + 270) % 360
     
-    ## 计算扇形的起始和结束角度
+    ## Calculate the start and end angles of the sector
     #half_span = span / 2
     #start_angle = (direction - half_span) % 360
     #end_angle = (direction + half_span) % 360
     #
-    ## 角度条件：在扇形角度范围内
+    ## Angle condition: within the sector angle range
     #if start_angle <= end_angle:
-    #    # 扇形不跨越0度
+    #    # Sector does not cross 0 degrees
     #    in_angle = (user_angle >= start_angle) & (user_angle <= end_angle)
     #else:
-    #    # 扇形跨越0度（例如：350度到10度）
+    #    # Sector crosses 0 degrees, e.g. 350 to 10 degrees
     #    in_angle = (user_angle >= start_angle) | (user_angle <= end_angle)
     
-    # 同时满足距离和角度条件
+    # Satisfy both distance and angle conditions
     mask = create_sector_region_from_map(distance, user_angle, direction, span, radius)
     if return_map:
         return mask, distance, user_angle

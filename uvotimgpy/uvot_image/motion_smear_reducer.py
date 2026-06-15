@@ -18,12 +18,12 @@ from astroquery.vizier import Vizier
 
 def read_event_file(evt_file_path: Union[str, pathlib.Path]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, fits.Header]:
     """
-    读取事件文件
+    Read an event file.
     
     Parameters
     ----------
     evt_file_path : str
-        事件文件路径
+        Event file path.
     
     Returns
     -------
@@ -55,17 +55,17 @@ def time_histogram(evt_file_path: Union[str, pathlib.Path]):
 
 def create_wcs_from_header(header: fits.Header) -> WCS:
     """
-    从header创建WCS对象
+    Create a WCS object from the header.
     
     Parameters
     ----------
     header : fits.Header
-        FITS头文件
+        FITS header.
         
     Returns
     -------
     WCS
-        WCS对象
+        WCS object.
     """
     wcs_obj = WCS(naxis=2)
     wcs_obj.wcs.crpix = [header['TCRPX6'], header['TCRPX7']]
@@ -84,14 +84,14 @@ def slice_time(header: fits.Header,
     Parameters
     ----------
     header : fits.Header
-        FITS头文件
+        FITS header.
     group_number : int
-        分组数量
+        Number of groups.
         
     Returns
     -------
     tuple
-        (date_list, time_array) - 时间点列表和时间数组
+        (date_list, time_array) - list of time points and time array.
     """
     time_start = header['TSTART']
     time_end = header['TSTOP']
@@ -112,21 +112,21 @@ def slice_time(header: fits.Header,
 
 def get_target_positions(time_utc: List[Time], target_id: Union[str, int], wcs: WCS, return_radec: Optional[bool] = False) -> Tuple[List[float], List[float]]:
     """
-    获取彗星在各时间段的位置
+    Get the comet position in each time segment.
     
     Parameters
     ----------
     date_list : List[Time]
-        时间点列表
+        List of time points.
     target_id : str or int
-        彗星的JPL Horizons ID
+        JPL Horizons ID of the comet.
     wcs : WCS
-        WCS对象
+        WCS object.
         
     Returns
     -------
     tuple
-        (x_positions, y_positions) - 彗星的像素坐标列表
+        (x_positions, y_positions) - list of comet pixel coordinates.
     """
     num_segments = len(time_utc) - 1
     col_positions = []
@@ -157,19 +157,19 @@ def get_target_positions(time_utc: List[Time], target_id: Union[str, int], wcs: 
 
 def create_image_from_events(events_col: np.ndarray, events_row: np.ndarray) -> np.ndarray:
     """
-    从事件创建图像
+    Create an image from events.
     
     Parameters
     ----------
     events_col, events_row : np.ndarray
-        事件的坐标
+        Event coordinates.
     center_position: Tuple[float, float]
-        图像中心位置 (col, row)
+        Image center position (col, row).
         
     Returns
     -------
     np.ndarray
-        创建的图像
+        Created image.
     """
     # 4000, 4000 = hdr['TLMAX6'], hdr['TLMAX7']
     # 0, 0 = hdr['TLMIN6'], hdr['TLMIN7']
@@ -186,7 +186,7 @@ def create_image_from_events(events_col: np.ndarray, events_row: np.ndarray) -> 
 def save_single_evt_image(evt_file_path: Union[str, pathlib.Path],
                           output_path: Union[str, pathlib.Path]):
     """
-    保存单个事件图像
+    Save a single event image.
     """
     _, col_list, row_list, header = read_event_file(evt_file_path)
     image = create_image_from_events(col_list, row_list)
@@ -203,7 +203,7 @@ def save_single_evt_image(evt_file_path: Union[str, pathlib.Path],
 
 def read_single_evt_image(evt_file_path: Union[str, pathlib.Path]):
     """
-    保存单个事件图像
+    Read a single event image.
     """
     _, col_list, row_list, header = read_event_file(evt_file_path)
     image = create_image_from_events(col_list, row_list)
@@ -230,7 +230,7 @@ def get_segment_exp(time_list: list, num_segments: int = None, time_endpoints: l
     segment_exp_times = []
     event_nums = []
     for i in range(num_segments):
-        # 过滤事件
+        # Filter events
         mask = (time_list >= time_endpoints[i]) & (time_list < time_endpoints[i+1])
         event_time = time_list[mask]
         event_nums.append(len(event_time))
@@ -245,24 +245,24 @@ def get_segment_exp(time_list: list, num_segments: int = None, time_endpoints: l
 
 def for_sk_like(evt_file_path: Union[str, pathlib.Path], sk_file_path: Union[str, pathlib.Path],
                 group_number: int, target_id: Union[str, int], binby2: bool = True):
-    # 读取文件和exp
+    # Read file and exposure
     time_list, _, _, header = read_event_file(evt_file_path)
     #total_exposure = header['EXPOSURE']
         
-    # 创建WCS
+    # Create WCS
     hdr_sk = fits.getheader(sk_file_path, ext=1)
     wcs = WCS(hdr_sk)
 
-    # 分割时间
+    # Split time
     time_utc, time_raw = slice_time(header, group_number)
         
-    # 获取彗星位置
+    # Get comet positions
     target_col_list, target_row_list = get_target_positions(time_utc, target_id, wcs)
     if binby2:
         target_col_list = [col // 2 for col in target_col_list]
         target_row_list = [row // 2 for row in target_row_list]
 
-    # 获取每一段的曝光时间
+    # Get the exposure time for each segment
     event_nums = get_segment_exp(time_list, num_segments=group_number, time_endpoints=time_raw, total_exposure=None)
     total_event_num = len(time_list)
     event_ratio = [num/total_event_num for num in event_nums]
@@ -277,40 +277,40 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
                            stack_method: str = 'sum',
                            binby2: bool = False,) -> Tuple[np.ndarray, np.ndarray, dict]:
     """
-    减少运动拖尾的主要函数
+    Main function for reducing motion smear.
     
     Parameters
     ----------
     evt_file_path : str
-        事件文件路径
+        Event file path.
     target_id : str or int
-        彗星的JPL Horizons ID
+        JPL Horizons ID of the comet.
     group_number : int, optional
-        分组数量
+        Number of groups.
     stack_method : str
-        叠加方法：'median' (用count_rate) 或 'sum' (用count)
+        Stacking method: 'median' uses count rate, and 'sum' uses counts.
     target_coord : tuple, optional
         col, row
             Returns
     -------
     tuple
-        (stacked_image, stacked_err, stacked_exp, processing_info) - 叠加后的图像、误差图、曝光图和处理信息
+        (stacked_image, stacked_err, stacked_exp, processing_info) - stacked image, error map, exposure map, and processing information.
     """
-    # 读取文件和exp
+    # Read file and exposure
     time_list, col_list, row_list, header = read_event_file(evt_file_path)
     #total_exposure = header['EXPOSURE']
     exp_data = fits.getdata(exp_file_path, ext=1)
     exp_header = fits.getheader(exp_file_path, ext=1)
     total_exposure = np.max(exp_data)
         
-    # 创建WCS
+    # Create WCS
     wcs = create_wcs_from_header(header)
     wcs_exp = WCS(exp_header)
     
-    # 分割时间
+    # Split time
     time_utc, time_raw = slice_time(header, group_number)
         
-    # 获取彗星位置
+    # Get comet positions
     target_col_list, target_row_list = get_target_positions(time_utc, target_id, wcs)
     target_col_list_exp, target_row_list_exp = get_target_positions(time_utc, target_id, wcs_exp)
     if group_number == 1:
@@ -325,7 +325,7 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
         target_row_list_exp = [row // 2 for row in target_row_list_exp]
         exp_data = block_reduce(exp_data, block_size=2, func=np.nanmean)
     
-    # 为每个时间段创建图像
+    # Create an image for each time segment
     num_segments = len(time_utc) - 1
     event_nums_total = len(time_list)
     segment_elapsed_time = time_raw[1] - time_raw[0]
@@ -338,7 +338,7 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
     segment_exp_times = []
     
     for i in range(num_segments):
-        # 过滤事件
+        # Filter events
         mask = (time_list >= time_raw[i]) & (time_list < time_raw[i+1])
         events_col = col_list[mask]
         events_row = row_list[mask]
@@ -346,7 +346,7 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
         exp_time_ratio = len(events_col)/event_nums_total
         segment_exp_times.append(exp_time_ratio*total_exposure)
             
-        # 创建图像
+        # Create image
         segment_image = create_image_from_events(events_col, events_row)
         if binby2:
             segment_image = block_reduce(segment_image, block_size=2, func=np.nansum)
@@ -358,7 +358,7 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
     event_nums_ratios = [num/np.min(event_nums) for num in event_nums]
     #print('Event number in each segment: '+', '.join(f'{x}' for x in event_nums))
     #print('Ratios of the event numbers: '+', '.join(f'{x:.2f}' for x in event_nums_ratios))
-    # 使用现有的对齐功能
+    # Use the existing alignment function
     aligned_images, aligned_errs = align_images(segment_images, target_positions, 
                                                 target_coord,
                                                 fill_value=np.nan,
@@ -368,7 +368,7 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
                                    target_coord,
                                    fill_value=0)
     
-    # 根据叠加模式选择叠加方法
+    # Choose the stacking method based on the stacking mode
     if stack_method == 'median':
         with np.errstate(divide='ignore', invalid='ignore'):
             aligned_images = [img/exp for img, exp in zip(aligned_images, aligned_exp_map)]
@@ -395,7 +395,7 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
             wcs_in_result.wcs.cdelt = [header['TCDLT6']*2, header['TCDLT7']*2]
     else:
         wcs_in_result = None
-    # 处理信息
+    # Processing information
     processing_info = {
         'num_segments': num_segments,
         'stack_method': stack_method,
@@ -415,7 +415,7 @@ def reduce_motion_smearing(evt_file_path: Union[str, pathlib.Path],
 
 def bin_evt_image(image, image_err=None, image_exp=None, processing_info=None):
     """
-    对事件图像进行2x2 binning
+    Apply 2x2 binning to an event image.
     processing_info = {
         'num_segments': num_segments,
         'stack_method': stack_method,
@@ -458,29 +458,29 @@ def save_smear_reduced_result(stacked_image: np.ndarray, stacked_err: np.ndarray
                               individual_images_to_save: dict,
                               image_unit_save: str = 'count'):
     """
-    保存减少拖尾后的结果到FITS文件
+    Save the smear-reduced result to a FITS file.
     
     Parameters
     ----------
     stacked_image : np.ndarray
-        叠加后的图像
+        Stacked image.
     exposure_map : np.ndarray
-        曝光图
+        Exposure map.
     output_path : str
-        输出文件路径
+        Output file path.
     header : fits.Header, optional
-        原始FITS头文件
+        Original FITS header.
     processing_info : dict, optional
-        处理信息字典
+        Processing information dictionary.
     individual_images_to_save : dict
         dict = {'IMAGE': list, 'ERROR': list, 'EXPOSURE': list}
     """
-    # 创建header
+    # Create header
     primary_hdu = fits.PrimaryHDU()
     hdr = primary_hdu.header
     
     if evt_hdr is not None:
-        # 计算中间时间
+        # Calculate midpoint time
         date_start = Time(evt_hdr['DATE-OBS'])
         date_end = Time(evt_hdr['DATE-END'])
         mid_time = date_start + 0.5 * (date_end - date_start)
@@ -488,12 +488,12 @@ def save_smear_reduced_result(stacked_image: np.ndarray, stacked_err: np.ndarray
         
     hdr['PLATESCL'] = (0.502, 'arcsec/pixel')
     
-    # 添加处理信息到header
+    # Add processing information to the header
     if processing_info is not None:
         hdr['NSEGMENT'] = (processing_info['num_segments'], 'Total number of time segments')
         hdr['STACKMTH'] = (processing_info['stack_method'], 'Stacking method')
         stack_method = processing_info['stack_method']
-        # 如果是count模式，添加特殊标记
+        # If in count mode, add a special marker
         if image_unit_save == 'count':
             hdr['BUNIT'] = ('count', 'Image units are counts (not count rate)')
         elif image_unit_save == 'count/s':
@@ -516,7 +516,7 @@ def save_smear_reduced_result(stacked_image: np.ndarray, stacked_err: np.ndarray
         hdr.add_comment('Exposure time (s) in each segment: '+', '.join(f'{x:.2f}' for x in processing_info['segment_exp_times']))
     hdr['HISTORY'] = f'Created by Zexi Xing'
     hdr['REDUCER'] = 'motion_smear_reducer.py'
-    # 创建HDU
+    # Create HDUs
     if stack_method != 'sum' and image_unit_save == 'count':
         stacked_image = stacked_image * exposure_map
         stacked_err = stacked_err * exposure_map
@@ -585,11 +585,11 @@ def reduce_smear(evt_file_path, exp_file_path, target_id, target_coord, group_nu
         save_smear_reduced_result(stacked_image, stacked_err, stacked_exp, output_path, header, \
                                   processing_info, individual_images_to_save, image_unit_save=image_unit_save)
 
-# 使用示例
+# Usage example
 import matplotlib.pyplot as plt
 if __name__ == "__main__":
     """
-    使用示例
+    Usage example.
     """
     #evt_file_path = '/Users/zexixing/Downloads/sw00094421002uvvw1po_uf.evt.gz'
     #exp_file_path = '/Users/zexixing/Downloads/sw00094421002uvv_ex.img.gz'

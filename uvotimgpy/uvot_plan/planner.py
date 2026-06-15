@@ -133,7 +133,7 @@ class RegionPlanner:
                 f.write(f'# vector({ra_obs},{dec_obs},300",{antidisp}) vector=1\n')
 
 def compute_pa(roll_deg: float) -> float:
-    """PA = 240.64 - roll  （单位：度）"""
+    """PA = 240.64 - roll (unit: degrees)."""
     return 240.64 - roll_deg
 
 def get_pointing(rain_deg: float,
@@ -142,28 +142,28 @@ def get_pointing(rain_deg: float,
                  yoff_arcsec: float,
                  roll_deg: float):
     """
-    根据 Swift 的 offset 定义，从 (rain, decin) + (xoff, yoff)
-    计算出 (rapnt, decpnt)。
+    Compute (rapnt, decpnt) from (rain, decin) + (xoff, yoff)
+    using Swift's offset definition.
 
-    参数
+    Parameters
     ----
     rain_deg, decin_deg : float
-        彗星实际赤经赤纬（deg）
+        Actual comet right ascension and declination (deg).
     xoff_arcsec, yoff_arcsec : float
-        detector 坐标系下需要的 offset（arcsec）
+        Required offset in the detector coordinate system (arcsec).
     roll_deg : float
-        Swift spacecraft roll angle（deg）
+        Swift spacecraft roll angle (deg).
 
-    返回
+    Returns
     ----
     raoff_deg, decoff_deg : float
-        需要指向的赤经赤纬（deg）
+        Right ascension and declination to point to (deg).
     """
     pa_deg = compute_pa(roll_deg)
     pa_rad = np.deg2rad(pa_deg)
     dec_rad = np.deg2rad(decin_deg)
 
-    # 把 arcsec 转成 deg
+    # Convert arcsec to deg
     x = xoff_arcsec / 3600.0
     y = yoff_arcsec / 3600.0
 
@@ -180,22 +180,22 @@ def get_offset(rain_deg: float,
                decpnt_deg: float,
                roll_deg: float):
     """
-    已知 (rain, decin) 和目标指向 (rapnt, decpnt)，
-    反推在 detector 坐标系下的 (xoff, yoff)（单位 arcmin）。
+    Given (rain, decin) and the target pointing (rapnt, decpnt),
+    solve for (xoff, yoff) in the detector coordinate system (arcmin).
 
-    参数
+    Parameters
     ----
     rain_deg, decin_deg : float
-        彗星实际赤经赤纬（deg）
+        Actual comet right ascension and declination (deg).
     raoff_deg, decoff_deg : float
-        望远镜实际指向赤经赤纬（deg）
+        Actual telescope pointing right ascension and declination (deg).
     roll_deg : float
-        Swift spacecraft roll angle（deg）
+        Swift spacecraft roll angle (deg).
 
-    返回
+    Returns
     ----
     xoff_arcsec, yoff_arcsec : float
-        detector 坐标系下的 offset（arcsec）
+        Offset in the detector coordinate system (arcsec).
     """
     pa_deg = compute_pa(roll_deg)
     pa_rad = np.deg2rad(pa_deg)
@@ -205,7 +205,7 @@ def get_offset(rain_deg: float,
     delta_ra = rapnt_deg - rain_deg      # deg
     delta_dec = decpnt_deg - decin_deg   # deg
 
-    # 还原成 R, D（相当于把前向变换那一步“收回来”）
+    # Recover R and D, equivalent to undoing the forward transformation step
     R = 60.0 * cd * delta_ra
     D = 60.0 * delta_dec
 

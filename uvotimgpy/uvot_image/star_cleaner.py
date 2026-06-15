@@ -68,7 +68,7 @@ class StarIdentifier:
         mask = np.zeros_like(image, dtype=bool)
         ny, nx = image.shape
 
-        # 如果需要 exclude 区域
+        # If an exclusion region is needed
         if exclude_region is not None:
             region_mask = RegionConverter.to_bool_array(exclude_region, image.shape)
         else:
@@ -77,12 +77,12 @@ class StarIdentifier:
         nan_mask = np.isnan(image)
 
         if tile_size is None:
-            # 全图 clip
+            # Clip the full image
             valid_pixels = (~region_mask) & (~nan_mask)
             clipped = sigma_clip(image[valid_pixels], sigma=sigma, maxiters=maxiters, masked=True)
             mask[valid_pixels] = clipped.mask
         else:
-            # 分块 clip
+            # Clip by tiles
             for y0 in range(0, ny, tile_size):
                 for x0 in range(0, nx, tile_size):
                     y1 = min(y0 + tile_size, ny)
@@ -97,7 +97,7 @@ class StarIdentifier:
                         submask = np.zeros_like(tile, dtype=bool)
                         submask[valid_pixels] = clipped.mask
                         mask[y0:y1, x0:x1] = submask
-                    # 否则该 tile 无有效 pixel，跳过
+                    # Otherwise this tile has no valid pixels; skip it
         if area_size is not None:
             min_area, max_area = area_size
             mask = select_mask_regions(mask, min_area=min_area, max_area=max_area)
@@ -107,7 +107,7 @@ class StarIdentifier:
             speed = expand_shrink_paras.get('speed', 'normal')
             mask = expand_shrink_region(mask, radius=radius, method=method, speed=speed)
         self.last_mask = mask
-        return mask  # True 表示检测为异常值，NaN 像素恒为 False
+        return mask  # True means an outlier was detected; NaN pixels are always False
     
     def by_ml(self, image: np.ndarray, 
               exclude_region: Optional[Union[np.ndarray, ApertureMask, PixelRegion]] = None,
@@ -564,14 +564,14 @@ class PixelFiller:
                        mask: np.ndarray, return_template: bool = False, method ='median',
                        factor: float = 1.5, smooth_sigma: int = 4, verbose: bool = True) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
-        将图像按 tile 分块，每块用该块的中位数值填充。
+        Split the image into tiles and fill each tile with its median value.
 
-        参数：
-            image (np.ndarray): 2D 图像数组，可包含 NaN。
-            tile_size (int): tile 大小（正方形 tile）。
+        Parameters:
+            image (np.ndarray): 2D image array, which may contain NaN values.
+            tile_size (int): Tile size for square tiles.
 
-        返回：
-            np.ndarray: 用 tile 中值填充的图像。
+        Returns:
+            np.ndarray: Image filled with tile median values.
         """
         ny, nx = image.shape
         if method == 'median':
@@ -894,7 +894,7 @@ def save_starmask(img_path: Union[str, Path],
 
 def delete_starmask(img_path, verbose: bool = False):
     with fits.open(img_path, mode='readonly') as hdul:
-        # 找到 STARMASK 扩展的索引
+        # Find the index of the STARMASK extension
         starmask_idx = None
         for i, hdu in enumerate(hdul):
             if hdu.name == 'STARMASK':

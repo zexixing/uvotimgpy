@@ -85,11 +85,11 @@ class GaussianFitter2D:
             sigma_list: Optional[Union[float, List[float]]] = None,
             amplitude_list: Optional[Union[float, List[float]]] = None,
             position_list: Optional[Union[Tuple[float, float], List[Tuple[float, float]]]] = None,
-            theta_list: Optional[Union[float, List[float]]] = None,  # 新增theta参数
+            theta_list: Optional[Union[float, List[float]]] = None,  # Added theta parameter
             fixed_sigma: bool = False,
             fixed_position: bool = False,
             fixed_amplitude: bool = False,
-            fixed_theta: bool = False) -> tuple:  # 新增fixed_theta参数
+            fixed_theta: bool = False) -> tuple:  # Added fixed_theta parameter
         """
         Perform 2D Gaussian fitting on image
         
@@ -188,9 +188,11 @@ class GaussianFitter2D:
             fitted_model = fitter(model, col, row, image)
         except Exception as e:
             print(f"Fitting failed: {e}")
-            print(f"模型参数: {model.parameters}")
+            # print(f"模型参数: {model.parameters}")
+            print(f"Model parameters: {model.parameters}")
             if hasattr(fitter, 'fit_info'):
-                print(f"拟合信息: {fitter.fit_info}")
+                # print(f"拟合信息: {fitter.fit_info}")
+                print(f"Fit information: {fitter.fit_info}")
             raise
         
         return fitted_model, fitter
@@ -778,25 +780,25 @@ class UnitConverter:
     
 def calculate_motion_pa(ra_rate, dec_rate):
     """
-    计算速度的position angle
+    Calculate the position angle of the velocity.
     
     Parameters:
     -----------
     dec_rate : float
-        向北（上）的速度分量，可以为负. arcsec/hr
+        Velocity component toward north/up; can be negative. arcsec/hr
     ra_rate : float
-        向东（左）的速度分量，可以为负. arcsec/hr
+        Velocity component toward east/left; can be negative. arcsec/hr
     
     Returns:
     --------
     pa : float
         Position angle in degrees [0, 360)
     """
-    # 使用atan2计算角度
-    # atan2(x, y) 给出从正y轴（北）逆时针到向量的角度
+    # Use atan2 to compute the angle
+    # atan2(x, y) gives the angle from the positive y-axis (north) to the vector, counterclockwise
     pa_rad = np.arctan2(ra_rate, dec_rate)
     
-    # 转换为角度
+    # Convert to degrees
     pa_deg = np.degrees(pa_rad)
     pa_deg = pa_deg % 360
     
@@ -823,92 +825,105 @@ def fk5_to_icrf(ra, dec):
 
 def fit_peak_in_region(image, region, plot=False):
     """
-    在给定region内拟合带旋转角度的高斯函数并返回峰值位置在原始图像中的坐标
+    Fit a rotated Gaussian within the given region and return the peak
+    position in the original image coordinates.
     
     Parameters
     ----------
     image : np.ndarray
-        输入的2D图像
+        Input 2D image.
     region : regions.PixelRegion
-        要分析的区域
+        Region to analyze.
     Returns
     -------
     tuple
-        峰值在原始图像中的坐标和旋转角度 (col, row, theta)
+        Peak coordinates in the original image and rotation angle (col, row, theta).
     """
-    # 获取region的mask和cutout
+    # Get the region mask and cutout
     mask = region.to_mask()
     cutout = mask.cutout(image)
     mask_data = mask.data
     
-    # 创建有效数据掩模
+    # Create a valid-data mask
     #valid_mask = mask_data > 0
     valid_mask = np.isfinite(mask_data)
     
-    # 获取有效像素的信息
+    # Get information for valid pixels
     rows, cols = np.where(valid_mask)
     values = cutout[valid_mask]
 
-    # 获取bounding_box信息用于坐标转换
+    # Get bounding_box information for coordinate conversion
     bbox = region.bounding_box
     row_min, row_max, col_min, col_max = bbox.iymin, bbox.iymax, bbox.ixmin, bbox.ixmax
 
-    # 计算更合理的初始参数
+    # Calculate more reasonable initial parameters
     height, width = cutout.shape
     max_value = np.max(values)
-    background = np.median(values)  # 使用较低百分位数作为背景估计
+    background = np.median(values)  # Use a lower percentile as the background estimate
     
-    # 使用最大值位置作为中心的初始猜测
+    # Use the maximum-value position as the initial center guess
     max_pos = np.unravel_index(np.argmax(cutout), cutout.shape)
     initial_row, initial_col = max_pos
     
-    # 估计初始sigma（使用区域大小的1/4到1/6）
+    # Estimate the initial sigma using about 1/4 to 1/6 of the region size
     initial_sigma = min(width, height) / 5
     
-    # 确保sigma不会太小
+    # Ensure sigma is not too small
     initial_sigma = max(initial_sigma, 1.0)
     
-    # 初始旋转角度设为0
+    # Set the initial rotation angle to 0
     initial_theta = 0.0
     
-    # 创建旋转高斯拟合器
+    # Create the rotated Gaussian fitter
     gaussian_fitter = GaussianFitter2D()
     try:
-        # 设置更合理的初始参数
+        # Set more reasonable initial parameters
         fitted_model, _ = gaussian_fitter.fit(
             cutout,
             n_gaussians=1,
-            threshold=background,  # 使用估计的背景值作为阈值
+            threshold=background,  # Use the estimated background value as the threshold
             position_list=[(initial_col, initial_row)],
-            amplitude_list=[max_value - background],  # 减去背景值
+            amplitude_list=[max_value - background],  # Subtract the background value
             sigma_list=[initial_sigma],
-            theta_list=[initial_theta],  # 添加初始旋转角度
+            theta_list=[initial_theta],  # Add the initial rotation angle
         )
         
     except Exception as e:
-        print("\n拟合出错:", str(e))
-        print("\n详细诊断信息:")
-        print("初始参数:")
-        print(f"- 中心位置 (col, row): ({initial_col}, {initial_row})")
-        print(f"- 振幅: {max_value - background}")
+        # print("\n拟合出错:", str(e))
+        print("\nFitting error:", str(e))
+        # print("\n详细诊断信息:")
+        print("\nDetailed diagnostic information:")
+        # print("初始参数:")
+        print("Initial parameters:")
+        # print(f"- 中心位置 (col, row): ({initial_col}, {initial_row})")
+        print(f"- Center position (col, row): ({initial_col}, {initial_row})")
+        # print(f"- 振幅: {max_value - background}")
+        print(f"- Amplitude: {max_value - background}")
         print(f"- Sigma: {initial_sigma}")
         print(f"- Theta: {initial_theta}")
-        print(f"- 背景: {background}")
-        print("\n数据统计:")
-        print(f"- 最大值: {max_value}")
-        print(f"- 最小值: {np.min(values)}")
-        print(f"- 平均值: {np.mean(values)}")
-        print(f"- 中位数: {np.median(values)}")
-        print(f"- 标准差: {np.std(values)}")
+        # print(f"- 背景: {background}")
+        print(f"- Background: {background}")
+        # print("\n数据统计:")
+        print("\nData statistics:")
+        # print(f"- 最大值: {max_value}")
+        print(f"- Maximum: {max_value}")
+        # print(f"- 最小值: {np.min(values)}")
+        print(f"- Minimum: {np.min(values)}")
+        # print(f"- 平均值: {np.mean(values)}")
+        print(f"- Mean: {np.mean(values)}")
+        # print(f"- 中位数: {np.median(values)}")
+        print(f"- Median: {np.median(values)}")
+        # print(f"- 标准差: {np.std(values)}")
+        print(f"- Standard deviation: {np.std(values)}")
         raise
 
-    # 获取拟合后的高斯函数参数（在cutout坐标系中）
-    g = fitted_model[0]  # 第一个高斯分量
-    col_cutout = g.x_mean.value  # 在cutout中的col坐标
-    row_cutout = g.y_mean.value  # 在cutout中的row坐标
-    theta = g.theta.value  # 旋转角度（弧度）
+    # Get the fitted Gaussian parameters in the cutout coordinate system
+    g = fitted_model[0]  # First Gaussian component
+    col_cutout = g.x_mean.value  # Column coordinate in the cutout
+    row_cutout = g.y_mean.value  # Row coordinate in the cutout
+    theta = g.theta.value  # Rotation angle in radians
     
-    # 转换到原始图像坐标系
+    # Convert to the original image coordinate system
     col_orig = col_cutout + col_min
     row_orig = row_cutout + row_min
 
@@ -921,24 +936,25 @@ def fit_peak_in_region(image, region, plot=False):
 
 def vectorized_filter2d(image, func, size):
     """
-    简化版 vectorized_filter，仅支持二维数组 + 窗口 size。
+    Simplified vectorized_filter supporting only 2D arrays and a window size.
 
     Parameters
     ----------
     image : 2D ndarray
-        输入图像
+        Input image.
     func : callable
-        接收一个二维窗口 block，返回标量
-    size : int 或 (int, int)
-        窗口大小
+        Receives a 2D window block and returns a scalar.
+    size : int or (int, int)
+        Window size.
 
     Returns
     -------
     output : 2D ndarray
-        滤波结果
+        Filtered result.
     """
     if image.ndim != 2:
-        raise ValueError("只支持二维数组")
+        # raise ValueError("只支持二维数组")
+        raise ValueError("Only 2D arrays are supported")
 
     if np.isscalar(size):
         block_shape = (int(size), int(size))

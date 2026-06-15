@@ -24,4 +24,4 @@ class ProjectPaths:
     def package_uvotimgpy(self):
         return self.get_subpath(self.packages, "uvotimgpy")
 
-paths = ProjectPaths()  # 创建单例实例
+paths = ProjectPaths()  # Create a singleton instance
