@@ -5,3 +5,5 @@ tests/
 AGENTS.md
 directory_structure.txt
 chinese_comment_translation_summary.md
+.vscode/
+*.egg-info/
