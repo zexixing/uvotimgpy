@@ -63,7 +63,7 @@ def load_path(path_or_name: Union[str, Path, None], parent_path: Union[str, Path
     """Unified path-loading function."""
     if isinstance(path_or_name, str) and not is_path_like(path_or_name):
         if parent_path is None:
-            raise ValueError("Parent path is required when path is ")
+            raise ValueError("Parent path is required when path is str")
         else:
             return paths.get_subpath(parent_path, path_or_name)
     if isinstance(path_or_name, str) and is_path_like(path_or_name):
@@ -237,7 +237,7 @@ class DataPreparation:
         else:
             self.data_path = load_path(data_path, parent_path=paths.get_subpath(paths.data, self.instrument))
 
-        self.target_id = str(target_id)
+        self.target_id = str(target_id) if target_id is not None else self.target_simplified_name
         self.observation_log_path = None
         self.observation_loader = None
         self.all_observations_df = None

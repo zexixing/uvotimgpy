@@ -433,52 +433,204 @@ def create_time_array(start, end, step):
     
     return Time(times)
 
+
+import re
+import numpy as np
+from astropy.time import Time
+from sbpy.data import Ephem
+
+
+_HORIZONS_AMBIG_ROW = re.compile(
+    r"^\s*(?P<record>\d+)\s+"
+    r"(?P<epoch_year>-?\d+)\s+"
+    r"(?P<match_desig>\S+)\s+"
+    r"(?P<primary_desig>\S+)"
+    r"(?:\s+(?P<name>.*?))?\s*$"
+)
+
+
+def _clean_horizons_token(value):
+    return str(value).strip().strip('"').rstrip(";").upper()
+
+
+def _target_designation_key(target_id):
+    """Return the comet designation used to reject fragments like 73P-M."""
+    s = _clean_horizons_token(target_id)
+
+    # 8P, 8P/Tuttle, 8P Tuttle -> 8P
+    # but 73P-M stays 73P-M if the user explicitly asks for a fragment.
+    m = re.match(r"^(\d+P)(?:/|\s|$)", s)
+    if m:
+        return m.group(1)
+
+    return s.split()[0]
+
+
+def _times_midpoint(times):
+    t = Time(times)
+    jd = np.asarray(t.jd, dtype=float)
+    jd_mid = 0.5 * (np.nanmin(jd) + np.nanmax(jd))
+    return Time(jd_mid, format="jd", scale=t.scale)
+
+
+def _parse_horizons_ambiguous_rows(error_message):
+    rows = []
+
+    for line in str(error_message).splitlines():
+        m = _HORIZONS_AMBIG_ROW.match(line)
+        if m is None:
+            continue
+
+        rows.append({
+            "record": m.group("record"),
+            "epoch_year": int(m.group("epoch_year")),
+            "match_desig": m.group("match_desig"),
+            "primary_desig": m.group("primary_desig"),
+            "name": (m.group("name") or "").strip(),
+        })
+
+    return rows
+
+
+def resolve_horizons_ambiguous_record_id(error, target_id, times, verbose=True):
+    rows = _parse_horizons_ambiguous_rows(error)
+
+    if not rows:
+        raise ValueError("Could not parse the Horizons ambiguous-target table.") from error
+
+    target_key = _target_designation_key(target_id)
+
+    # This removes fragment rows like 73P-M, 73P-N when target_id is 73P.
+    exact_rows = [
+        row for row in rows
+        if _clean_horizons_token(row["match_desig"]) == target_key
+        and _clean_horizons_token(row["primary_desig"]) == target_key
+    ]
+
+    if exact_rows:
+        candidates = exact_rows
+    else:
+        # Fallback: still prefer Primary Desig match if exact match is unavailable.
+        primary_rows = [
+            row for row in rows
+            if _clean_horizons_token(row["primary_desig"]) == target_key
+        ]
+        candidates = primary_rows or rows
+
+    mid_time = _times_midpoint(times)
+    mid_year = float(mid_time.decimalyear)
+
+    best = min(candidates, key=lambda row: abs(row["epoch_year"] - mid_year))
+
+    if verbose:
+        print(
+            f"Resolved ambiguous Horizons target {target_id!r} -> "
+            f"record {best['record']} "
+            f"({best['primary_desig']} {best['name']}, "
+            f"Epoch-yr={best['epoch_year']}; "
+            f"times midpoint={mid_time.isot[:10]})"
+        )
+
+    return best["record"]
+
+#def get_ephemeris_batch(times, target_id, location=500, orbital_keywords=None, batch_size=50):
+#    """
+#    Helper function for fetching ephemeris data in batches.
+#    Parameters
+#    ----------
+#    times : array-like 'astropy.time.core.Time' object
+#        List of time points.
+#    orbital_keywords : list
+#        List of orbital parameter keywords to retrieve.
+#    batch_size : int
+#        Number of time points to process per batch.
+#    Returns
+#    -------
+#    Ephem
+#        Merged ephemeris data, with the same format as a direct eph[orbital_keywords] call.
+#    """
+#    results = []  # Store results from all batches
+#    # Process in batches
+#    for i in range(0, len(times), batch_size):
+#        try:
+#            batch_times = times[i:min(i + batch_size, len(times))]
+#            eph = Ephem.from_horizons(target_id, location=location, epochs=batch_times)
+#            results.append(eph)
+#        except Exception as e:
+#            if "Ambiguous target name" in str(e):
+#                # print(f"请提供准确的目标ID。错误: {str(e)}")
+#                print(f"Please provide an exact target ID. Error: {str(e)}")
+#            else:
+#                # print(f"错误: {str(e)}")
+#                print(f"Error: {str(e)}")
+#            raise
+#    # If there is only one batch, return it directly
+#    if len(results) == 1:
+#        if orbital_keywords is None:
+#            return results[0]
+#        else:
+#            return results[0][orbital_keywords]
+#    # Use sbpy vstack to merge results
+#    final_eph = results[0]
+#    for eph in results[1:]:
+#        final_eph.vstack(eph)
+#    if orbital_keywords is None:
+#        return final_eph
+#    else:
+#        return final_eph[orbital_keywords]
+
 def get_ephemeris_batch(times, target_id, location=500, orbital_keywords=None, batch_size=50):
     """
     Helper function for fetching ephemeris data in batches.
-    Parameters
-    ----------
-    times : array-like 'astropy.time.core.Time' object
-        List of time points.
-    orbital_keywords : list
-        List of orbital parameter keywords to retrieve.
-    batch_size : int
-        Number of time points to process per batch.
-    Returns
-    -------
-    Ephem 
-        Merged ephemeris data, with the same format as a direct eph[orbital_keywords] call.
     """
-    results = []  # Store results from all batches
-    # Process in batches
+    results = []
+    query_target_id = target_id
+    resolved_ambiguous_target = False
+
     for i in range(0, len(times), batch_size):
-        try:
-            batch_times = times[i:min(i + batch_size, len(times))]
-            eph = Ephem.from_horizons(target_id, location=location, epochs=batch_times)
-            results.append(eph)
-        except Exception as e:
-            if "Ambiguous target name" in str(e):
-                # print(f"请提供准确的目标ID。错误: {str(e)}")
-                print(f"Please provide an exact target ID. Error: {str(e)}")
-            else:
-                # print(f"错误: {str(e)}")
-                print(f"Error: {str(e)}")
-            raise
-    # If there is only one batch, return it directly
+        batch_times = times[i:min(i + batch_size, len(times))]
+
+        for _ in range(2):
+            try:
+                eph = Ephem.from_horizons(
+                    query_target_id,
+                    location=location,
+                    epochs=batch_times,
+                )
+                results.append(eph)
+                break
+
+            except Exception as e:
+                msg = str(e)
+
+                if "Ambiguous target name" in msg and not resolved_ambiguous_target:
+                    query_target_id = resolve_horizons_ambiguous_record_id(
+                        e,
+                        target_id=target_id,
+                        times=times,
+                    )
+                    resolved_ambiguous_target = True
+                    continue
+
+                if "Ambiguous target name" in msg:
+                    print(f"Please provide an exact target ID. Error: {msg}")
+                else:
+                    print(f"Error: {msg}")
+
+                raise
+
     if len(results) == 1:
         if orbital_keywords is None:
             return results[0]
-        else:
-            return results[0][orbital_keywords]
-    # Use sbpy vstack to merge results
+        return results[0][orbital_keywords]
+
     final_eph = results[0]
     for eph in results[1:]:
         final_eph.vstack(eph)
+
     if orbital_keywords is None:
         return final_eph
-    else:
-        return final_eph[orbital_keywords]
-
+    return final_eph[orbital_keywords]
 
 
 def target_name_converter(input_value: str, output_type: str = 'all', csv_path: Optional[Union[str, Path]] = None) -> Optional[Union[str, Dict[str, str]]]:
@@ -913,7 +1065,12 @@ def read_profile_csv(path):
 
     return np.array(radii), np.array(values), np.array(errors)
 
-def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=None):
+def classify_time_groups(
+    midtime_list,
+    epoch_gap_days=None,
+    orbit_gap_minutes=None,
+    max_orbit_duration_minutes=90,
+):
     """
     Group a MIDTIME list by epoch and orbit, with automatic detection by default or manual thresholds.
 
@@ -928,6 +1085,8 @@ def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=No
         midtime_list: list of MIDTIME strings
         epoch_gap_days: epoch gap threshold in days; None means automatic detection
         orbit_gap_minutes: orbit gap threshold in minutes; None means automatic detection
+        max_orbit_duration_minutes: maximum allowed orbit group duration in minutes;
+            None disables this constraint
 
     Returns:
         tuple: (epoch_list, orbit_list, orbit_index_list)
@@ -969,13 +1128,18 @@ def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=No
             return None
         return (pos[best_i] * pos[best_i+1]) ** 0.5
 
-    def split_groups(indices, threshold):
+    def split_groups(indices, threshold, max_duration=None):
         if threshold is None or len(indices) <= 1:
-            return [list(indices)]
+            threshold = None
         s = sorted(indices, key=lambda i: times[i])
         groups = [[s[0]]]
         for k in range(1, len(s)):
-            if (times[s[k]] - times[s[k-1]]).total_seconds() > threshold:
+            gap = (times[s[k]] - times[s[k-1]]).total_seconds()
+            span = (times[s[k]] - times[groups[-1][0]]).total_seconds()
+            if (
+                (threshold is not None and gap > threshold)
+                or (max_duration is not None and span > max_duration)
+            ):
                 groups.append([s[k]])
             else:
                 groups[-1].append(s[k])
@@ -992,6 +1156,11 @@ def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=No
     # --- Determine thresholds ---
     epoch_th = epoch_gap_days * 86400 if epoch_gap_days is not None else None
     orbit_th = orbit_gap_minutes * 60 if orbit_gap_minutes is not None else None
+    max_orbit_duration = (
+        max_orbit_duration_minutes * 60
+        if max_orbit_duration_minutes is not None
+        else None
+    )
 
     if epoch_th is None or orbit_th is None:
         all_gaps = get_gaps(sorted_indices)
@@ -1038,7 +1207,10 @@ def classify_time_groups(midtime_list, epoch_gap_days=None, orbit_gap_minutes=No
             epoch_list[idx] = epoch_label
 
         local_orbit_th = orbit_th if orbit_th is not None else find_break(get_gaps(group))
-        for oi, orbit in enumerate(split_groups(group, local_orbit_th), 1):
+        for oi, orbit in enumerate(
+            split_groups(group, local_orbit_th, max_duration=max_orbit_duration),
+            1,
+        ):
             orbit_label = midpoint(orbit).strftime('%Y-%m-%dT%H:%M:%S')
             for idx in orbit:
                 orbit_list[idx] = orbit_label
